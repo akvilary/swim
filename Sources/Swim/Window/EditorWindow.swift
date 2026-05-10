@@ -421,12 +421,27 @@ class EditorWindow: Window {
 
         drawLineNumbers(lnWidth: lnWidth, lineCount: buf.lineCount)
 
+        let useBuiltinTokens = semanticTokens.isEmpty
+        let fileExt = (filePath as NSString?)?.pathExtension ?? ""
+        var builtinTokensCache: [Int: [SyntaxToken]] = [:]
+
         for row in 0..<height {
             let lineNum = scrollY + row
             guard lineNum < buf.lineCount else { continue }
             let lineData = buf.getLineData(lineNum)
             let visibleData = Array(lineData.dropFirst(scrollX).prefix(textWidth))
-            let tokens = semanticTokensFor(line: lineNum)
+
+            let tokens: [SemanticToken]
+            if !useBuiltinTokens {
+                tokens = semanticTokensFor(line: lineNum)
+            } else {
+                if builtinTokensCache[lineNum] == nil {
+                    let line = buf.getLine(lineNum)
+                    builtinTokensCache[lineNum] = SyntaxTokenizer.tokenize(line: line, lineNum: lineNum, keywords: SyntaxTokenizer.keywords(for: fileExt))
+                }
+                tokens = builtinTokensCache[lineNum]!.map { SemanticToken(line: $0.line, startChar: $0.startChar, length: $0.length, type: $0.type, modifiers: $0.modifiers) }
+            }
+
             var colOffset = 0
             for (i, byte) in visibleData.enumerated() {
                 guard let char = String(bytes: [byte], encoding: .utf8)?.first else { continue }

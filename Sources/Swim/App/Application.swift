@@ -95,6 +95,7 @@ class Application {
         let lspPaths = [
             "/usr/bin/sourcekit-lsp",
             "/usr/local/bin/sourcekit-lsp",
+            "/home/linuxbrew/.linuxbrew/bin/sourcekit-lsp",
             "\(NSHomeDirectory())/.swiftenv/shims/sourcekit-lsp",
         ]
 
