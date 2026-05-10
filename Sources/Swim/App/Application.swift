@@ -381,6 +381,7 @@ class Application {
         statusBarWindow.cursorCol = editorWindow.cursorCol
         statusBarWindow.totalLines = editorWindow.buffer?.lineCount ?? 0
         statusBarWindow.modified = editorWindow.modified
+        statusBarWindow.commandText = editorWindow.commandBuffer
         if let path = editorWindow.filePath {
             let ext = (path as NSString).pathExtension
             statusBarWindow.fileType = ext.isEmpty ? "" : "[\(ext)]"

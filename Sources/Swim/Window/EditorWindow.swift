@@ -454,8 +454,6 @@ class EditorWindow: Window {
 
         if mode == .visual { drawVisualHighlight(lnWidth: lnWidth) }
         drawCursor(lnWidth: lnWidth)
-
-        if mode == .command { drawCommandLine() }
     }
 
     private func drawLineNumbers(lnWidth: Int, lineCount: Int) {

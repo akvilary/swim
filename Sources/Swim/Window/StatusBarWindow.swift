@@ -7,6 +7,7 @@ class StatusBarWindow: Window {
     var modified: Bool = false
     var fileEncoding: String = "utf-8"
     var fileType: String = ""
+    var commandText: String = ""
 
     override func update() {
         guard height > 0 else { return }
@@ -43,12 +44,20 @@ class StatusBarWindow: Window {
             }
         }
 
-        let filePart = " \(modified ? "+ " : "")\(fileName) "
-        let fileStart = modeLabel.count
-        for (i, c) in filePart.enumerated() {
-            let col = fileStart + i
+        let centerText: String
+        let centerFg: Color
+        if modeText == "COMMAND" {
+            centerText = " :\(commandText)"
+            centerFg = Theme.fg
+        } else {
+            centerText = " \(modified ? "+ " : "")\(fileName) "
+            centerFg = Theme.fgDark
+        }
+        let centerStart = modeLabel.count
+        for (i, c) in centerText.enumerated() {
+            let col = centerStart + i
             if col < width {
-                setCell(0, col, Cell.colored(c, fg: Theme.fgDark, bg: bgColor, bold: true))
+                setCell(0, col, Cell.colored(c, fg: centerFg, bg: bgColor, bold: modeText != "COMMAND"))
             }
         }
 
