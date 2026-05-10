@@ -57,6 +57,11 @@ class FileExplorerWindow: Window {
                 icon = fileIcon(for: entry.name)
             }
 
+            if col < width {
+                setCell(row + 1, col, Cell.colored(" ", fg: nameFg, bg: bg))
+                col += 1
+            }
+
             for c in icon {
                 let w = displayWidth(c)
                 if col + w <= width {
