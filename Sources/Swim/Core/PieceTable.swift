@@ -370,4 +370,28 @@ final class PieceTable {
         (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9")) ||
         byte == UInt8(ascii: "_")
     }
+
+    func lineCharLength(line: Int) -> Int {
+        getLine(line).count
+    }
+
+    func charToByteOffsetInLine(line: Int, charIndex: Int) -> Int {
+        let lineStr = getLine(line)
+        var bytePos = 0
+        for (idx, char) in lineStr.enumerated() {
+            guard idx < charIndex else { break }
+            bytePos += String(char).utf8.count
+        }
+        return bytePos
+    }
+
+    func byteToCharOffsetInLine(line: Int, byteOffset: Int) -> Int {
+        let lineStr = getLine(line)
+        var bytePos = 0
+        for (idx, char) in lineStr.enumerated() {
+            if bytePos >= byteOffset { return idx }
+            bytePos += String(char).utf8.count
+        }
+        return lineStr.count
+    }
 }

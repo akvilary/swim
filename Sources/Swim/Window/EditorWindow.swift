@@ -206,7 +206,7 @@ class EditorWindow: Window {
     private func moveCursorLeft() { if cursorCol > 0 { cursorCol -= 1 }; ensureCursorVisible() }
     private func moveCursorRight() {
         guard let buf = buffer else { return }
-        let maxCol = max(0, buf.lineLength(line: cursorLine) - 1)
+        let maxCol = max(0, buf.lineCharLength(line: cursorLine) - 1)
         if cursorCol < maxCol { cursorCol += 1 }
         ensureCursorVisible()
     }
@@ -218,31 +218,32 @@ class EditorWindow: Window {
     }
     private func clampCol() {
         guard let buf = buffer else { return }
-        let maxCol = max(0, buf.lineLength(line: cursorLine) - 1)
+        let maxCol = max(0, buf.lineCharLength(line: cursorLine) - 1)
         if cursorCol > maxCol { cursorCol = maxCol }
     }
     private func moveToEndOfLine() {
         guard let buf = buffer else { return }
-        cursorCol = max(0, buf.lineLength(line: cursorLine) - 1)
+        cursorCol = max(0, buf.lineCharLength(line: cursorLine) - 1)
     }
     private func moveWordForward() {
         guard let buf = buffer else { return }
-        let offset = buf.lineStart(line: cursorLine) + cursorCol
+        let offset = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
         let newOffset = buf.wordForward(from: offset)
-        let (newLine, newCol) = buf.offsetToLineCol(newOffset)
-        cursorLine = newLine; cursorCol = newCol; ensureCursorVisible()
+        let (newLine, byteCol) = buf.offsetToLineCol(newOffset)
+        cursorLine = newLine; cursorCol = buf.byteToCharOffsetInLine(line: newLine, byteOffset: byteCol); ensureCursorVisible()
     }
     private func moveWordBackward() {
         guard let buf = buffer else { return }
-        let offset = buf.lineStart(line: cursorLine) + cursorCol
+        let offset = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
         let newOffset = buf.wordBackward(from: offset)
-        let (newLine, newCol) = buf.offsetToLineCol(newOffset)
-        cursorLine = newLine; cursorCol = newCol; ensureCursorVisible()
+        let (newLine, byteCol) = buf.offsetToLineCol(newOffset)
+        cursorLine = newLine; cursorCol = buf.byteToCharOffsetInLine(line: newLine, byteOffset: byteCol); ensureCursorVisible()
     }
 
     private func insertText(_ text: String) {
         guard let buf = buffer else { return }
-        let offset = buf.lineStart(line: cursorLine) + cursorCol
+        let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
+        let offset = buf.lineStart(line: cursorLine) + byteOff
         buf.insert(text, at: offset)
         cursorCol += text.count
         modified = true; ensureCursorVisible()
@@ -250,7 +251,8 @@ class EditorWindow: Window {
 
     private func insertNewLineAtCursor() {
         guard let buf = buffer else { return }
-        let offset = buf.lineStart(line: cursorLine) + cursorCol
+        let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
+        let offset = buf.lineStart(line: cursorLine) + byteOff
         buf.insert("\n", at: offset)
         let lineContent = buf.getLine(cursorLine)
         cursorCol = 0; cursorLine += 1
@@ -276,21 +278,29 @@ class EditorWindow: Window {
 
     private func deleteCharAtCursor() {
         guard let buf = buffer else { return }
-        let offset = buf.lineStart(line: cursorLine) + cursorCol
-        guard offset < buf.totalLength else { return }
-        buf.delete(at: offset, length: 1); clampCol(); modified = true
+        let line = buf.getLine(cursorLine)
+        let chars = Array(line)
+        guard cursorCol < chars.count else { return }
+        let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
+        let offset = buf.lineStart(line: cursorLine) + byteOff
+        let deleteLen = String(chars[cursorCol]).utf8.count
+        buf.delete(at: offset, length: deleteLen); clampCol(); modified = true
     }
 
     private func deleteBeforeCursor() {
         guard let buf = buffer else { return }
         if cursorCol > 0 {
-            let offset = buf.lineStart(line: cursorLine) + cursorCol - 1
-            buf.delete(at: offset, length: 1); cursorCol -= 1
+            let prevIdx = cursorCol - 1
+            let deleteByteStart = buf.charToByteOffsetInLine(line: cursorLine, charIndex: prevIdx)
+            let deleteByteEnd = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
+            let offset = buf.lineStart(line: cursorLine) + deleteByteStart
+            buf.delete(at: offset, length: deleteByteEnd - deleteByteStart)
+            cursorCol -= 1
         } else if cursorLine > 0 {
             let currentLineStart = buf.lineStart(line: cursorLine)
             buf.delete(at: currentLineStart - 1, length: 1)
             cursorLine -= 1
-            cursorCol = max(0, buf.lineLength(line: cursorLine) - 1)
+            cursorCol = max(0, buf.lineCharLength(line: cursorLine) - 1)
         }
         modified = true
     }
@@ -334,16 +344,16 @@ class EditorWindow: Window {
     private func yankVisualSelection() {
         guard let buf = buffer else { return }
         let (startLine, startCol, endLine, endCol) = visualRange()
-        let startOffset = buf.lineStart(line: startLine) + startCol
-        let endOffset = buf.lineStart(line: endLine) + endCol + 1
+        let startOffset = buf.lineStart(line: startLine) + buf.charToByteOffsetInLine(line: startLine, charIndex: startCol)
+        let endOffset = buf.lineStart(line: endLine) + buf.charToByteOffsetInLine(line: endLine, charIndex: endCol + 1)
         yankBuffer = buf.getText(range: startOffset..<min(endOffset, buf.totalLength))
     }
 
     private func deleteVisualSelection() {
         guard let buf = buffer else { return }
         let (startLine, startCol, endLine, endCol) = visualRange()
-        let startOffset = buf.lineStart(line: startLine) + startCol
-        let endOffset = buf.lineStart(line: endLine) + endCol + 1
+        let startOffset = buf.lineStart(line: startLine) + buf.charToByteOffsetInLine(line: startLine, charIndex: startCol)
+        let endOffset = buf.lineStart(line: endLine) + buf.charToByteOffsetInLine(line: endLine, charIndex: endCol + 1)
         let len = min(endOffset, buf.totalLength) - startOffset
         yankBuffer = buf.getText(range: startOffset..<(startOffset + len))
         buf.delete(at: startOffset, length: len)
@@ -359,19 +369,19 @@ class EditorWindow: Window {
 
     private func searchNext() {
         guard let buf = buffer, !searchQuery.isEmpty else { return }
-        let offset = buf.lineStart(line: cursorLine) + cursorCol + 1
-        if let found = buf.search(searchQuery, from: offset) {
-            let (line, col) = buf.offsetToLineCol(found); cursorLine = line; cursorCol = col; ensureCursorVisible()
+        let byteOff = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol) + 1
+        if let found = buf.search(searchQuery, from: byteOff) {
+            let (line, byteCol) = buf.offsetToLineCol(found); cursorLine = line; cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol); ensureCursorVisible()
         } else if let found = buf.search(searchQuery, from: 0) {
-            let (line, col) = buf.offsetToLineCol(found); cursorLine = line; cursorCol = col; ensureCursorVisible()
+            let (line, byteCol) = buf.offsetToLineCol(found); cursorLine = line; cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol); ensureCursorVisible()
         }
     }
 
     private func searchPrev() {
         guard let buf = buffer, !searchQuery.isEmpty else { return }
-        let offset = buf.lineStart(line: cursorLine) + cursorCol
-        if let found = buf.searchBackward(searchQuery, from: offset) {
-            let (line, col) = buf.offsetToLineCol(found); cursorLine = line; cursorCol = col; ensureCursorVisible()
+        let byteOff = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
+        if let found = buf.searchBackward(searchQuery, from: byteOff) {
+            let (line, byteCol) = buf.offsetToLineCol(found); cursorLine = line; cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol); ensureCursorVisible()
         }
     }
 
@@ -428,27 +438,31 @@ class EditorWindow: Window {
         for row in 0..<height {
             let lineNum = scrollY + row
             guard lineNum < buf.lineCount else { continue }
-            let lineData = buf.getLineData(lineNum)
-            let visibleData = Array(lineData.dropFirst(scrollX).prefix(textWidth))
+            let line = buf.getLine(lineNum)
+            let chars = Array(line)
+            let visibleChars = Array(chars.dropFirst(scrollX).prefix(textWidth))
 
             let tokens: [SemanticToken]
             if !useBuiltinTokens {
                 tokens = semanticTokensFor(line: lineNum)
             } else {
                 if builtinTokensCache[lineNum] == nil {
-                    let line = buf.getLine(lineNum)
                     builtinTokensCache[lineNum] = SyntaxTokenizer.tokenize(line: line, lineNum: lineNum, keywords: SyntaxTokenizer.keywords(for: fileExt))
                 }
                 tokens = builtinTokensCache[lineNum]!.map { SemanticToken(line: $0.line, startChar: $0.startChar, length: $0.length, type: $0.type, modifiers: $0.modifiers) }
             }
 
             var colOffset = 0
-            for (i, byte) in visibleData.enumerated() {
-                guard let char = String(bytes: [byte], encoding: .utf8)?.first else { continue }
-                let absCol = scrollX + i
+            var charIdx = scrollX
+            for char in visibleChars {
+                let absCol = charIdx
                 let tokenColor = tokenColorAt(line: lineNum, col: absCol, tokens: tokens)
-                setCell(row, lnWidth + colOffset, Cell.colored(char, fg: tokenColor, bg: Theme.bg))
+                let cellX = lnWidth + colOffset
+                if cellX < width {
+                    setCell(row, cellX, Cell.colored(char, fg: tokenColor, bg: Theme.bg))
+                }
                 colOffset += 1
+                charIdx += 1
             }
         }
 
@@ -497,7 +511,7 @@ class EditorWindow: Window {
             let screenRow = lineNum - scrollY
             guard screenRow >= 0 && screenRow < height else { continue }
             guard let buf = buffer else { continue }
-            let lineEnd = max(0, buf.lineLength(line: lineNum) - 1)
+                let lineEnd = max(0, buf.lineCharLength(line: lineNum) - 1)
             for c in 0...lineEnd {
                 let screenCol = c - scrollX
                 guard screenCol >= 0 && screenCol + lnWidth < width else { continue }
