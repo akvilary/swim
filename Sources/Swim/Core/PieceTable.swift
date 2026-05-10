@@ -13,6 +13,8 @@ final class PieceTable {
     private var addBuffer = [UInt8]()
     private var pieces = [Piece]()
     private var lineStarts = [Int]()
+    private var cachedLineNum: Int = -1
+    private var cachedLineStr: String = ""
 
     var totalLength: Int {
         pieces.reduce(0) { $0 + $1.length }
@@ -45,13 +47,20 @@ final class PieceTable {
     }
 
     private func rebuildLineIndex() {
-        lineStarts = [0]
+        let totalLen = pieces.reduce(0) { $0 + $1.length }
+        lineStarts = [Int]()
+        lineStarts.reserveCapacity(max(16, totalLen / 30))
+        lineStarts.append(0)
         var offset = 0
         for piece in pieces {
             let buf = buffer(for: piece)
-            for i in 0..<piece.length {
-                if buf[piece.start + i] == UInt8(ascii: "\n") {
-                    lineStarts.append(offset + i + 1)
+            let base = piece.start
+            buf.withUnsafeBufferPointer { ptr in
+                let p = ptr.baseAddress! + base
+                for i in 0..<piece.length {
+                    if p[i] == 10 {
+                        lineStarts.append(offset + i + 1)
+                    }
                 }
             }
             offset += piece.length
@@ -78,9 +87,12 @@ final class PieceTable {
                 foundStart = true
                 let localStart = startOffset - pieceOffset
                 let buf = buffer(for: piece)
-                for i in localStart..<piece.length {
-                    if buf[piece.start + i] == UInt8(ascii: "\n") {
-                        lineStarts.append(offset + i - localStart + 1)
+                buf.withUnsafeBufferPointer { ptr in
+                    let p = ptr.baseAddress! + piece.start + localStart
+                    for i in 0..<(piece.length - localStart) {
+                        if p[i] == 10 {
+                            lineStarts.append(offset + i + 1)
+                        }
                     }
                 }
                 offset += piece.length - localStart
@@ -88,9 +100,12 @@ final class PieceTable {
                 continue
             }
             let buf = buffer(for: piece)
-            for i in 0..<piece.length {
-                if buf[piece.start + i] == UInt8(ascii: "\n") {
-                    lineStarts.append(offset + i + 1)
+            buf.withUnsafeBufferPointer { ptr in
+                let p = ptr.baseAddress! + piece.start
+                for i in 0..<piece.length {
+                    if p[i] == 10 {
+                        lineStarts.append(offset + i + 1)
+                    }
                 }
             }
             offset += piece.length
@@ -132,6 +147,7 @@ final class PieceTable {
 
     func insert(_ text: String, at offset: Int) {
         guard !text.isEmpty else { return }
+        cachedLineNum = -1
         let data = [UInt8](text.utf8)
         let addStart = addBuffer.count
         addBuffer.append(contentsOf: data)
@@ -157,6 +173,7 @@ final class PieceTable {
 
     func delete(at offset: Int, length: Int) {
         guard length > 0 else { return }
+        cachedLineNum = -1
         var remaining = length
         var currentOffset = offset
         var removeRanges = [(start: Int, end: Int)]()
@@ -248,14 +265,18 @@ final class PieceTable {
     }
 
     func getLine(_ lineNum: Int) -> String {
+        if lineNum == cachedLineNum { return cachedLineStr }
         guard lineNum >= 0 && lineNum < lineStarts.count else { return "" }
         let start = lineStarts[lineNum]
         let end = lineEnd(line: lineNum)
         let text = getText(range: start..<end)
-        if text.hasSuffix("\r\n") { return String(text.dropLast(2)) }
-        if text.hasSuffix("\n") { return String(text.dropLast()) }
-        if text.hasSuffix("\r") { return String(text.dropLast()) }
-        return text
+        var result = text
+        if result.hasSuffix("\r\n") { result = String(result.dropLast(2)) }
+        else if result.hasSuffix("\n") { result = String(result.dropLast()) }
+        else if result.hasSuffix("\r") { result = String(result.dropLast()) }
+        cachedLineNum = lineNum
+        cachedLineStr = result
+        return result
     }
 
     func getLineData(_ lineNum: Int) -> [UInt8] {

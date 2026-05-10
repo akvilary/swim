@@ -431,8 +431,9 @@ class EditorWindow: Window {
 
         drawLineNumbers(lnWidth: lnWidth, lineCount: buf.lineCount)
 
-        let useBuiltinTokens = semanticTokens.isEmpty
+        let useBuiltinTokens = semanticTokens.isEmpty && buf.lineCount < 50000
         let fileExt = (filePath as NSString?)?.pathExtension ?? ""
+        let isJSON = fileExt == "json"
         var builtinTokensCache: [Int: [SyntaxToken]] = [:]
 
         for row in 0..<height {
@@ -441,6 +442,47 @@ class EditorWindow: Window {
             let line = buf.getLine(lineNum)
             let chars = Array(line)
             let visibleChars = Array(chars.dropFirst(scrollX).prefix(textWidth))
+
+            if isJSON {
+                var colOffset = 0
+                var inString = false
+                var skipNext = false
+                var charIdx = scrollX
+                for char in visibleChars {
+                    let cellX = lnWidth + colOffset
+                    guard cellX < width else { break }
+
+                    let color: Color
+                    if skipNext {
+                        skipNext = false
+                        color = Theme.green
+                    } else if inString {
+                        if char == "\\" {
+                            skipNext = true
+                            color = Theme.green
+                        } else if char == "\"" {
+                            inString = false
+                            color = Theme.green
+                        } else {
+                            color = Theme.green
+                        }
+                    } else {
+                        if char == "\"" {
+                            inString = true
+                            color = Theme.green
+                        } else if char == "{" || char == "}" || char == "[" || char == "]" || char == "," || char == ":" {
+                            color = Theme.fg
+                        } else {
+                            color = Theme.orange
+                        }
+                    }
+
+                    setCell(row, cellX, Cell.colored(char, fg: color, bg: Theme.bg))
+                    colOffset += 1
+                    charIdx += 1
+                }
+                continue
+            }
 
             let tokens: [SemanticToken]
             if !useBuiltinTokens {

@@ -137,6 +137,7 @@ class Application {
 
     private func notifyLSPFileOpen(_ path: String) {
         guard let client = lspClient else { return }
+        guard let buf = editorWindow.buffer, buf.totalLength < 5_000_000 else { return }
         let uri = "file://\(path)"
         let ext = (path as NSString).pathExtension
         let langId: String
@@ -428,10 +429,11 @@ class Application {
     }
 
     private func notifyLSPChange() {
-        guard let client = lspClient, let path = editorWindow.filePath else { return }
+        guard let client = lspClient, let path = editorWindow.filePath,
+              let buf = editorWindow.buffer, buf.totalLength < 5_000_000 else { return }
         lspVersion += 1
         let uri = "file://\(path)"
-        let text = editorWindow.buffer?.getAllText() ?? ""
+        let text = buf.getAllText()
         client.changeDocument(uri: uri, version: lspVersion, text: text)
     }
 
