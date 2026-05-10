@@ -37,10 +37,11 @@ class LSPClient {
         guard let outputPipe = outputPipe else { return }
 
         let source = DispatchSource.makeReadSource(fileDescriptor: outputPipe.fileHandleForReading.fileDescriptor, queue: queue)
-        source.setEventHandler { [weak self] in
+        nonisolated(unsafe) let weakSelf = self
+        source.setEventHandler { [weak weakSelf] in
             let data = outputPipe.fileHandleForReading.availableData
             if data.isEmpty { return }
-            self?.handleData(data)
+            weakSelf?.handleData(data)
         }
         source.resume()
         readSource = source
@@ -217,11 +218,11 @@ class LSPClient {
 
         let header = "Content-Length: \(data.count)\r\n\r\n"
         let headerData = header.data(using: .ascii)!
+        let pipe = inputPipe
 
-        queue.async { [weak self] in
-            guard let self = self, self.alive else { return }
-            inputPipe.fileHandleForWriting.write(headerData)
-            inputPipe.fileHandleForWriting.write(data)
+        queue.async {
+            pipe.fileHandleForWriting.write(headerData)
+            pipe.fileHandleForWriting.write(data)
         }
     }
 

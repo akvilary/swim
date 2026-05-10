@@ -1,3 +1,9 @@
+#if canImport(Glibc)
+@preconcurrency import Glibc
+#elseif canImport(Darwin)
+@preconcurrency import Darwin
+#endif
+@preconcurrency
 import Foundation
 
 class Application {
@@ -43,7 +49,11 @@ class Application {
 
         if terminal.width < 10 || terminal.height < 5 {
             terminal.restore()
-            fputs("Error: Swim requires a terminal with at least 10x5 size.\n", stderr)
+            let msg = "Error: Swim requires a terminal with at least 10x5 size.\n"
+            let bytes = [UInt8](msg.utf8)
+            bytes.withUnsafeBufferPointer { ptr in
+                _ = write(STDERR_FILENO, ptr.baseAddress, bytes.count)
+            }
             return
         }
 

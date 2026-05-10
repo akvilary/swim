@@ -1,13 +1,11 @@
 #if canImport(Glibc)
-import Glibc
+@preconcurrency import Glibc
 #elseif canImport(Darwin)
-import Darwin
+@preconcurrency import Darwin
 #endif
 import Foundation
 
-private func signalHandler(_ sig: Int32) {
-    Terminal.shared.handleResize()
-}
+private func signalHandler(_: Int32) {}
 
 final class Terminal {
     private var originalTermios: termios?
@@ -15,7 +13,7 @@ final class Terminal {
     private(set) var height: Int = 24
     private var outputBuffer = [UInt8]()
 
-    static let shared = Terminal()
+    nonisolated(unsafe) static let shared = Terminal()
     private init() {}
 
     func setup() {
@@ -55,7 +53,7 @@ final class Terminal {
         }
         writeRaw("\u{1b}[?1049l")
         writeRaw("\u{1b}[?25h")
-        fflush(stdout)
+        writeRaw("")
     }
 
     func handleResize() {
