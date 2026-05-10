@@ -52,16 +52,26 @@ class FileExplorerWindow: Window {
 
             let icon: String
             if entry.isDirectory {
-                icon = entry.isExpanded ? "▾ " : "▸ "
+                icon = entry.isExpanded ? "📂" : "📁"
             } else {
                 icon = fileIcon(for: entry.name)
             }
 
             for c in icon {
-                if col < width {
+                let w = displayWidth(c)
+                if col + w <= width {
                     setCell(row + 1, col, Cell.colored(c, fg: nameFg, bg: bg, bold: entry.isDirectory))
-                    col += 1
+                    if w == 2 {
+                        var cont = Cell.colored(" ", fg: nameFg, bg: bg)
+                        cont.wideContinuation = true
+                        setCell(row + 1, col + 1, cont)
+                    }
+                    col += w
                 }
+            }
+            if col < width {
+                setCell(row + 1, col, Cell.colored(" ", fg: nameFg, bg: bg))
+                col += 1
             }
 
             for c in entry.name {
@@ -81,17 +91,21 @@ class FileExplorerWindow: Window {
     private func fileIcon(for name: String) -> String {
         let ext = (name as NSString).pathExtension.lowercased()
         switch ext {
-        case "swift": return "🬠 "
-        case "js", "ts": return "⚡ "
-        case "py": return "◆ "
-        case "rs": return "⚙ "
-        case "go": return "▸ "
-        case "md": return "◇ "
-        case "json": return "◇ "
-        case "yaml", "yml": return "◇ "
-        case "toml": return "◇ "
-        case "txt": return "◇ "
-        case "lock": return "◇ "
+        case "swift": return "🐦"
+        case "js", "ts": return "⚡"
+        case "py": return "🐍"
+        case "rs": return "⚙"
+        case "go": return "🔵"
+        case "md": return "📝"
+        case "json": return "📋"
+        case "yaml", "yml": return "📋"
+        case "toml": return "📋"
+        case "txt": return "📄"
+        case "lock": return "🔒"
+        case "gitignore", "dockerignore": return "🙈"
+        case "sh", "bash": return "📜"
+        case "css", "scss": return "🎨"
+        case "html": return "🌐"
         default: return "  "
         }
     }
@@ -203,5 +217,16 @@ class FileExplorerWindow: Window {
         let visibleCount = height - 1
         if selectedIndex < scrollOffset { scrollOffset = selectedIndex }
         else if selectedIndex >= scrollOffset + visibleCount { scrollOffset = selectedIndex - visibleCount + 1 }
+    }
+
+    private func displayWidth(_ c: Character) -> Int {
+        let s = String(c)
+        let utf8 = s.utf8
+        if utf8.count >= 3 {
+            let first = utf8.first! & 0xF0
+            if first >= 0xF0 { return 2 }
+            if first >= 0xE0 { return 1 }
+        }
+        return 1
     }
 }

@@ -324,6 +324,8 @@ class Application {
 
                     let cell = window.getCell(row, col)
 
+                    if cell.wideContinuation { continue }
+
                     if prevScreenCells[screenRow]?[screenCol] != cell {
                         if prevScreenCells[screenRow] == nil {
                             prevScreenCells[screenRow] = [:]
@@ -341,12 +343,25 @@ class Application {
                         terminal.writeChar(cell.char)
 
                         prevScreenCells[screenRow]![screenCol] = cell
+
+                        if isWideChar(cell.char), screenCol + 1 < terminal.width {
+                            if prevScreenCells[screenRow] == nil { prevScreenCells[screenRow] = [:] }
+                            prevScreenCells[screenRow]![screenCol + 1] = window.getCell(row, col + 1)
+                        }
                     }
                 }
             }
         }
 
         terminal.flush()
+    }
+
+    private func isWideChar(_ c: Character) -> Bool {
+        let s = String(c)
+        let utf8 = s.utf8
+        guard let first = utf8.first else { return false }
+        if first >= 0xF0 { return true }
+        return false
     }
 
     private func updateStatusBar() {
