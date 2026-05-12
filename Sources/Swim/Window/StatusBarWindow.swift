@@ -47,7 +47,8 @@ class StatusBarWindow: Window {
         let centerText: String
         let centerFg: Color
         if modeText == "COMMAND" {
-            centerText = " :\(commandText)"
+            let prefix = commandText.hasPrefix("/") ? "" : ":"
+            centerText = " \(prefix)\(commandText)"
             centerFg = Theme.fg
         } else {
             centerText = " \(modified ? "+ " : "")\(fileName) "

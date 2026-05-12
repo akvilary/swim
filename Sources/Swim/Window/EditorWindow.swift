@@ -106,7 +106,7 @@ class EditorWindow: Window {
         case .ctrl("r"): redo()
         case .char("v"): mode = .visual; visualStartLine = cursorLine; visualStartCol = cursorCol
         case .char(":"): mode = .command; commandBuffer = ""
-        case .char("/"): mode = .command; commandBuffer = ""
+        case .char("/"): mode = .command; commandBuffer = "/"
         case .char("n"): searchNext()
         case .char("N"): searchPrev()
         case .ctrl("f"): pageDown()
@@ -582,8 +582,12 @@ class EditorWindow: Window {
     }
 
     private func drawCommandLine() {
-        let prompt = commandBuffer.hasPrefix("/") ? "/" : ":"
-        let cmdLine = prompt + commandBuffer
+        let cmdLine: String
+        if commandBuffer.hasPrefix("/") {
+            cmdLine = commandBuffer
+        } else {
+            cmdLine = ":" + commandBuffer
+        }
         if height > 0 {
             writeString(cmdLine, row: height - 1, col: 0, fg: Theme.fg, bg: Theme.bg)
         }
