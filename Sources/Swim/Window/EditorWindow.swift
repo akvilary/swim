@@ -91,7 +91,7 @@ class EditorWindow: Window {
         case .char("a"): moveCursorRight(); mode = .insert
         case .char("o"): insertNewLineBelow(); mode = .insert
         case .char("O"): insertNewLineAbove(); mode = .insert
-        case .char("A"): moveToEndOfLine(); mode = .insert
+        case .char("A"): moveToEndOfLineForInsert(); mode = .insert
         case .char("I"): cursorCol = 0; mode = .insert
         case .char("x"): deleteCharAtCursor()
         case .char("d"):
@@ -119,11 +119,17 @@ class EditorWindow: Window {
 
     private func handleInsert(_ key: Key) -> Bool {
         switch key {
-        case .escape: mode = .normal; moveCursorLeft()
+        case .escape: mode = .normal; clampCol()
         case .enter: insertNewLineAtCursor()
         case .backspace: deleteBeforeCursor()
         case .tab: insertText("    ")
         case .char(let c): insertText(String(c))
+        case .left: moveCursorLeftInsert()
+        case .right: moveCursorRightInsert()
+        case .up: moveCursorUp()
+        case .down: moveCursorDown()
+        case .home: cursorCol = 0; ensureCursorVisible()
+        case .end: moveToEndOfLineForInsert()
         default: return false
         }
         dirty = true
@@ -210,6 +216,12 @@ class EditorWindow: Window {
         if cursorCol < maxCol { cursorCol += 1 }
         ensureCursorVisible()
     }
+    private func moveCursorLeftInsert() { if cursorCol > 0 { cursorCol -= 1 }; ensureCursorVisible() }
+    private func moveCursorRightInsert() {
+        guard let buf = buffer else { return }
+        if cursorCol < buf.lineCharLength(line: cursorLine) { cursorCol += 1 }
+        ensureCursorVisible()
+    }
     private func moveCursorUp() { if cursorLine > 0 { cursorLine -= 1; clampCol() }; ensureCursorVisible() }
     private func moveCursorDown() {
         guard let buf = buffer else { return }
@@ -224,6 +236,10 @@ class EditorWindow: Window {
     private func moveToEndOfLine() {
         guard let buf = buffer else { return }
         cursorCol = max(0, buf.lineCharLength(line: cursorLine) - 1)
+    }
+    private func moveToEndOfLineForInsert() {
+        guard let buf = buffer else { return }
+        cursorCol = buf.lineCharLength(line: cursorLine)
     }
     private func moveWordForward() {
         guard let buf = buffer else { return }

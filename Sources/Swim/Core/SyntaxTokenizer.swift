@@ -83,6 +83,18 @@ struct SyntaxTokenizer {
         "undefined", "var", "void", "while", "with", "yield",
     ]
 
+    static let dartKeywords: Set<String> = [
+        "abstract", "as", "assert", "async", "await", "break", "case",
+        "catch", "class", "const", "continue", "covariant", "default",
+        "deferred", "do", "dynamic", "else", "enum", "export", "extends",
+        "extension", "external", "factory", "false", "final", "finally",
+        "for", "Function", "get", "hide", "if", "implements", "import",
+        "in", "interface", "is", "late", "library", "mixin", "new", "null",
+        "on", "operator", "part", "required", "rethrow", "return", "sealed",
+        "set", "show", "static", "super", "switch", "this", "throw", "true",
+        "try", "type", "typedef", "var", "void", "while", "with", "yield",
+    ]
+
     static func keywords(for ext: String) -> Set<String> {
         switch ext {
         case "swift": return swiftKeywords
@@ -92,6 +104,7 @@ struct SyntaxTokenizer {
         case "rs": return rustKeywords
         case "go": return goKeywords
         case "js", "ts", "jsx", "tsx": return jsKeywords
+        case "dart": return dartKeywords
         default: return swiftKeywords
         }
     }

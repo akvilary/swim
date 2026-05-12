@@ -101,6 +101,7 @@ class FileExplorerWindow: Window {
         case "py": return "🐍"
         case "rs": return "⚙"
         case "go": return "🔵"
+        case "dart": return "🎯"
         case "md": return "📝"
         case "json": return "📋"
         case "yaml", "yml": return "📋"

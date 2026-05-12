@@ -151,6 +151,7 @@ class Application {
         case "go": langId = "go"
         case "ts": langId = "typescript"
         case "js": langId = "javascript"
+        case "dart": langId = "dart"
         default: langId = "plaintext"
         }
         let text = editorWindow.buffer?.getAllText() ?? ""
