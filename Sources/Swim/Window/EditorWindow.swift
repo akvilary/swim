@@ -265,6 +265,14 @@ class EditorWindow: Window {
         modified = true; ensureCursorVisible()
     }
 
+    private func indentSize() -> Int {
+        let ext = (filePath as NSString?)?.pathExtension ?? ""
+        switch ext {
+        case "swift", "cpp", "hpp", "cc", "cxx", "h", "dart": return 2
+        default: return 4
+        }
+    }
+
     private func insertNewLineAtCursor() {
         guard let buf = buffer else { return }
         let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
@@ -272,10 +280,28 @@ class EditorWindow: Window {
         buf.insert("\n", at: offset)
         let lineContent = buf.getLine(cursorLine)
         cursorCol = 0; cursorLine += 1
-        let indent = leadingSpaces(lineContent)
-        if indent > 0 {
-            buf.insert(String(repeating: " ", count: indent), at: buf.lineStart(line: cursorLine))
-            cursorCol = indent
+        let baseIndent = leadingSpaces(lineContent)
+        let trimmed = lineContent.trimmingCharacters(in: .whitespaces)
+        var extra = 0
+        if trimmed.hasSuffix("{") || trimmed.hasSuffix("(") || trimmed.hasSuffix(":") {
+            extra = indentSize()
+        }
+        let newLineContent = buf.getLine(cursorLine)
+        let newTrimmed = newLineContent.trimmingCharacters(in: .whitespaces)
+        let closesBlock = newTrimmed.hasPrefix("}") || newTrimmed.hasPrefix(")")
+        if closesBlock {
+            let fullIndent = baseIndent + extra
+            buf.insert(
+                String(repeating: " ", count: fullIndent) + "\n" + String(repeating: " ", count: baseIndent),
+                at: buf.lineStart(line: cursorLine)
+            )
+            cursorCol = fullIndent
+        } else {
+            let indent = baseIndent + extra
+            if indent > 0 {
+                buf.insert(String(repeating: " ", count: indent), at: buf.lineStart(line: cursorLine))
+                cursorCol = indent
+            }
         }
         modified = true; ensureCursorVisible()
     }
