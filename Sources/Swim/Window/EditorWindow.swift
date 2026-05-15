@@ -33,6 +33,11 @@ class EditorWindow: Window {
     var onFileOpen: ((String) -> Void)?
     var onCommand: ((String) -> Void)?
 
+    private func yank(_ text: String) {
+        yankBuffer = text
+        Terminal.shared.osc52Copy(text)
+    }
+
     override init(x: Int = 0, y: Int = 0, width: Int = 0, height: Int = 0) {
         super.init(x: x, y: y, width: width, height: height)
     }
@@ -351,13 +356,13 @@ class EditorWindow: Window {
         guard let buf = buffer, buf.lineCount > 0 else { return }
         let start = buf.lineStart(line: cursorLine)
         let len = buf.lineEnd(line: cursorLine) - start
-        yankBuffer = buf.getLine(cursorLine) + "\n"
+        yank(buf.getLine(cursorLine) + "\n")
         buf.delete(at: start, length: len)
         if cursorLine >= buf.lineCount { cursorLine = max(0, buf.lineCount - 1) }
         cursorCol = 0; modified = true
     }
 
-    private func yankCurrentLine() { guard let buf = buffer else { return }; yankBuffer = buf.getLine(cursorLine) + "\n" }
+    private func yankCurrentLine() { guard let buf = buffer else { return }; yank(buf.getLine(cursorLine) + "\n") }
 
     private func pasteAfter() {
         guard let buf = buffer, !yankBuffer.isEmpty else { return }
@@ -388,7 +393,7 @@ class EditorWindow: Window {
         let (startLine, startCol, endLine, endCol) = visualRange()
         let startOffset = buf.lineStart(line: startLine) + buf.charToByteOffsetInLine(line: startLine, charIndex: startCol)
         let endOffset = buf.lineStart(line: endLine) + buf.charToByteOffsetInLine(line: endLine, charIndex: endCol + 1)
-        yankBuffer = buf.getText(range: startOffset..<min(endOffset, buf.totalLength))
+        yank(buf.getText(range: startOffset..<min(endOffset, buf.totalLength)))
     }
 
     private func deleteVisualSelection() {
@@ -397,7 +402,7 @@ class EditorWindow: Window {
         let startOffset = buf.lineStart(line: startLine) + buf.charToByteOffsetInLine(line: startLine, charIndex: startCol)
         let endOffset = buf.lineStart(line: endLine) + buf.charToByteOffsetInLine(line: endLine, charIndex: endCol + 1)
         let len = min(endOffset, buf.totalLength) - startOffset
-        yankBuffer = buf.getText(range: startOffset..<(startOffset + len))
+        yank(buf.getText(range: startOffset..<(startOffset + len)))
         buf.delete(at: startOffset, length: len)
         cursorLine = startLine; cursorCol = startCol; modified = true
     }

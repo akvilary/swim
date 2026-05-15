@@ -137,6 +137,12 @@ final class Terminal {
         outputBuffer.append(contentsOf: "\u{1b}[\(shape) q".utf8)
     }
 
+    func osc52Copy(_ text: String) {
+        let data = Data(text.utf8)
+        let encoded = data.base64EncodedString()
+        writeRaw("\u{1b}]52;c;\(encoded)\u{07}")
+    }
+
     func resetAttributes() {
         outputBuffer.append(contentsOf: "\u{1b}[0m".utf8)
     }
