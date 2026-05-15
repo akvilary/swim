@@ -452,7 +452,7 @@ class EditorWindow: Window {
         }
     }
 
-    private func lineNumberWidth() -> Int {
+    func lineNumberWidth() -> Int {
         guard let buf = buffer else { return 4 }
         return max(4, String(buf.lineCount).count + 2)
     }
@@ -591,9 +591,9 @@ class EditorWindow: Window {
         let screenCol = cursorCol - scrollX
         guard screenCol >= 0 && screenCol + lnWidth < width else { return }
         let absCol = lnWidth + screenCol
+        if mode == .insert { return }
         var cell = getCell(screenRow, absCol)
         cell.reverse = true
-        if mode == .insert { cell.reverse = false; cell.underline = true }
         setCell(screenRow, absCol, cell)
     }
 

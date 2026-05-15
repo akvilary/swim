@@ -31,7 +31,6 @@ final class Terminal {
 
         updateSize()
         writeRaw("\u{1b}[?1049h")
-        writeRaw("\u{1b}[?25l")
         writeRaw("\u{1b}[2J")
         writeRaw("\u{1b}[H")
 
@@ -128,6 +127,14 @@ final class Terminal {
 
     func setReverse(_ on: Bool) {
         outputBuffer.append(contentsOf: (on ? "\u{1b}[7m" : "\u{1b}[27m").utf8)
+    }
+
+    func showCursor(_ show: Bool) {
+        writeRaw(show ? "\u{1b}[?25h" : "\u{1b}[?25l")
+    }
+
+    func setCursorShape(_ shape: Int) {
+        outputBuffer.append(contentsOf: "\u{1b}[\(shape) q".utf8)
     }
 
     func resetAttributes() {

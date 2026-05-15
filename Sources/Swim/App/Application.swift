@@ -366,6 +366,23 @@ class Application {
         }
 
         terminal.flush()
+
+        let mode = editorWindow.mode
+        if mode == .insert {
+            let lnWidth = editorWindow.lineNumberWidth()
+            let screenRow = editorWindow.cursorLine - editorWindow.scrollY
+            let screenCol = editorWindow.cursorCol - editorWindow.scrollX
+            if screenRow >= 0, screenRow < editorWindow.height,
+               screenCol >= 0, screenCol + lnWidth < editorWindow.width {
+                terminal.moveCursor(row: editorWindow.y + screenRow, col: editorWindow.x + lnWidth + screenCol)
+            }
+            terminal.setCursorShape(5)
+            terminal.showCursor(true)
+        } else {
+            terminal.showCursor(false)
+            terminal.setCursorShape(1)
+        }
+        terminal.flush()
     }
 
     private func isWideChar(_ c: Character) -> Bool {
