@@ -27,4 +27,5 @@ enum Theme {
     static let gitAdd = Color.rgb(r: 0x44, g: 0x9d, b: 0xab)
     static let gitChange = Color.rgb(r: 0x61, g: 0x83, b: 0xbb)
     static let gitDelete = Color.rgb(r: 0x91, g: 0x4c, b: 0x54)
+    static let visualBg = Color.rgb(r: 0x36, g: 0x4a, b: 0x82)
 }

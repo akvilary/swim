@@ -598,18 +598,20 @@ class EditorWindow: Window {
     }
 
     private func drawVisualHighlight(lnWidth: Int) {
-        let (startLine, _, endLine, _) = visualRange()
+        let (startLine, startCol, endLine, endCol) = visualRange()
         for lineNum in startLine...endLine {
             let screenRow = lineNum - scrollY
             guard screenRow >= 0 && screenRow < height else { continue }
             guard let buf = buffer else { continue }
-                let lineEnd = max(0, buf.lineCharLength(line: lineNum) - 1)
-            for c in 0...lineEnd {
+            let lineEnd = max(0, buf.lineCharLength(line: lineNum) - 1)
+            let colStart = (lineNum == startLine) ? startCol : 0
+            let colEnd = (lineNum == endLine) ? min(endCol, lineEnd) : lineEnd
+            for c in colStart...colEnd {
                 let screenCol = c - scrollX
                 guard screenCol >= 0 && screenCol + lnWidth < width else { continue }
                 let absCol = lnWidth + screenCol
                 var cell = getCell(screenRow, absCol)
-                cell.bg = Theme.bgHighlight
+                cell.bg = Theme.visualBg
                 setCell(screenRow, absCol, cell)
             }
         }
