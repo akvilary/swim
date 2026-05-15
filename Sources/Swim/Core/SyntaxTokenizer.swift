@@ -95,6 +95,10 @@ struct SyntaxTokenizer {
         "try", "type", "typedef", "var", "void", "while", "with", "yield",
     ]
 
+    static func isMarkdown(_ ext: String) -> Bool {
+        ext == "md" || ext == "markdown" || ext == "mdx"
+    }
+
     static func keywords(for ext: String) -> Set<String> {
         switch ext {
         case "swift": return swiftKeywords
@@ -213,5 +217,213 @@ struct SyntaxTokenizer {
             }
         }
         return allTokens
+    }
+
+    static func tokenizeMarkdownVisible(buffer: PieceTable, scrollY: Int, height: Int) -> [SemanticToken] {
+        var allTokens = [SemanticToken]()
+        var inCodeBlock = false
+
+        let startLine = max(0, scrollY - 500)
+        for lineNum in startLine..<scrollY {
+            guard lineNum < buffer.lineCount else { break }
+            let line = buffer.getLine(lineNum)
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                inCodeBlock = !inCodeBlock
+            }
+        }
+
+        for row in 0..<height {
+            let lineNum = scrollY + row
+            guard lineNum < buffer.lineCount else { break }
+            let line = buffer.getLine(lineNum)
+            let tokens = tokenizeMarkdownLine(line, lineNum: lineNum, inCodeBlock: &inCodeBlock)
+            for t in tokens {
+                allTokens.append(SemanticToken(line: t.line, startChar: t.startChar, length: t.length, type: t.type, modifiers: t.modifiers))
+            }
+        }
+        return allTokens
+    }
+
+    private static func tokenizeMarkdownLine(_ line: String, lineNum: Int, inCodeBlock: inout Bool) -> [SyntaxToken] {
+        var tokens = [SyntaxToken]()
+        let chars = Array(line)
+        let len = chars.count
+        var i = 0
+
+        while i < len && chars[i] == " " { i += 1 }
+
+        if inCodeBlock {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                inCodeBlock = false
+                tokens.append(SyntaxToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
+                return tokens
+            }
+            tokens.append(SyntaxToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
+            return tokens
+        }
+
+        if i < len && chars[i] == "#" {
+            var end = i
+            while end < len && chars[end] == "#" { end += 1 }
+            tokens.append(SyntaxToken(line: lineNum, startChar: i, length: end - i, type: "keyword", modifiers: 0))
+            if end < len && chars[end] == " " {
+                tokens.append(SyntaxToken(line: lineNum, startChar: end + 1, length: len - end - 1, type: "type", modifiers: 0))
+            }
+            return tokens
+        }
+
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+            inCodeBlock = true
+            tokens.append(SyntaxToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
+            return tokens
+        }
+
+        if isHorizontalRule(chars) {
+            tokens.append(SyntaxToken(line: lineNum, startChar: 0, length: len, type: "comment", modifiers: 0))
+            return tokens
+        }
+
+        if i < len && chars[i] == ">" {
+            var end = i + 1
+            if end < len && chars[end] == " " { end += 1 }
+            tokens.append(SyntaxToken(line: lineNum, startChar: i, length: end - i, type: "comment", modifiers: 0))
+            tokens.append(SyntaxToken(line: lineNum, startChar: end, length: len - end, type: "comment", modifiers: 0))
+            return tokens
+        }
+
+        let listStart = i
+        if i < len && (chars[i] == "-" || chars[i] == "*" || chars[i] == "+") {
+                let next = i + 1
+            if next < len && chars[next] == " " {
+                tokens.append(SyntaxToken(line: lineNum, startChar: i, length: 1, type: "number", modifiers: 0))
+                i = next + 1
+            }
+        } else if i < len && chars[i] >= "0" && chars[i] <= "9" {
+            var numEnd = i + 1
+            while numEnd < len && chars[numEnd] >= "0" && chars[numEnd] <= "9" { numEnd += 1 }
+            if numEnd < len && (chars[numEnd] == "." || chars[numEnd] == ")") {
+                let afterDelim = numEnd + 1
+                if afterDelim < len && chars[afterDelim] == " " {
+                    tokens.append(SyntaxToken(line: lineNum, startChar: i, length: afterDelim - i + 1, type: "number", modifiers: 0))
+                    i = afterDelim + 1
+                }
+            }
+        }
+
+        if i > listStart || i > 0 {
+            // already handled list prefix
+        }
+
+        i = 0
+        while i < len {
+            if chars[i] == "`" {
+                var count = 0
+                let start = i
+                while i < len && chars[i] == "`" { i += 1; count += 1 }
+                while i < len {
+                    if chars[i] == "`" {
+                        var c = 0
+                        while i < len && chars[i] == "`" && c < count { i += 1; c += 1 }
+                        if c == count { break }
+                    } else {
+                        i += 1
+                    }
+                }
+                let end = min(i, len)
+                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: end - start, type: "string", modifiers: 0))
+                continue
+            }
+
+            if i + 1 < len && chars[i] == "*" && chars[i + 1] == "*" {
+                let start = i; i += 2
+                while i + 1 < len && !(chars[i] == "*" && chars[i + 1] == "*") { i += 1 }
+                if i + 1 < len { i += 2 }
+                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "keyword", modifiers: 0))
+                continue
+            }
+
+            if i + 1 < len && chars[i] == "_" && chars[i + 1] == "_" {
+                let start = i; i += 2
+                while i + 1 < len && !(chars[i] == "_" && chars[i + 1] == "_") { i += 1 }
+                if i + 1 < len { i += 2 }
+                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "keyword", modifiers: 0))
+                continue
+            }
+
+            if chars[i] == "*" && (i == 0 || chars[i - 1] == " ") {
+                let start = i; i += 1
+                while i < len && chars[i] != "*" && chars[i] != "\n" { i += 1 }
+                if i < len && chars[i] == "*" { i += 1 }
+                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "variable", modifiers: 0))
+                continue
+            }
+
+            if chars[i] == "_" && (i == 0 || chars[i - 1] == " ") {
+                let start = i; i += 1
+                while i < len && chars[i] != "_" && chars[i] != "\n" { i += 1 }
+                if i < len && chars[i] == "_" { i += 1 }
+                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "variable", modifiers: 0))
+                continue
+            }
+
+            if chars[i] == "[" {
+                let start = i; i += 1
+                while i < len && chars[i] != "]" { i += 1 }
+                if i < len { i += 1 }
+                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "decorator", modifiers: 0))
+                if i < len && chars[i] == "(" {
+                    let urlStart = i; i += 1
+                    while i < len && chars[i] != ")" { i += 1 }
+                    if i < len { i += 1 }
+                    tokens.append(SyntaxToken(line: lineNum, startChar: urlStart, length: i - urlStart, type: "string", modifiers: 0))
+                }
+                continue
+            }
+
+            if chars[i] == "!" && i + 1 < len && chars[i + 1] == "[" {
+                let start = i; i += 2
+                while i < len && chars[i] != "]" { i += 1 }
+                if i < len { i += 1 }
+                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "decorator", modifiers: 0))
+                if i < len && chars[i] == "(" {
+                    let urlStart = i; i += 1
+                    while i < len && chars[i] != ")" { i += 1 }
+                    if i < len { i += 1 }
+                    tokens.append(SyntaxToken(line: lineNum, startChar: urlStart, length: i - urlStart, type: "string", modifiers: 0))
+                }
+                continue
+            }
+
+            if chars[i] == "<" && i + 1 < len && (chars[i + 1] == "h" || chars[i + 1] == "H" || chars[i + 1] == "a" || chars[i + 1] == "A") {
+                let start = i
+                while i < len && chars[i] != ">" { i += 1 }
+                if i < len { i += 1 }
+                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "string", modifiers: 0))
+                continue
+            }
+
+            i += 1
+        }
+
+        return tokens
+    }
+
+    private static func isHorizontalRule(_ chars: [Character]) -> Bool {
+        var i = 0
+        let len = chars.count
+        while i < len && chars[i] == " " { i += 1 }
+        guard i < len else { return false }
+        let marker = chars[i]
+        guard marker == "-" || marker == "*" || marker == "_" else { return false }
+        var count = 0
+        while i < len {
+            if chars[i] == marker { count += 1 }
+            else if chars[i] != " " { return false }
+            i += 1
+        }
+        return count >= 3
     }
 }

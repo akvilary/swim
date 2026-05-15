@@ -476,7 +476,13 @@ class EditorWindow: Window {
         let useBuiltinTokens = semanticTokens.isEmpty && buf.lineCount < 50000
         let fileExt = (filePath as NSString?)?.pathExtension ?? ""
         let isJSON = fileExt == "json"
+        let isMD = SyntaxTokenizer.isMarkdown(fileExt)
         var builtinTokensCache: [Int: [SyntaxToken]] = [:]
+
+        var mdTokens: [SemanticToken]?
+        if useBuiltinTokens && isMD {
+            mdTokens = SyntaxTokenizer.tokenizeMarkdownVisible(buffer: buf, scrollY: scrollY, height: height)
+        }
 
         for row in 0..<height {
             let lineNum = scrollY + row
@@ -529,6 +535,8 @@ class EditorWindow: Window {
             let tokens: [SemanticToken]
             if !useBuiltinTokens {
                 tokens = semanticTokensFor(line: lineNum)
+            } else if let md = mdTokens {
+                tokens = md.filter { $0.line == lineNum }
             } else {
                 if builtinTokensCache[lineNum] == nil {
                     builtinTokensCache[lineNum] = SyntaxTokenizer.tokenize(line: line, lineNum: lineNum, keywords: SyntaxTokenizer.keywords(for: fileExt))
