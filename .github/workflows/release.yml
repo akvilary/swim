@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-macos:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -26,7 +26,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: swim-macos
-          path: dist/swim-${{ github.ref_name }}-macos-universal.tar.gz
+          path: |
+            dist/swim-${{ github.ref_name }}-macos-universal.tar.gz
+            dist/swim-${{ github.ref_name }}-macos-universal.tar.gz.sha256
 
   release:
     needs: [build-macos]
