@@ -19,6 +19,41 @@
 - **Тема Tokyo Night Storm**
 - **Строка состояния** — режим, имя файла, тип, кодировка, позиция курсора
 
+## Install
+
+**macOS (Homebrew):**
+
+```bash
+brew install akvilary/swim/swim
+```
+
+**macOS / Linux (curl):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/akvilary/swim/main/install.sh | bash
+```
+
+Specify a version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/akvilary/swim/main/install.sh | bash -s v0.0.1
+```
+
+Custom install path:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/akvilary/swim/main/install.sh | DESTDIR=~/.local/bin bash
+```
+
+**Build from source** (requires Swift 6.0+):
+
+```bash
+git clone https://github.com/akvilary/swim.git
+cd swim
+swift build -c release
+cp .build/release/Swim /usr/local/bin/swim
+```
+
 ## Установка
 
 ### Требования
