@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build -c release --arch arm64 --arch x86_64
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp .build/apple/Products/Release/Swim dist/swim
+          chmod +x dist/swim
+          tar -czf dist/swim-${{ github.ref_name }}-macos-universal.tar.gz -C dist swim
+          shasum -a 256 dist/swim-${{ github.ref_name }}-macos-universal.tar.gz > dist/swim-${{ github.ref_name }}-macos-universal.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: swim-macos
+          path: dist/swim-${{ github.ref_name }}-macos-universal.tar.gz
+
+  release:
+    needs: [build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: swim-macos
+          path: dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          generate_release_notes: true
