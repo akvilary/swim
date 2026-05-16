@@ -413,6 +413,7 @@ class Application {
         case .normal: return "NORMAL"
         case .insert: return "INSERT"
         case .visual: return "VISUAL"
+        case .visualLine: return "VISUAL LINE"
         case .command: return "COMMAND"
         }
     }

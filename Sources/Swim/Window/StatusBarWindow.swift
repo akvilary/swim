@@ -26,6 +26,9 @@ class StatusBarWindow: Window {
         case "VISUAL":
             modeLabel = " VISUAL "
             modeBgColor = Theme.magenta
+        case "VISUAL LINE":
+            modeLabel = " V-LINE "
+            modeBgColor = Theme.magenta
         case "COMMAND":
             modeLabel = " COMMAND "
             modeBgColor = Theme.orange

@@ -4,6 +4,7 @@ enum EditorMode {
     case normal
     case insert
     case visual
+    case visualLine
     case command
 }
 
@@ -74,6 +75,7 @@ class EditorWindow: Window {
         case .normal: return handleNormal(key)
         case .insert: return handleInsert(key)
         case .visual: return handleVisual(key)
+        case .visualLine: return handleVisualLine(key)
         case .command: return handleCommand(key)
         }
     }
@@ -110,6 +112,7 @@ class EditorWindow: Window {
         case .char("u"): undo()
         case .ctrl("r"): redo()
         case .char("v"): mode = .visual; visualStartLine = cursorLine; visualStartCol = cursorCol
+        case .char("V"): mode = .visualLine; visualStartLine = cursorLine
         case .char(":"): mode = .command; commandBuffer = ""
         case .char("/"): mode = .command; commandBuffer = "/"
         case .char("n"): searchNext()
@@ -150,6 +153,19 @@ class EditorWindow: Window {
         case .char("l"), .right: moveCursorRight()
         case .char("y"): yankVisualSelection(); mode = .normal
         case .char("d"): deleteVisualSelection(); mode = .normal
+        default: return false
+        }
+        dirty = true
+        return true
+    }
+
+    private func handleVisualLine(_ key: Key) -> Bool {
+        switch key {
+        case .escape: mode = .normal
+        case .char("j"), .down: moveCursorDown()
+        case .char("k"), .up: moveCursorUp()
+        case .char("y"): yankVisualLineSelection(); mode = .normal
+        case .char("d"): deleteVisualLineSelection(); mode = .normal
         default: return false
         }
         dirty = true
@@ -414,6 +430,36 @@ class EditorWindow: Window {
         return (cursorLine, cursorCol, visualStartLine, visualStartCol)
     }
 
+    private func visualLineRange() -> (startLine: Int, endLine: Int) {
+        if visualStartLine <= cursorLine {
+            return (visualStartLine, cursorLine)
+        }
+        return (cursorLine, visualStartLine)
+    }
+
+    private func yankVisualLineSelection() {
+        guard let buf = buffer else { return }
+        let (startLine, endLine) = visualLineRange()
+        var text = ""
+        for line in startLine...endLine {
+            text += buf.getLine(line) + "\n"
+        }
+        yank(text)
+    }
+
+    private func deleteVisualLineSelection() {
+        guard let buf = buffer else { return }
+        let (startLine, endLine) = visualLineRange()
+        let start = buf.lineStart(line: startLine)
+        let end = buf.lineEnd(line: endLine)
+        let len = end - start
+        yank(buf.getText(range: start..<min(end, buf.totalLength)))
+        buf.delete(at: start, length: len)
+        cursorLine = min(startLine, max(0, buf.lineCount - 1))
+        cursorCol = 0
+        modified = true
+    }
+
     private func searchNext() {
         guard let buf = buffer, !searchQuery.isEmpty else { return }
         let byteOff = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol) + 1
@@ -564,6 +610,7 @@ class EditorWindow: Window {
         }
 
         if mode == .visual { drawVisualHighlight(lnWidth: lnWidth) }
+        if mode == .visualLine { drawVisualLineHighlight(lnWidth: lnWidth) }
         drawCursor(lnWidth: lnWidth)
     }
 
@@ -618,6 +665,19 @@ class EditorWindow: Window {
                 var cell = getCell(screenRow, absCol)
                 cell.bg = Theme.visualBg
                 setCell(screenRow, absCol, cell)
+            }
+        }
+    }
+
+    private func drawVisualLineHighlight(lnWidth: Int) {
+        let (startLine, endLine) = visualLineRange()
+        for lineNum in startLine...endLine {
+            let screenRow = lineNum - scrollY
+            guard screenRow >= 0 && screenRow < height else { continue }
+            for col in 0..<width {
+                var cell = getCell(screenRow, col)
+                cell.bg = Theme.visualBg
+                setCell(screenRow, col, cell)
             }
         }
     }
