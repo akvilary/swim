@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "target": "aarch64-unknown-linux-gnu",
+  "sdk": "/usr",
+  "toolchain-bin-dir": "/usr/bin",
+  "cc": "aarch64-linux-gnu-gcc",
+  "cxx": "aarch64-linux-gnu-g++",
+  "swiftCompiler": "swiftc"
+}

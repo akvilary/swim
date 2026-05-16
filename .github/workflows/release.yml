@@ -30,16 +30,56 @@ jobs:
             dist/swim-${{ github.ref_name }}-macos-universal.tar.gz
             dist/swim-${{ github.ref_name }}-macos-universal.tar.gz.sha256
 
+  build-linux:
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Swift
+        run: |
+          wget -q https://download.swift.org/swift-6.1-release/ubuntu2404/swift-6.1-RELEASE/swift-6.1-RELEASE-ubuntu24.04.tar.gz
+          tar xf swift-6.1-RELEASE-ubuntu24.04.tar.gz
+          echo "$PWD/swift-6.1-RELEASE-ubuntu24.04/usr/bin" >> $GITHUB_PATH
+
+      - name: Build (native x86_64)
+        if: matrix.arch == 'x86_64'
+        run: swift build -c release
+
+      - name: Build (cross-compile aarch64)
+        if: matrix.arch == 'aarch64'
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          swift build -c release --destination .github/aarch64-linux.json
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp .build/release/Swim dist/swim
+          chmod +x dist/swim
+          tar -czf dist/swim-${{ github.ref_name }}-linux-${{ matrix.arch }}.tar.gz -C dist swim
+          sha256sum dist/swim-${{ github.ref_name }}-linux-${{ matrix.arch }}.tar.gz > dist/swim-${{ github.ref_name }}-linux-${{ matrix.arch }}.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: swim-linux-${{ matrix.arch }}
+          path: |
+            dist/swim-${{ github.ref_name }}-linux-${{ matrix.arch }}.tar.gz
+            dist/swim-${{ github.ref_name }}-linux-${{ matrix.arch }}.tar.gz.sha256
+
   release:
-    needs: [build-macos]
+    needs: [build-macos, build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: swim-macos
           path: dist
+          merge-multiple: true
 
       - name: Create release
         uses: softprops/action-gh-release@v2
