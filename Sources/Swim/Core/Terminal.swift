@@ -38,7 +38,7 @@ final class Terminal {
         #if canImport(Glibc)
         sa.__sigaction_handler = .init(sa_handler: signalHandler)
         #elseif canImport(Darwin)
-        sa.__sigaction_handler = unsafeBitCast(signalHandler, to: sigaction.__Unnamed_union___sigaction_handler.self)
+        sa.__sigaction_u.__sa_handler = signalHandler
         #endif
         sigemptyset(&sa.sa_mask)
         sa.sa_flags = 0
