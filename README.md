@@ -1,23 +1,23 @@
 # Swim
 
-Текстовый редактор для терминала в стиле Vim, написанный на чистом Swift без внешних зависимостей. Работает на macOS и Linux.
+A Vim-like terminal text editor written in pure Swift with zero external dependencies. Works on macOS and Linux.
 
 ![Theme: Tokyo Night Storm](https://img.shields.io/badge/theme-Tokyo%20Night%20Storm-blueviolet)
 
-## Возможности
+## Features
 
-- **Модальное редактирование** — режимы Normal, Insert, Visual и Command с привычными хоткеями (`h/j/k/l`, `dd`, `yy`, `p`, `i`, `v`, `:`, `/` и т.д.)
-- **Piece Table** — структура данных для эффективной работы с текстом (как в VS Code)
-- **Подсветка синтаксиса** — три уровня:
-  - Семантические токены через LSP (sourcekit-lsp)
-  - Встроенный токенизатор для Swift, C, C++, Python, Rust, Go, JS/TS
-  - Быстрая подсветка JSON
-- **Проводник файлов** (`Ctrl+E`) — боковая панель с деревом директорий
-- **Git-панель** (`Ctrl+G`) — staged/unstaged файлы, коммиты, diff с цветовой подсветкой
-- **Поиск по проекту** (`Ctrl+F`) — рекурсивный поиск по файлам с группировкой результатов
-- **Полная поддержка UTF-8** — кириллица, CJK, эмодзи
-- **Тема Tokyo Night Storm**
-- **Строка состояния** — режим, имя файла, тип, кодировка, позиция курсора
+- **Modal editing** — Normal, Insert, Visual, and Command modes with familiar Vim keybindings (`h/j/k/l`, `dd`, `yy`, `p`, `i`, `v`, `:`, `/`, etc.)
+- **Piece Table** — efficient text data structure (same as VS Code)
+- **Syntax highlighting** — three levels:
+  - Semantic tokens via LSP (sourcekit-lsp)
+  - Built-in tokenizer for Swift, C, C++, Python, Rust, Go, JS/TS
+  - Fast JSON highlighting
+- **File explorer** (`Ctrl+E`) — sidebar with directory tree
+- **Git panel** (`Ctrl+G`) — staged/unstaged files, commits, diff with color highlighting
+- **Project search** (`Ctrl+F`) — recursive file search with grouped results
+- **Full UTF-8 support** — Cyrillic, CJK, emoji
+- **Tokyo Night Storm theme**
+- **Status bar** — mode, filename, file type, encoding, cursor position
 
 ## Install
 
@@ -54,88 +54,64 @@ swift build -c release
 cp .build/release/Swim /usr/local/bin/swim
 ```
 
-## Установка
-
-### Требования
-
-- Swift 6.0+
-- macOS 13+ или Linux
-
-### Сборка и установка
+## Usage
 
 ```bash
-git clone https://github.com/akvilary/swim.git
-cd swim
-./build.sh
+swim              # Open empty buffer
+swim <file>       # Open file
 ```
 
-Скрипт `build.sh` скомпилирует release-бинарник и скопирует его в `~/.local/bin/swim`. Убедитесь, что `~/.local/bin` есть в `$PATH`.
+### Key bindings
 
-### Ручная сборка
-
-```bash
-swift build -c release
-cp .build/release/Swim ~/.local/bin/swim
-```
-
-## Использование
-
-```bash
-swim              # Новый пустой файл
-swim <файл>       # Открыть файл
-```
-
-### Основные комбинации клавиш
-
-| Клавиша | Режим | Действие |
+| Key | Mode | Action |
 |---|---|---|
-| `i` | Normal | Войти в Insert |
-| `Esc` | Любой | Вернуться в Normal |
-| `v` | Normal | Войти в Visual |
-| `:` | Normal | Командная строка |
-| `/` | Normal | Поиск |
-| `h/j/k/l` | Normal | Навигация |
-| `dd` | Normal | Удалить строку |
-| `yy` | Normal | Копировать строку |
-| `p` | Normal | Вставить |
-| `Ctrl+E` | Normal | Проводник файлов |
-| `Ctrl+G` | Normal | Git-панель |
-| `Ctrl+F` | Normal | Поиск по проекту |
+| `i` | Normal | Enter Insert mode |
+| `Esc` | Any | Return to Normal mode |
+| `v` | Normal | Enter Visual mode |
+| `:` | Normal | Command line |
+| `/` | Normal | Search |
+| `h/j/k/l` | Normal | Navigation |
+| `dd` | Normal | Delete line |
+| `yy` | Normal | Yank line |
+| `p` | Normal | Paste |
+| `Ctrl+E` | Normal | File explorer |
+| `Ctrl+G` | Normal | Git panel |
+| `Ctrl+F` | Normal | Project search |
 
-### Команды
+### Commands
 
-- `:w` — сохранить
-- `:q` — выйти
-- `:wq` — сохранить и выйти
-- `:q!` — выйти без сохранения
-- `:e <путь>` — открыть файл
-- `:%s/старое/новое/g` — замена
+- `:w` — save
+- `:q` — quit
+- `:wq` — save and quit
+- `:q!` — force quit
+- `:e <path>` — open file
+- `:%s/old/new/g` — substitute
 
-## Структура проекта
+## Project structure
 
 ```
 Sources/Swim/
-├── main.swift              # Точка входа
+├── main.swift              # Entry point
 ├── App/
-│   └── Application.swift   # Главный цикл событий, рендеринг, LSP
+│   └── Application.swift   # Main event loop, rendering, LSP
 ├── Core/
-│   ├── Cell.swift           # Ячейки экрана, цвета
-│   ├── Theme.swift          # Палитра Tokyo Night Storm
-│   ├── Terminal.swift       # Низкоуровневый I/O терминала
-│   ├── PieceTable.swift     # Буфер текста
-│   ├── Input.swift          # Парсинг клавиш
-│   └── SyntaxTokenizer.swift # Встроенная подсветка
+│   ├── Cell.swift           # Screen cells, colors
+│   ├── Theme.swift          # Tokyo Night Storm palette
+│   ├── Terminal.swift       # Low-level terminal I/O
+│   ├── PieceTable.swift     # Text buffer
+│   ├── Input.swift          # Key parsing
+│   └── SyntaxTokenizer.swift # Built-in highlighting
 ├── Window/
-│   ├── EditorWindow.swift       # Редактор с модами
-│   ├── FileExplorerWindow.swift  # Проводник файлов
-│   ├── GitPanelWindow.swift      # Git-панель
-│   ├── SearchWindow.swift        # Поиск
-│   └── StatusBarWindow.swift     # Строка состояния
+│   ├── EditorWindow.swift       # Editor with modes
+│   ├── FileExplorerWindow.swift  # File explorer
+│   ├── GitPanelWindow.swift      # Git panel
+│   ├── SearchWindow.swift        # Search
+│   └── StatusBarWindow.swift     # Status bar
 └── LSP/
-    ├── LSPClient.swift      # Клиент sourcekit-lsp
-    └── LSPProtocol.swift    # Типы данных LSP
+    ├── LSPClient.swift      # sourcekit-lsp client
+    └── LSPProtocol.swift    # LSP data types
 ```
 
-## Лицензия
+## License
 
 MIT
