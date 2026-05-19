@@ -42,7 +42,7 @@ jobs:
           echo "$PWD/swift-6.1-RELEASE-ubuntu24.04/usr/bin" >> $GITHUB_PATH
 
       - name: Build
-        run: swift build -c release
+        run: swift build -c release --static-swift-stdlib
 
       - name: Package binary
         run: |
