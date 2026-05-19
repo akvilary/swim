@@ -31,15 +31,10 @@ jobs:
             dist/swim-${{ github.ref_name }}-macos-universal.tar.gz.sha256
 
   build-linux:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    container: swift:6.1-amazonlinux2
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Swift
-        run: |
-          wget -q https://download.swift.org/swift-6.1-release/ubuntu2404/swift-6.1-RELEASE/swift-6.1-RELEASE-ubuntu24.04.tar.gz
-          tar xf swift-6.1-RELEASE-ubuntu24.04.tar.gz
-          echo "$PWD/swift-6.1-RELEASE-ubuntu24.04/usr/bin" >> $GITHUB_PATH
 
       - name: Build
         run: swift build -c release --static-swift-stdlib
