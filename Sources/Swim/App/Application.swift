@@ -492,19 +492,12 @@ class Application {
             running = false
         case "qa":
             running = false
+        case "q":
+            if !editorWindow.modified { running = false }
+        case "q!":
+            running = false
         default:
-            if cmd == "q" || cmd == "q!" {
-                let focused = focusedWindow()
-                if focused !== editorWindow {
-                    if focused === gitPanelWindow { toggleGitPanel() }
-                    else if focused === searchWindow { toggleSearch() }
-                    else if focused === fileExplorerWindow { toggleFileExplorer() }
-                    else if focused === commandWindow { commandWindow.visible = false; recalculateLayout(); markAllDirty() }
-                } else {
-                    if cmd == "q!" { running = false }
-                    else if !editorWindow.modified { running = false }
-                }
-            }
+            break
         }
     }
 
