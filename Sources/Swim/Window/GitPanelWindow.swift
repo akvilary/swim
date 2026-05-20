@@ -260,7 +260,7 @@ class GitPanelWindow: Window {
         case .char("s"): stageOrUnstageSelected()
         case .char("-"): onRunCommand?("git pull", ["pull"])
         case .char("+"): onRunCommand?("git push", ["push"])
-        case .escape: break
+        case .escape: return false
         default: return false
         }
         return true

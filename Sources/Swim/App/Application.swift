@@ -246,6 +246,11 @@ class Application {
                 updateStatusBar()
                 notifyLSPChange()
             }
+        } else if case .escape = key, focused !== editorWindow {
+            if focused === gitPanelWindow { toggleGitPanel() }
+            else if focused === searchWindow { toggleSearch() }
+            else if focused === fileExplorerWindow { toggleFileExplorer() }
+            else if focused === commandWindow { commandWindow.visible = false; recalculateLayout(); markAllDirty() }
         }
     }
 
