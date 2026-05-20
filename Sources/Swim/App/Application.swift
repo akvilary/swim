@@ -17,6 +17,7 @@ class Application {
 
     private var windows: [Window] = []
     private var focusIndex: Int = 0
+    private var prevFocusIndex: Int = 0
     private var running = true
     private var prevScreenCells: [Int: [Int: Cell]] = [:]
     private var lspClient: LSPClient?
@@ -133,6 +134,7 @@ class Application {
         commandWindow.workingDirectory = gitPanelWindow.workingDirectory
         commandWindow.runCommand(label, args: args)
         recalculateLayout()
+        prevFocusIndex = focusIndex
         focusIndex = windows.firstIndex(where: { $0 === commandWindow }) ?? 0
         markAllDirty()
     }
@@ -248,7 +250,10 @@ class Application {
             }
         } else if case .escape = key, focused !== editorWindow {
             focused.visible = false
-            focusIndex = windows.firstIndex(where: { $0 === editorWindow }) ?? 0
+            let restored = windows[prevFocusIndex]
+            focusIndex = (restored.visible && prevFocusIndex != focusIndex)
+                ? prevFocusIndex
+                : windows.firstIndex(where: { $0 === editorWindow }) ?? 0
             recalculateLayout()
             markAllDirty()
         }
@@ -303,6 +308,7 @@ class Application {
 
         let currentIdx = focusable.firstIndex(where: { $0.offset == focusIndex }) ?? 0
         let nextIdx = (currentIdx + 1) % focusable.count
+        prevFocusIndex = focusIndex
         focusIndex = focusable[nextIdx].offset
         markAllDirty()
     }
