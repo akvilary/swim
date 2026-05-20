@@ -22,6 +22,17 @@ class SearchWindow: Window {
     private var flatItems: [SearchItem] = []
     var workingDirectory: String = ""
     private(set) var isSearching: Bool = false
+    private(set) var inputMode: Bool = true
+    private(set) var inputBuffer: String = ""
+    private(set) var inputCursorPos: Int = 0
+
+    func prepareInput(workingDirectory: String) {
+        self.workingDirectory = workingDirectory
+        inputMode = true
+        inputBuffer = ""
+        inputCursorPos = 0
+        dirty = true
+    }
 
     private enum SearchItem {
         case directory(String, Int)
@@ -33,17 +44,32 @@ class SearchWindow: Window {
         clear()
         fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
 
-        let headerText: String
-        if isSearching {
-            headerText = " SEARCH (scanning...) "
+        if inputMode {
+            let prompt = " Search: "
+            drawLine(prompt, row: 0, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)
+            let maxInput = width - prompt.count - 2
+            let displayText = String(inputBuffer.suffix(max(0, maxInput)))
+            drawLine(displayText, row: 0, col: prompt.count, fg: Theme.fg, bg: Theme.bgHighlight)
+            let cursorCol = prompt.count + min(inputCursorPos, maxInput)
+            if cursorCol < width {
+                setCell(0, cursorCol, Cell.colored(" ", fg: Theme.fg, bg: Theme.bgHighlight))
+            }
+            for i in (prompt.count + displayText.count + 1)..<width {
+                setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
+            }
         } else {
-            headerText = " SEARCH (\(results.count) matches) "
-        }
-        for (i, c) in headerText.enumerated() {
-            if i < width { setCell(0, i, Cell.colored(c, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)) }
-        }
-        for i in headerText.count..<width {
-            setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
+            let headerText: String
+            if isSearching {
+                headerText = " SEARCH (scanning...) "
+            } else {
+                headerText = " SEARCH (\(results.count) matches) [\u{1b}] to retype "
+            }
+            for (i, c) in headerText.enumerated() {
+                if i < width { setCell(0, i, Cell.colored(c, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)) }
+            }
+            for i in headerText.count..<width {
+                setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
+            }
         }
 
         buildFlatItems()
@@ -204,6 +230,9 @@ class SearchWindow: Window {
     }
 
     override func handleKey(_ key: Key) -> Bool {
+        if inputMode {
+            return handleInputKey(key)
+        }
         switch key {
         case .char("j"), .down:
             if selectedIndex < flatItems.count - 1 { selectedIndex += 1; ensureVisible(); dirty = true }
@@ -211,7 +240,57 @@ class SearchWindow: Window {
             if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); dirty = true }
         case .enter, .char("l"), .right: handleEnter()
         case .char("h"), .left: handleCollapse()
+        case .escape:
+            inputMode = true
+            inputBuffer = ""
+            inputCursorPos = 0
+            dirty = true
         default: return false
+        }
+        return true
+    }
+
+    private func handleInputKey(_ key: Key) -> Bool {
+        switch key {
+        case .escape:
+            return false
+        case .enter:
+            guard !inputBuffer.isEmpty else { return true }
+            inputMode = false
+            let cwd = workingDirectory.isEmpty
+                ? FileManager.default.currentDirectoryPath
+                : workingDirectory
+            search(query: inputBuffer, in: cwd)
+            dirty = true
+        case .backspace:
+            if inputCursorPos > 0 {
+                let idx = inputBuffer.index(inputBuffer.startIndex, offsetBy: inputCursorPos - 1)
+                inputBuffer.remove(at: idx)
+                inputCursorPos -= 1
+                dirty = true
+            }
+        case .delete:
+            if inputCursorPos < inputBuffer.count {
+                let idx = inputBuffer.index(inputBuffer.startIndex, offsetBy: inputCursorPos)
+                inputBuffer.remove(at: idx)
+                dirty = true
+            }
+        case .left:
+            if inputCursorPos > 0 { inputCursorPos -= 1; dirty = true }
+        case .right:
+            if inputCursorPos < inputBuffer.count { inputCursorPos += 1; dirty = true }
+        case .home:
+            inputCursorPos = 0; dirty = true
+        case .end:
+            inputCursorPos = inputBuffer.count; dirty = true
+        case .char(let c):
+            if c.unicodeScalars.count == 1 {
+                let idx = inputBuffer.index(inputBuffer.startIndex, offsetBy: inputCursorPos)
+                inputBuffer.insert(c, at: idx)
+                inputCursorPos += 1
+                dirty = true
+            }
+        default: break
         }
         return true
     }

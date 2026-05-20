@@ -275,12 +275,7 @@ class Application: WindowDelegate {
             let cwd = windows.gitPanel.workingDirectory.isEmpty
                 ? FileManager.default.currentDirectoryPath
                 : windows.gitPanel.workingDirectory
-
-            if windows.editor.buffer != nil {
-                let _ = windows.editor.buffer!.getAllText()
-                windows.search.search(query: "", in: cwd)
-            }
-
+            windows.search.prepareInput(workingDirectory: cwd)
             let searchQuery = windows.editor.searchQuery
             if !searchQuery.isEmpty {
                 windows.search.search(query: searchQuery, in: cwd)
