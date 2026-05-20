@@ -247,10 +247,10 @@ class Application {
                 notifyLSPChange()
             }
         } else if case .escape = key, focused !== editorWindow {
-            if focused === gitPanelWindow { toggleGitPanel() }
-            else if focused === searchWindow { toggleSearch() }
-            else if focused === fileExplorerWindow { toggleFileExplorer() }
-            else if focused === commandWindow { commandWindow.visible = false; recalculateLayout(); markAllDirty() }
+            focused.visible = false
+            focusIndex = windows.firstIndex(where: { $0 === editorWindow }) ?? 0
+            recalculateLayout()
+            markAllDirty()
         }
     }
 
