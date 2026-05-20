@@ -116,8 +116,7 @@ class CommandWindow: Window {
                 if scrollOffset > 0 { scrollOffset -= 1; dirty = true }
             }
         case .escape:
-            visible = false; isRunning = false; dirty = true
-            onNeedsRender?()
+            return false
         default: return false
         }
         return true
