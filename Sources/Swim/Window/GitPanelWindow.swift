@@ -34,6 +34,53 @@ class GitPanelWindow: Window {
         if showDiff { drawDiff() } else { drawStatus() }
     }
 
+    private struct LayoutItem {
+        let globalIdx: Int
+        let row: Int
+    }
+
+    private func buildLayout() -> (items: [LayoutItem], totalContentRows: Int) {
+        var items: [LayoutItem] = []
+        var row = 1
+        var globalIdx = 0
+
+        if !stagedFiles.isEmpty {
+            row += 1
+            for _ in stagedFiles {
+                items.append(LayoutItem(globalIdx: globalIdx, row: row))
+                globalIdx += 1
+                row += 1
+            }
+        }
+        if !unstagedFiles.isEmpty {
+            row += 1
+            for _ in unstagedFiles {
+                items.append(LayoutItem(globalIdx: globalIdx, row: row))
+                globalIdx += 1
+                row += 1
+            }
+        }
+        if !untrackedFiles.isEmpty {
+            row += 1
+            for _ in untrackedFiles {
+                items.append(LayoutItem(globalIdx: globalIdx, row: row))
+                globalIdx += 1
+                row += 1
+            }
+        }
+        if !recentCommits.isEmpty {
+            row += 1
+            let commitCount = min(recentCommits.count, 5)
+            for _ in 0..<commitCount {
+                items.append(LayoutItem(globalIdx: globalIdx, row: row))
+                globalIdx += 1
+                row += 1
+            }
+        }
+
+        return (items, row)
+    }
+
     private func drawStatus() {
         for (i, c) in "  \(currentBranch) ".enumerated() {
             if i < width {
@@ -44,46 +91,82 @@ class GitPanelWindow: Window {
             setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
         }
 
-        var row = 1
+        let (_, totalContentRows) = buildLayout()
+        let visibleHeight = height - 1
+
+        if totalContentRows - 1 <= visibleHeight {
+            scrollOffset = 0
+        } else {
+            scrollOffset = max(0, min(scrollOffset, totalContentRows - 1 - visibleHeight))
+        }
+
+        var row = 1 - scrollOffset
         var globalIdx = 0
-        if !stagedFiles.isEmpty { row = drawSection("Staged changes", files: stagedFiles, startRow: row, startIdx: &globalIdx) }
-        if !unstagedFiles.isEmpty { row = drawSection("Changes", files: unstagedFiles, startRow: row, startIdx: &globalIdx) }
-        if !untrackedFiles.isEmpty { row = drawSection("Untracked", files: untrackedFiles, startRow: row, startIdx: &globalIdx) }
-        if !recentCommits.isEmpty && row < height - 1 {
+
+        if !stagedFiles.isEmpty {
+            drawSectionHeader("Staged changes", screenRow: row)
             row += 1
-            drawSectionHeader("Recent commits", row: row)
-            row += 1
-            for commit in recentCommits.prefix(5) {
-                guard row < height else { break }
-                let globalSelect = globalIdx == selectedIndex
-                let bg: Color = globalSelect ? Theme.bgHighlight : Theme.bgDark
-                let commitText = " \(commit.hash.prefix(7)) \(commit.message.prefix(width - 14))"
-                drawLine(commitText, row: row, fg: Theme.green1, bg: bg)
+            for file in stagedFiles {
+                if row >= 1 && row < height {
+                    let isSelected = globalIdx == selectedIndex
+                    drawFileRow(file, row: row, selected: isSelected)
+                }
                 globalIdx += 1
                 row += 1
             }
         }
+        if !unstagedFiles.isEmpty {
+            drawSectionHeader("Changes", screenRow: row)
+            row += 1
+            for file in unstagedFiles {
+                if row >= 1 && row < height {
+                    let isSelected = globalIdx == selectedIndex
+                    drawFileRow(file, row: row, selected: isSelected)
+                }
+                globalIdx += 1
+                row += 1
+            }
+        }
+        if !untrackedFiles.isEmpty {
+            drawSectionHeader("Untracked", screenRow: row)
+            row += 1
+            for file in untrackedFiles {
+                if row >= 1 && row < height {
+                    let isSelected = globalIdx == selectedIndex
+                    drawFileRow(file, row: row, selected: isSelected)
+                }
+                globalIdx += 1
+                row += 1
+            }
+        }
+        if !recentCommits.isEmpty && row < height + scrollOffset {
+            drawSectionHeader("Recent commits", screenRow: row)
+            row += 1
+            for commit in recentCommits.prefix(5) {
+                if row >= 1 && row < height {
+                    let isSelected = globalIdx == selectedIndex
+                    let bg: Color = isSelected ? Theme.bgHighlight : Theme.bgDark
+                    let commitText = " \(commit.hash.prefix(7)) \(commit.message.prefix(width - 14))"
+                    drawLine(commitText, row: row, fg: Theme.green1, bg: bg)
+                }
+                globalIdx += 1
+                row += 1
+            }
+        }
+
+        if stagedFiles.isEmpty && unstagedFiles.isEmpty && untrackedFiles.isEmpty && recentCommits.isEmpty {
+            drawLine(" No changes", row: max(1, row), fg: Theme.comment)
+        }
     }
 
-    private func drawSection(_ title: String, files: [GitFileStatus], startRow: Int, startIdx: inout Int) -> Int {
-        var row = startRow
-        guard row < height else { return row }
-        drawSectionHeader(title, row: row)
-        row += 1
-        for file in files {
-            guard row < height else { break }
-            let isSelected = startIdx == selectedIndex
-            let bg: Color = isSelected ? Theme.bgHighlight : Theme.bgDark
-            let statusColor = statusColorFor(file.status)
-            let statusText = " \(file.status) "
-            drawLine(statusText, row: row, col: 0, fg: statusColor, bg: bg, bold: true)
-            let nameStart = statusText.count
-            let name = file.filePath.prefix(width - nameStart)
-            drawLine(String(name), row: row, col: nameStart, fg: isSelected ? Theme.fg : Theme.fgDark, bg: bg)
-            startIdx += 1
-            row += 1
-        }
-        return row
+    private func drawFileRow(_ file: GitFileStatus, row: Int, selected: Bool) {
+        let bg: Color = selected ? Theme.bgHighlight : Theme.bgDark
+        let statusColor = statusColorFor(file.status)
+        let statusText = " \(file.status) "
+        drawLine(statusText, row: row, col: 0, fg: statusColor, bg: bg, bold: true)
+        let nameStart = statusText.count
+        let name = file.filePath.prefix(width - nameStart)
+        drawLine(String(name), row: row, col: nameStart, fg: selected ? Theme.fg : Theme.fgDark, bg: bg)
     }
 
     private func drawDiff() {
@@ -103,11 +186,13 @@ class GitPanelWindow: Window {
         }
     }
 
-    private func drawSectionHeader(_ text: String, row: Int) {
-        drawLine(" \(text)", row: row, fg: Theme.blue, bold: true)
+    private func drawSectionHeader(_ text: String, screenRow: Int) {
+        guard screenRow >= 1 && screenRow < height else { return }
+        drawLine(" \(text)", row: screenRow, fg: Theme.blue, bold: true)
     }
 
     private func drawLine(_ text: String, row: Int, col: Int = 0, fg: Color = Theme.fgDark, bg: Color = Theme.bgDark, bold: Bool = false) {
+        guard row >= 0 && row < height else { return }
         for (i, c) in text.enumerated() {
             if col + i < width { setCell(row, col + i, Cell.colored(c, fg: fg, bg: bg, bold: bold)) }
         }
@@ -124,6 +209,22 @@ class GitPanelWindow: Window {
         }
     }
 
+    private enum FileSection {
+        case staged, unstaged, untracked, commit
+    }
+
+    private func selectedFileSection() -> (section: FileSection, index: Int)? {
+        var idx = selectedIndex
+        if idx < stagedFiles.count { return (.staged, idx) }
+        idx -= stagedFiles.count
+        if idx < unstagedFiles.count { return (.unstaged, idx) }
+        idx -= unstagedFiles.count
+        if idx < untrackedFiles.count { return (.untracked, idx) }
+        idx -= untrackedFiles.count
+        if idx < min(recentCommits.count, 5) { return (.commit, idx) }
+        return nil
+    }
+
     override func handleKey(_ key: Key) -> Bool {
         switch key {
         case .char("j"), .down:
@@ -132,6 +233,7 @@ class GitPanelWindow: Window {
         case .char("k"), .up:
             if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); dirty = true }
         case .enter: showDiffForSelected()
+        case .char("s"): stageOrUnstageSelected()
         case .escape:
             if showDiff { showDiff = false; dirty = true }
         default: return false
@@ -145,15 +247,46 @@ class GitPanelWindow: Window {
 
     private func ensureVisible() {
         let visibleCount = height - 1
-        if selectedIndex < scrollOffset { scrollOffset = selectedIndex }
-        else if selectedIndex >= scrollOffset + visibleCount { scrollOffset = selectedIndex - visibleCount + 1 }
+        let (_, totalContentRows) = buildLayout()
+        if totalContentRows - 1 <= visibleCount {
+            scrollOffset = 0
+            return
+        }
+        if let item = buildLayout().items.first(where: { $0.globalIdx == selectedIndex }) {
+            let selectedRow = item.row
+            if selectedRow < scrollOffset + 1 { scrollOffset = selectedRow - 1 }
+            else if selectedRow >= scrollOffset + height { scrollOffset = selectedRow - height + 1 }
+        }
     }
 
     private func showDiffForSelected() {
-        var idx = selectedIndex
-        if idx < stagedFiles.count { runDiff(for: stagedFiles[idx].filePath, staged: true); return }
-        idx -= stagedFiles.count
-        if idx < unstagedFiles.count { runDiff(for: unstagedFiles[idx].filePath, staged: false) }
+        guard let sel = selectedFileSection() else { return }
+        switch sel.section {
+        case .staged: runDiff(for: stagedFiles[sel.index].filePath, staged: true)
+        case .unstaged: runDiff(for: unstagedFiles[sel.index].filePath, staged: false)
+        case .untracked: runDiff(for: untrackedFiles[sel.index].filePath, staged: false)
+        case .commit: break
+        }
+    }
+
+    private func stageOrUnstageSelected() {
+        guard let sel = selectedFileSection() else { return }
+        switch sel.section {
+        case .staged:
+            let file = stagedFiles[sel.index]
+            runGit(["reset", "HEAD", "--", file.filePath])
+        case .unstaged:
+            let file = unstagedFiles[sel.index]
+            runGit(["add", "--", file.filePath])
+        case .untracked:
+            let file = untrackedFiles[sel.index]
+            runGit(["add", "--", file.filePath])
+        case .commit: break
+        }
+        refresh()
+        if selectedIndex >= totalItemCount() {
+            selectedIndex = max(0, totalItemCount() - 1)
+        }
     }
 
     private func runDiff(for path: String, staged: Bool) {
@@ -196,6 +329,7 @@ class GitPanelWindow: Window {
         }
     }
 
+    @discardableResult
     private func runGit(_ args: [String]) -> String {
         let process = Process()
         let pipe = Pipe()

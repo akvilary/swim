@@ -269,7 +269,7 @@ class Application {
         var gitH = 0
         var searchH = 0
         if gitPanelWindow.visible {
-            gitH = min(15, h / 3)
+            gitH = min(25, h / 2)
         }
         if searchWindow.visible {
             searchH = min(15, h / 3)
