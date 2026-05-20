@@ -13,6 +13,9 @@ struct GitCommit {
     let message: String
 }
 
+private nonisolated(unsafe) var _gitOpResult: [Substring]?
+private nonisolated(unsafe) var _gitOpDone: Bool = false
+
 class GitPanelWindow: Window {
     private(set) var stagedFiles: [GitFileStatus] = []
     private(set) var unstagedFiles: [GitFileStatus] = []
@@ -25,6 +28,16 @@ class GitPanelWindow: Window {
     private var diffLines: [Substring] = []
     private var diffScrollOffset: Int = 0
     private var showDiff: Bool = false
+    private var showOutput: Bool = false
+    private var outputTitle: String = ""
+    private var outputLines: [Substring] = []
+    private var outputScrollOffset: Int = 0
+    private(set) var isRunningGitOp: Bool = false
+    var spinnerFrame: Int = 0
+
+    var onNeedsRender: (() -> Void)?
+
+    private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     var workingDirectory: String = "" {
         didSet { refresh() }
@@ -33,7 +46,9 @@ class GitPanelWindow: Window {
     override func update() {
         clear()
         fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
-        if showDiff { drawDiff() } else { drawStatus() }
+        if showDiff { drawDiff() }
+        else if showOutput { drawOutput() }
+        else { drawStatus() }
     }
 
     private struct LayoutItem {
@@ -84,12 +99,13 @@ class GitPanelWindow: Window {
     }
 
     private func drawStatus() {
-        for (i, c) in "  \(currentBranch) ".enumerated() {
+        let headerText = "  \(currentBranch) "
+        for (i, c) in headerText.enumerated() {
             if i < width {
                 setCell(0, i, Cell.colored(c, fg: Theme.orange, bg: Theme.bgHighlight, bold: true))
             }
         }
-        for i in currentBranch.count + 3..<width {
+        for i in headerText.count..<width {
             setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
         }
 
@@ -191,6 +207,40 @@ class GitPanelWindow: Window {
         }
     }
 
+    private func drawOutput() {
+        if isRunningGitOp {
+            let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
+            let headerText = " \(spinner) \(outputTitle) "
+            for (i, c) in headerText.enumerated() {
+                if i < width { setCell(0, i, Cell.colored(c, fg: Theme.blue, bg: Theme.bgHighlight, bold: true)) }
+            }
+            for i in headerText.count..<width {
+                setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
+            }
+            let msg = "Running \(outputTitle)..."
+            let midRow = height / 2
+            let startCol = max(0, (width - msg.count) / 2)
+            drawLine(String(spinner), row: midRow, col: startCol, fg: Theme.blue, bold: true)
+            drawLine(" Running \(outputTitle)...", row: midRow, col: startCol + 1, fg: Theme.fgDark)
+        } else {
+            let headerText = " \(outputTitle) — done (Esc to close) "
+            for (i, c) in headerText.enumerated() {
+                if i < width { setCell(0, i, Cell.colored(c, fg: Theme.green, bg: Theme.bgHighlight, bold: true)) }
+            }
+            for i in headerText.count..<width {
+                setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
+            }
+            let visibleLines = height - 1
+            for i in 0..<visibleLines {
+                let lineIdx = outputScrollOffset + i
+                guard lineIdx < outputLines.count else { break }
+                let line = outputLines[lineIdx]
+                let fg: Color = line.hasPrefix("fatal") || line.hasPrefix("error") ? Theme.red : Theme.fgDark
+                drawLine(String(line.prefix(width)), row: i + 1, fg: fg)
+            }
+        }
+    }
+
     private func drawSectionHeader(_ text: String, screenRow: Int) {
         guard screenRow >= 1 && screenRow < height else { return }
         drawLine(" \(text)", row: screenRow, fg: Theme.blue, bold: true)
@@ -247,6 +297,26 @@ class GitPanelWindow: Window {
             return true
         }
 
+        if showOutput {
+            switch key {
+            case .char("j"), .down:
+                if !isRunningGitOp {
+                    let visibleLines = height - 1
+                    if outputScrollOffset + visibleLines < outputLines.count {
+                        outputScrollOffset += 1; dirty = true
+                    }
+                }
+            case .char("k"), .up:
+                if !isRunningGitOp {
+                    if outputScrollOffset > 0 { outputScrollOffset -= 1; dirty = true }
+                }
+            case .escape:
+                showOutput = false; isRunningGitOp = false; dirty = true
+            default: return false
+            }
+            return true
+        }
+
         switch key {
         case .char("j"), .down:
             let total = totalItemCount()
@@ -255,6 +325,8 @@ class GitPanelWindow: Window {
             if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); dirty = true }
         case .enter: showDiffForSelected()
         case .char("s"): stageOrUnstageSelected()
+        case .char("-"): gitOperation("git pull", args: ["pull"])
+        case .char("+"): gitOperation("git push", args: ["push"])
         case .escape: break
         default: return false
         }
@@ -318,6 +390,39 @@ class GitPanelWindow: Window {
         dirty = true
     }
 
+    private func gitOperation(_ label: String, args: [String]) {
+        outputTitle = label
+        outputLines = []
+        outputScrollOffset = 0
+        isRunningGitOp = true
+        _gitOpResult = nil
+        _gitOpDone = false
+        showOutput = true
+        dirty = true
+
+        let workDir = workingDirectory
+        Thread {
+            let stdout = Self.runGitStatic(args, workDir: workDir)
+            let stderr = Self.runGitErrStatic(args, workDir: workDir)
+            let combined = stdout + stderr
+            _gitOpResult = combined.split(separator: "\n", omittingEmptySubsequences: false)
+            _gitOpDone = true
+        }.start()
+    }
+
+    func pollGitOp() {
+        guard _gitOpDone else { return }
+        _gitOpDone = false
+        if let lines = _gitOpResult {
+            outputLines = lines
+            _gitOpResult = nil
+        }
+        isRunningGitOp = false
+        dirty = true
+        refresh()
+        onNeedsRender?()
+    }
+
     func refresh() {
         guard !workingDirectory.isEmpty else { return }
         currentBranch = runGit(["rev-parse", "--abbrev-ref", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -353,17 +458,38 @@ class GitPanelWindow: Window {
 
     @discardableResult
     private func runGit(_ args: [String]) -> String {
+        Self.runGitStatic(args, workDir: workingDirectory)
+    }
+
+    private static func runGitStatic(_ args: [String], workDir: String) -> String {
         let process = Process()
         let pipe = Pipe()
         let errPipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = args
-        if !workingDirectory.isEmpty { process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory) }
+        if !workDir.isEmpty { process.currentDirectoryURL = URL(fileURLWithPath: workDir) }
         process.standardOutput = pipe
         process.standardError = errPipe
         do {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return String(data: data, encoding: .utf8) ?? ""
+        } catch { return "" }
+    }
+
+    private static func runGitErrStatic(_ args: [String], workDir: String) -> String {
+        let process = Process()
+        let pipe = Pipe()
+        let errPipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = args
+        if !workDir.isEmpty { process.currentDirectoryURL = URL(fileURLWithPath: workDir) }
+        process.standardOutput = pipe
+        process.standardError = errPipe
+        do {
+            try process.run()
+            let data = errPipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             return String(data: data, encoding: .utf8) ?? ""
         } catch { return "" }

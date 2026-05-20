@@ -29,6 +29,11 @@ class Application {
         gitPanelWindow = GitPanelWindow()
         searchWindow = SearchWindow()
 
+        gitPanelWindow.onNeedsRender = { [weak self] in
+            self?.updateAllWindows()
+            self?.render()
+        }
+
         windows = [editorWindow, statusBarWindow, fileExplorerWindow, gitPanelWindow, searchWindow]
 
         editorWindow.onCommand = { [weak self] cmd in
@@ -77,6 +82,8 @@ class Application {
 
         while running {
             pollLSP()
+            gitPanelWindow.pollGitOp()
+            tickGitSpinner()
             if terminal.bytesAvailable() {
                 if let key = Key.parse(from: terminal) {
                     handleGlobalKey(key)
@@ -99,6 +106,19 @@ class Application {
             updateAllWindows()
             render()
         }
+    }
+
+    private var lastSpinnerTick: TimeInterval = 0
+
+    private func tickGitSpinner() {
+        guard gitPanelWindow.isRunningGitOp else { return }
+        let now = Date().timeIntervalSince1970
+        guard now - lastSpinnerTick >= 0.1 else { return }
+        lastSpinnerTick = now
+        gitPanelWindow.spinnerFrame &+= 1
+        gitPanelWindow.dirty = true
+        updateAllWindows()
+        render()
     }
 
     private func setupLSP(rootPath: String) {
