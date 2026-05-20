@@ -22,6 +22,8 @@ class GitPanelWindow: Window {
     private var scrollOffset: Int = 0
     private var currentBranch: String = ""
     private var diffContent: String = ""
+    private var diffLines: [Substring] = []
+    private var diffScrollOffset: Int = 0
     private var showDiff: Bool = false
 
     var workingDirectory: String = "" {
@@ -174,15 +176,18 @@ class GitPanelWindow: Window {
         for (i, c) in headerText.enumerated() {
             if i < width { setCell(0, i, Cell.colored(c, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)) }
         }
-        let lines = diffContent.split(separator: "\n", omittingEmptySubsequences: false)
-        for (row, line) in lines.enumerated() {
-            guard row + 1 < height else { break }
+        let visibleLines = height - 1
+        for i in 0..<visibleLines {
+            let lineIdx = diffScrollOffset + i
+            guard lineIdx < diffLines.count else { break }
+            let line = diffLines[lineIdx]
+            let row = i + 1
             let fg: Color
             if line.hasPrefix("+") { fg = Theme.green }
             else if line.hasPrefix("-") { fg = Theme.red }
             else if line.hasPrefix("@@") { fg = Theme.cyan }
             else { fg = Theme.fgDark }
-            drawLine(String(line.prefix(width)), row: row + 1, fg: fg)
+            drawLine(String(line.prefix(width)), row: row, fg: fg)
         }
     }
 
@@ -226,6 +231,22 @@ class GitPanelWindow: Window {
     }
 
     override func handleKey(_ key: Key) -> Bool {
+        if showDiff {
+            switch key {
+            case .char("j"), .down:
+                let visibleLines = height - 1
+                if diffScrollOffset + visibleLines < diffLines.count {
+                    diffScrollOffset += 1; dirty = true
+                }
+            case .char("k"), .up:
+                if diffScrollOffset > 0 { diffScrollOffset -= 1; dirty = true }
+            case .escape:
+                showDiff = false; dirty = true
+            default: return false
+            }
+            return true
+        }
+
         switch key {
         case .char("j"), .down:
             let total = totalItemCount()
@@ -234,8 +255,7 @@ class GitPanelWindow: Window {
             if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); dirty = true }
         case .enter: showDiffForSelected()
         case .char("s"): stageOrUnstageSelected()
-        case .escape:
-            if showDiff { showDiff = false; dirty = true }
+        case .escape: break
         default: return false
         }
         return true
@@ -292,6 +312,8 @@ class GitPanelWindow: Window {
     private func runDiff(for path: String, staged: Bool) {
         let args = staged ? ["diff", "--cached", "--", path] : ["diff", "--", path]
         diffContent = runGit(args)
+        diffLines = diffContent.split(separator: "\n", omittingEmptySubsequences: false)
+        diffScrollOffset = 0
         showDiff = true
         dirty = true
     }

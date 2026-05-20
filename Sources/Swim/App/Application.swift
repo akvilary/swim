@@ -159,6 +159,13 @@ class Application {
     }
 
     private func handleGlobalKey(_ key: Key) {
+        if editorWindow.mode == .command {
+            if editorWindow.handleKey(key) {
+                updateStatusBar()
+            }
+            return
+        }
+
         switch key {
         case .ctrl("e"):
             toggleFileExplorer()
@@ -181,6 +188,20 @@ class Application {
                 cycleFocus()
                 return
             }
+        }
+
+        if case .char(":") = key {
+            let focused = focusedWindow()
+            if focused !== editorWindow {
+                focusIndex = windows.firstIndex(where: { $0 === editorWindow }) ?? 0
+                updateFocusStates()
+                markAllDirty()
+            }
+            editorWindow.mode = .command
+            editorWindow.commandBuffer = ""
+            editorWindow.dirty = true
+            updateStatusBar()
+            return
         }
 
         let focused = focusedWindow()
@@ -421,14 +442,24 @@ class Application {
     private func handleEditorCommand(_ cmd: String) {
         switch cmd {
         case "quit":
-            if editorWindow.modified {
-                return
-            }
+            if editorWindow.modified { return }
             running = false
         case "forcequit":
             running = false
+        case "qa":
+            running = false
         default:
-            break
+            if cmd == "q" || cmd == "q!" {
+                let focused = focusedWindow()
+                if focused !== editorWindow {
+                    if focused === gitPanelWindow { toggleGitPanel() }
+                    else if focused === searchWindow { toggleSearch() }
+                    else if focused === fileExplorerWindow { toggleFileExplorer() }
+                } else {
+                    if cmd == "q!" { running = false }
+                    else if !editorWindow.modified { running = false }
+                }
+            }
         }
     }
 
