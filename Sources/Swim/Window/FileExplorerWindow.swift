@@ -15,7 +15,6 @@ class FileExplorerWindow: Window {
     private(set) var selectedIndex: Int = 0
     private var scrollOffset: Int = 0
     var currentDirectory: String = ""
-    var onFileSelect: ((String) -> Void)?
 
     override func update() {
         clear()
@@ -182,7 +181,7 @@ class FileExplorerWindow: Window {
         guard selectedIndex < flatEntries.count else { return }
         let (entry, _) = flatEntries[selectedIndex]
         if entry.isDirectory { toggleExpand(at: selectedIndex) }
-        else { onFileSelect?(entry.path) }
+        else { delegate?.openFile(entry.path) }
     }
 
     private func collapseCurrent() {

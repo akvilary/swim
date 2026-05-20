@@ -6,7 +6,7 @@
 @preconcurrency
 import Foundation
 
-class Application {
+class Application: WindowDelegate {
     private let terminal = Terminal.shared
     private var editorWindow: EditorWindow!
     private var statusBarWindow: StatusBarWindow!
@@ -19,12 +19,9 @@ class Application {
     private var focusIndex: Int = 0
     private var prevFocusIndex: Int = 0
     private var running = true
-    private var prevScreenCells: [Cell?] = []
-    private var prevScreenW: Int = 0
-    private var prevScreenH: Int = 0
     private var lspClient: LSPClient?
     private var lspVersion: Int = 0
-    private var needsFullRedraw = true
+    private lazy var renderer = Renderer(terminal: terminal)
 
     init() {
         editorWindow = EditorWindow()
@@ -34,29 +31,13 @@ class Application {
         searchWindow = SearchWindow()
         commandWindow = CommandWindow()
 
-        gitPanelWindow.onRunCommand = { [weak self] label, args in
-            self?.runGitCommand(label: label, args: args)
-        }
-
-        commandWindow.onNeedsRender = { [weak self] in
-            self?.recalculateLayout()
-            self?.updateAllWindows()
-            self?.render()
-        }
+        gitPanelWindow.delegate = self
+        commandWindow.delegate = self
+        editorWindow.delegate = self
+        fileExplorerWindow.delegate = self
+        searchWindow.delegate = self
 
         windows = [editorWindow, statusBarWindow, fileExplorerWindow, gitPanelWindow, searchWindow, commandWindow]
-
-        editorWindow.onCommand = { [weak self] cmd in
-            self?.handleEditorCommand(cmd)
-        }
-
-        fileExplorerWindow.onFileSelect = { [weak self] path in
-            self?.openFileInEditor(path)
-        }
-
-        searchWindow.onResultSelect = { [weak self] path, line in
-            self?.openFileAtLine(path, line: line)
-        }
     }
 
     func run(filePath: String? = nil) {
@@ -95,10 +76,12 @@ class Application {
         while running {
             pollLSP()
             commandWindow.pollResult()
-            tickCommandSpinner()
+            searchWindow.pollSearch()
+            gitPanelWindow.pollRefresh()
+            tickSpinners()
             if terminal.hasResizeEvent {
                 terminal.consumeResizeEvent()
-                needsFullRedraw = true
+                renderer.needsFullRedraw = true
                 recalculateLayout()
                 markAllDirty()
                 updateAllWindows()
@@ -130,18 +113,31 @@ class Application {
 
     private var lastSpinnerTick: TimeInterval = 0
 
-    private func tickCommandSpinner() {
-        guard commandWindow.visible && commandWindow.isRunning else { return }
+    private func tickSpinners() {
         let now = Date().timeIntervalSince1970
         guard now - lastSpinnerTick >= 0.1 else { return }
-        lastSpinnerTick = now
-        commandWindow.spinnerFrame &+= 1
-        commandWindow.dirty = true
-        updateAllWindows()
-        render()
+        var anyDirty = false
+        if commandWindow.visible && commandWindow.isRunning {
+            commandWindow.spinnerFrame &+= 1
+            commandWindow.dirty = true
+            anyDirty = true
+        }
+        if searchWindow.visible && searchWindow.isSearching {
+            searchWindow.dirty = true
+            anyDirty = true
+        }
+        if gitPanelWindow.visible && gitPanelWindow.isRefreshing {
+            gitPanelWindow.dirty = true
+            anyDirty = true
+        }
+        if anyDirty {
+            lastSpinnerTick = now
+            updateAllWindows()
+            render()
+        }
     }
 
-    private func runGitCommand(label: String, args: [String]) {
+    private func runGitCommandInternal(label: String, args: [String]) {
         commandWindow.workingDirectory = gitPanelWindow.workingDirectory
         commandWindow.runCommand(label, args: args)
         recalculateLayout()
@@ -334,52 +330,21 @@ class Application {
     }
 
     private func recalculateLayout() {
-        let w = max(10, terminal.width)
-        let h = max(5, terminal.height)
-        let statusH = 1
+        let layout = LayoutManager.calculate(
+            terminalWidth: terminal.width,
+            terminalHeight: terminal.height,
+            showExplorer: fileExplorerWindow.visible,
+            showGit: gitPanelWindow.visible,
+            showSearch: searchWindow.visible,
+            showCommand: commandWindow.visible
+        )
 
-        var editorX = 0
-        var editorW = w
-        var explorerW = 0
-
-        if fileExplorerWindow.visible {
-            explorerW = min(28, w / 4)
-            editorX = explorerW
-            editorW = w - explorerW
-        }
-
-        var gitH = 0
-        var searchH = 0
-        var cmdH = 0
-        if gitPanelWindow.visible {
-            gitH = min(25, h / 2)
-        }
-        if searchWindow.visible {
-            searchH = min(15, h / 3)
-        }
-        if commandWindow.visible {
-            cmdH = min(25, h / 2)
-        }
-
-        let editorH = max(1, h - statusH - gitH - searchH - cmdH)
-
-        fileExplorerWindow.resize(x: 0, y: 0, width: explorerW, height: editorH)
-        editorWindow.resize(x: editorX, y: 0, width: editorW, height: editorH)
-
-        var bottomY = editorH
-        if gitPanelWindow.visible {
-            gitPanelWindow.resize(x: 0, y: bottomY, width: w, height: gitH)
-            bottomY += gitH
-        }
-        if searchWindow.visible {
-            searchWindow.resize(x: 0, y: bottomY, width: w, height: searchH)
-            bottomY += searchH
-        }
-        if commandWindow.visible {
-            commandWindow.resize(x: 0, y: bottomY, width: w, height: cmdH)
-        }
-
-        statusBarWindow.resize(x: 0, y: h - statusH, width: w, height: statusH)
+        fileExplorerWindow.resize(x: layout.explorer.x, y: layout.explorer.y, width: layout.explorer.width, height: layout.explorer.height)
+        editorWindow.resize(x: layout.editor.x, y: layout.editor.y, width: layout.editor.width, height: layout.editor.height)
+        gitPanelWindow.resize(x: layout.git.x, y: layout.git.y, width: layout.git.width, height: layout.git.height)
+        searchWindow.resize(x: layout.search.x, y: layout.search.y, width: layout.search.width, height: layout.search.height)
+        commandWindow.resize(x: layout.command.x, y: layout.command.y, width: layout.command.width, height: layout.command.height)
+        statusBarWindow.resize(x: layout.status.x, y: layout.status.y, width: layout.status.width, height: layout.status.height)
     }
 
     private func markAllDirty() {
@@ -403,142 +368,17 @@ class Application {
         }
     }
 
-    private var termFG: Color = .default
-    private var termBG: Color = .default
-    private var termBold: Bool = false
-    private var termDim: Bool = false
-    private var termUnderline: Bool = false
-    private var termReverse: Bool = false
-
-    private func ensurePrevScreenSize() {
-        let w = terminal.width
-        let h = terminal.height
-        if w != prevScreenW || h != prevScreenH {
-            prevScreenCells = Array(repeating: nil, count: w * h)
-            prevScreenW = w
-            prevScreenH = h
-        }
-    }
-
     private func render() {
-        ensurePrevScreenSize()
-
-        if needsFullRedraw {
-            for i in 0..<prevScreenCells.count { prevScreenCells[i] = nil }
-            needsFullRedraw = false
-        }
-
-        let screenW = prevScreenW
-        let screenH = prevScreenH
-
-        for window in windows {
-            guard window.visible else { continue }
-
-            for row in 0..<window.height {
-                let screenRow = window.y + row
-                if screenRow >= screenH { continue }
-
-                for col in 0..<window.width {
-                    let screenCol = window.x + col
-                    if screenCol >= screenW { continue }
-
-                    let cell = window.getCell(row, col)
-
-                    if cell.wideContinuation { continue }
-
-                    let idx = screenRow * screenW + screenCol
-                    if prevScreenCells[idx] != cell {
-                        terminal.moveCursor(row: screenRow, col: screenCol)
-
-                        if termFG != cell.fg { terminal.setFG(cell.fg); termFG = cell.fg }
-                        if termBG != cell.bg { terminal.setBG(cell.bg); termBG = cell.bg }
-                        if termBold != cell.bold { terminal.setBold(cell.bold); termBold = cell.bold }
-                        if termDim != cell.dim { terminal.setDim(cell.dim); termDim = cell.dim }
-                        if termUnderline != cell.underline { terminal.setUnderline(cell.underline); termUnderline = cell.underline }
-                        if termReverse != cell.reverse { terminal.setReverse(cell.reverse); termReverse = cell.reverse }
-
-                        terminal.writeChar(cell.char)
-
-                        prevScreenCells[idx] = cell
-
-                        if isWideChar(cell.char), screenCol + 1 < screenW {
-                            prevScreenCells[screenRow * screenW + screenCol + 1] = window.getCell(row, col + 1)
-                        }
-                    }
-                }
-            }
-        }
-
-        terminal.flush()
-
-        let mode = editorWindow.mode
-        if mode == .insert {
-            let lnWidth = editorWindow.lineNumberWidth()
-            let screenRow = editorWindow.cursorLine - editorWindow.scrollY
-            let screenCol = editorWindow.cursorCol - editorWindow.scrollX
-            if screenRow >= 0, screenRow < editorWindow.height,
-               screenCol >= 0, screenCol + lnWidth < editorWindow.width {
-                terminal.moveCursor(row: editorWindow.y + screenRow, col: editorWindow.x + lnWidth + screenCol)
-            }
-            terminal.setCursorShape(5)
-            terminal.showCursor(true)
-        } else {
-            terminal.showCursor(false)
-            terminal.setCursorShape(1)
-        }
-        terminal.flush()
-    }
-
-    private func isWideChar(_ c: Character) -> Bool {
-        let s = String(c)
-        let scalars = s.unicodeScalars
-        guard let scalar = scalars.first else { return false }
-        let v = scalar.value
-        if v <= 0x7F { return false }
-        if v >= 0x1100 {
-            if v <= 0x115F { return true }
-            if v >= 0x231A && v <= 0x231B { return true }
-            if v >= 0x2329 && v <= 0x232A { return true }
-            if v >= 0x23E9 && v <= 0x23EC { return true }
-            if v == 0x23F0 { return true }
-            if v == 0x23F3 { return true }
-            if v >= 0x25FD && v <= 0x25FE { return true }
-            if v >= 0x2614 && v <= 0x2615 { return true }
-            if v >= 0x2648 && v <= 0x2653 { return true }
-            if v == 0x267F { return true }
-            if v >= 0x2693 && v <= 0x269A { return true }
-            if v >= 0x26A1 { return true }
-            if v >= 0x26AA && v <= 0x26AB { return true }
-            if v >= 0x26BD && v <= 0x26BF { return true }
-            if v >= 0x26C4 && v <= 0x26CD { return true }
-            if v >= 0x26CF && v <= 0x26E1 { return true }
-            if v >= 0x26E8 && v <= 0x26FF { return true }
-            if v >= 0x2702 && v <= 0x27B0 { return true }
-            if v >= 0x2B1B && v <= 0x2B55 { return true }
-            if v >= 0x2E80 && v <= 0x303E { return true }
-            if v >= 0x3040 && v <= 0x3247 { return true }
-            if v >= 0x3250 && v <= 0x4DBF { return true }
-            if v >= 0x4E00 && v <= 0x9FFF { return true }
-            if v >= 0xA960 && v <= 0xA97C { return true }
-            if v >= 0xAC00 && v <= 0xD7A3 { return true }
-            if v >= 0xF900 && v <= 0xFAFF { return true }
-            if v >= 0xFE10 && v <= 0xFE19 { return true }
-            if v >= 0xFE30 && v <= 0xFE6B { return true }
-            if v >= 0xFF01 && v <= 0xFF60 { return true }
-            if v >= 0xFFE0 && v <= 0xFFE6 { return true }
-            if v >= 0x1F000 && v <= 0x1F02F { return true }
-            if v >= 0x1F0A0 && v <= 0x1F0FF { return true }
-            if v >= 0x1F100 && v <= 0x1F1AD { return true }
-            if v >= 0x1F1E6 && v <= 0x1F6FF { return true }
-            if v >= 0x1F700 && v <= 0x1F77F { return true }
-            if v >= 0x1F780 && v <= 0x1F7FF { return true }
-            if v >= 0x1F800 && v <= 0x1F8FF { return true }
-            if v >= 0x1F900 && v <= 0x1F9FF { return true }
-            if v >= 0x1FA00 && v <= 0x1FA6F { return true }
-            if v >= 0x1FA70 && v <= 0x1FAFF { return true }
-            if v >= 0x20000 { return true }
-        }
-        return false
+        let cursorInfo: (window: Window, cursorLine: Int, cursorCol: Int, scrollY: Int, scrollX: Int, lineNumberWidth: Int, mode: EditorMode)? = (
+            editorWindow,
+            editorWindow.cursorLine,
+            editorWindow.cursorCol,
+            editorWindow.scrollY,
+            editorWindow.scrollX,
+            editorWindow.lineNumberWidth(),
+            editorWindow.mode
+        )
+        renderer.render(windows: windows, cursorInfo: cursorInfo)
     }
 
     private func updateStatusBar() {
@@ -567,7 +407,7 @@ class Application {
         }
     }
 
-    private func handleEditorCommand(_ cmd: String) {
+    private func handleEditorCommandInternal(_ cmd: String) {
         switch cmd {
         case "quit":
             if editorWindow.modified { return }
@@ -585,6 +425,30 @@ class Application {
         }
     }
 
+    func openFile(_ path: String) {
+        openFileInEditor(path)
+    }
+
+    func openFileAtLine(_ path: String, line: Int) {
+        openFileInEditor(path)
+        editorWindow.cursorLine = max(0, line - 1)
+        editorWindow.ensureCursorVisible()
+    }
+
+    func handleEditorCommand(_ cmd: String) {
+        handleEditorCommandInternal(cmd)
+    }
+
+    func runGitCommand(label: String, args: [String]) {
+        runGitCommandInternal(label: label, args: args)
+    }
+
+    func requestRender() {
+        recalculateLayout()
+        updateAllWindows()
+        render()
+    }
+
     private func openFileInEditor(_ path: String) {
         editorWindow.openFile(path)
         editorWindow.dirty = true
@@ -592,12 +456,6 @@ class Application {
         notifyLSPFileOpen(path)
         focusIndex = windows.firstIndex(where: { $0 === editorWindow }) ?? 0
         updateFocusStates()
-    }
-
-    private func openFileAtLine(_ path: String, line: Int) {
-        openFileInEditor(path)
-        editorWindow.cursorLine = max(0, line - 1)
-        editorWindow.ensureCursorVisible()
     }
 
     private func notifyLSPChange() {

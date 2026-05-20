@@ -1,5 +1,9 @@
 import Foundation
 
+private nonisolated(unsafe) var _searchResults: [SearchResult]?
+private nonisolated(unsafe) var _searchDone: Bool = false
+private let _searchLock = NSLock()
+
 struct SearchResult {
     let filePath: String
     let lineNumber: Int
@@ -17,7 +21,7 @@ class SearchWindow: Window {
     private var scrollOffset: Int = 0
     private var flatItems: [SearchItem] = []
     var workingDirectory: String = ""
-    var onResultSelect: ((String, Int) -> Void)?
+    private(set) var isSearching: Bool = false
 
     private enum SearchItem {
         case directory(String, Int)
@@ -29,7 +33,12 @@ class SearchWindow: Window {
         clear()
         fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
 
-        let headerText = " SEARCH (\(results.count) matches) "
+        let headerText: String
+        if isSearching {
+            headerText = " SEARCH (scanning...) "
+        } else {
+            headerText = " SEARCH (\(results.count) matches) "
+        }
         for (i, c) in headerText.enumerated() {
             if i < width { setCell(0, i, Cell.colored(c, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)) }
         }
@@ -100,26 +109,59 @@ class SearchWindow: Window {
         guard !query.isEmpty else { return }
         workingDirectory = directory
         results = []
-        let fm = FileManager.default
-        let enumerator = fm.enumerator(atPath: directory)
-        let excludedDirs: Set<String> = [".git", "node_modules", ".build", "build", "DerivedData"]
-        while let relPath = enumerator?.nextObject() as? String {
-            let fullPath = (directory as NSString).appendingPathComponent(relPath)
-            var isDir: ObjCBool = false
-            _ = fm.fileExists(atPath: fullPath, isDirectory: &isDir)
-            if isDir.boolValue {
-                let dirName = (relPath as NSString).lastPathComponent
-                if excludedDirs.contains(dirName) { enumerator?.skipDescendants() }
-                continue
+        groupedResults = []
+        selectedIndex = 0
+        scrollOffset = 0
+        isSearching = true
+        dirty = true
+
+        _searchLock.lock()
+        _searchResults = nil
+        _searchDone = false
+        _searchLock.unlock()
+
+        let dir = directory
+        Thread {
+            var found = [SearchResult]()
+            let fm = FileManager.default
+            let enumerator = fm.enumerator(atPath: dir)
+            let excludedDirs: Set<String> = [".git", "node_modules", ".build", "build", "DerivedData"]
+            while let relPath = enumerator?.nextObject() as? String {
+                let fullPath = (dir as NSString).appendingPathComponent(relPath)
+                var isDir: ObjCBool = false
+                _ = fm.fileExists(atPath: fullPath, isDirectory: &isDir)
+                if isDir.boolValue {
+                    let dirName = (relPath as NSString).lastPathComponent
+                    if excludedDirs.contains(dirName) { enumerator?.skipDescendants() }
+                    continue
+                }
+                let ext = (relPath as NSString).pathExtension
+                let binaryExts: Set<String> = ["png", "jpg", "jpeg", "gif", "pdf", "zip", "gz", "o", "so", "dylib", "a"]
+                if binaryExts.contains(ext) { continue }
+                if let data = try? Data(contentsOf: URL(fileURLWithPath: fullPath), options: .mappedIfSafe),
+                   let content = String(data: data, encoding: .utf8) {
+                    SearchWindow.searchIn(content: content, filePath: fullPath, query: query, results: &found)
+                }
             }
-            let ext = (relPath as NSString).pathExtension
-            let binaryExts: Set<String> = ["png", "jpg", "jpeg", "gif", "pdf", "zip", "gz", "o", "so", "dylib", "a"]
-            if binaryExts.contains(ext) { continue }
-            if let data = try? Data(contentsOf: URL(fileURLWithPath: fullPath), options: .mappedIfSafe),
-               let content = String(data: data, encoding: .utf8) {
-                searchIn(content: content, filePath: fullPath, query: query)
-            }
+            _searchLock.lock()
+            _searchResults = found
+            _searchDone = true
+            _searchLock.unlock()
+        }.start()
+    }
+
+    func pollSearch() {
+        _searchLock.lock()
+        let done = _searchDone
+        let found = _searchResults
+        if done {
+            _searchDone = false
+            _searchResults = nil
         }
+        _searchLock.unlock()
+        guard done, let found else { return }
+        results = found
+        isSearching = false
         groupResults()
         if !groupedResults.isEmpty {
             expandedDirs.insert(groupedResults[0].dir)
@@ -129,9 +171,10 @@ class SearchWindow: Window {
             }
         }
         dirty = true
+        delegate?.requestRender()
     }
 
-    private func searchIn(content: String, filePath: String, query: String) {
+    private static func searchIn(content: String, filePath: String, query: String, results: inout [SearchResult]) {
         let lines = content.components(separatedBy: "\n")
         for (idx, line) in lines.enumerated() {
             if let range = line.range(of: query, options: .caseInsensitive) {
@@ -181,7 +224,7 @@ class SearchWindow: Window {
         case .file(let dir, let name, _):
             let key = dir + "/" + name
             if expandedFiles.contains(key) { expandedFiles.remove(key) } else { expandedFiles.insert(key) }
-        case .result(let path, let lineNum, _): onResultSelect?(path, lineNum)
+        case .result(let path, let lineNum, _): delegate?.openFileAtLine(path, line: lineNum)
         }
         dirty = true
     }

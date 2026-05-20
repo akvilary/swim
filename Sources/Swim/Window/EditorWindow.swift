@@ -36,7 +36,6 @@ class EditorWindow: Window {
     private var tokenIndex: [Int: [SemanticToken]] = [:]
 
     var onFileOpen: ((String) -> Void)?
-    var onCommand: ((String) -> Void)?
     var lastError: String?
 
     private func rebuildTokenIndex() {
@@ -201,9 +200,9 @@ class EditorWindow: Window {
     private func executeCommand() {
         let cmd = commandBuffer
         if cmd == "w" { saveFile() }
-        else if cmd == "q" { onCommand?("quit") }
-        else if cmd == "wq" || cmd == "x" { saveFile(); onCommand?("quit") }
-        else if cmd == "q!" { onCommand?("forcequit") }
+        else if cmd == "q" { delegate?.handleEditorCommand("quit") }
+        else if cmd == "wq" || cmd == "x" { saveFile(); delegate?.handleEditorCommand("quit") }
+        else if cmd == "q!" { delegate?.handleEditorCommand("forcequit") }
         else if cmd.hasPrefix("e ") { openFile(String(cmd.dropFirst(2)).trimmingCharacters(in: .whitespaces)) }
         else if cmd.hasPrefix("%s/") { handleSubstitute(cmd) }
         else if commandBuffer.hasPrefix("/") {

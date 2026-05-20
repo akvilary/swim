@@ -1,5 +1,11 @@
 import Foundation
 
+private nonisolated(unsafe) var _gitBranch: String?
+private nonisolated(unsafe) var _gitStatusOutput: String?
+private nonisolated(unsafe) var _gitLogOutput: String?
+private nonisolated(unsafe) var _gitRefreshDone: Bool = false
+private let _gitLock = NSLock()
+
 struct GitFileStatus {
     let status: String
     let filePath: String
@@ -26,7 +32,7 @@ class GitPanelWindow: Window {
     private var diffScrollOffset: Int = 0
     private var showDiff: Bool = false
 
-    var onRunCommand: ((String, [String]) -> Void)?
+    private(set) var isRefreshing: Bool = false
 
     var workingDirectory: String = "" {
         didSet { refresh() }
@@ -86,7 +92,8 @@ class GitPanelWindow: Window {
     }
 
     private func drawStatus() {
-        let headerText = "  \(currentBranch) "
+        let branchLabel = isRefreshing ? "loading..." : currentBranch
+        let headerText = "  \(branchLabel) "
         for (i, c) in headerText.enumerated() {
             if i < width {
                 setCell(0, i, Cell.colored(c, fg: Theme.orange, bg: Theme.bgHighlight, bold: true))
@@ -258,8 +265,8 @@ class GitPanelWindow: Window {
             if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); dirty = true }
         case .enter: showDiffForSelected()
         case .char("s"): stageOrUnstageSelected()
-        case .char("-"): onRunCommand?("git pull", ["pull"])
-        case .char("+"): onRunCommand?("git push", ["push"])
+        case .char("-"): delegate?.runGitCommand(label: "git pull", args: ["pull"])
+        case .char("+"): delegate?.runGitCommand(label: "git push", args: ["push"])
         case .escape: return false
         default: return false
         }
@@ -325,13 +332,49 @@ class GitPanelWindow: Window {
 
     func refresh() {
         guard !workingDirectory.isEmpty else { return }
-        currentBranch = runGit(["rev-parse", "--abbrev-ref", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines)
-        if currentBranch.hasPrefix("fatal") { currentBranch = "not a git repo" }
-        let statusOutput = runGit(["status", "--porcelain"])
-        parseStatus(statusOutput)
-        let logOutput = runGit(["log", "--oneline", "-10", "--format=%h|%an|%cr|%s"])
-        parseLog(logOutput)
+        isRefreshing = true
         dirty = true
+
+        _gitLock.lock()
+        _gitRefreshDone = false
+        _gitLock.unlock()
+
+        let workDir = workingDirectory
+        Thread {
+            let branch = GitPanelWindow.runGitSync(["rev-parse", "--abbrev-ref", "HEAD"], workDir: workDir).trimmingCharacters(in: .whitespacesAndNewlines)
+            let statusOutput = GitPanelWindow.runGitSync(["status", "--porcelain"], workDir: workDir)
+            let logOutput = GitPanelWindow.runGitSync(["log", "--oneline", "-10", "--format=%h|%an|%cr|%s"], workDir: workDir)
+
+            _gitLock.lock()
+            _gitBranch = branch
+            _gitStatusOutput = statusOutput
+            _gitLogOutput = logOutput
+            _gitRefreshDone = true
+            _gitLock.unlock()
+        }.start()
+    }
+
+    func pollRefresh() {
+        _gitLock.lock()
+        let done = _gitRefreshDone
+        let branch = _gitBranch
+        let status = _gitStatusOutput
+        let log = _gitLogOutput
+        if done {
+            _gitRefreshDone = false
+            _gitBranch = nil
+            _gitStatusOutput = nil
+            _gitLogOutput = nil
+        }
+        _gitLock.unlock()
+
+        guard done, let branch, let status, let log else { return }
+        isRefreshing = false
+        currentBranch = branch.hasPrefix("fatal") ? "not a git repo" : branch
+        parseStatus(status)
+        parseLog(log)
+        dirty = true
+        delegate?.requestRender()
     }
 
     private func parseStatus(_ output: String) {
@@ -358,12 +401,16 @@ class GitPanelWindow: Window {
 
     @discardableResult
     private func runGit(_ args: [String]) -> String {
+        Self.runGitSync(args, workDir: workingDirectory)
+    }
+
+    private static func runGitSync(_ args: [String], workDir: String) -> String {
         let process = Process()
         let pipe = Pipe()
         let errPipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = args
-        if !workingDirectory.isEmpty { process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory) }
+        if !workDir.isEmpty { process.currentDirectoryURL = URL(fileURLWithPath: workDir) }
         process.standardOutput = pipe
         process.standardError = errPipe
         do {

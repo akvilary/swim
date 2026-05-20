@@ -1,6 +1,7 @@
 import Foundation
 
 class Window {
+    weak var delegate: WindowDelegate?
     var x: Int = 0
     var y: Int = 0
     var width: Int = 0

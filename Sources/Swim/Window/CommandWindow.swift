@@ -12,8 +12,6 @@ class CommandWindow: Window {
     var spinnerFrame: Int = 0
     var workingDirectory: String = ""
 
-    var onNeedsRender: (() -> Void)?
-
     private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     func runCommand(_ label: String, args: [String]) {
@@ -71,7 +69,7 @@ class CommandWindow: Window {
         }
         isRunning = false
         dirty = true
-        onNeedsRender?()
+        delegate?.requestRender()
     }
 
     override func update() {
