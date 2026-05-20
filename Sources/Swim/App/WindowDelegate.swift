@@ -6,4 +6,5 @@ protocol WindowDelegate: AnyObject {
     func handleEditorCommand(_ cmd: String)
     func runGitCommand(label: String, args: [String])
     func requestRender()
+    func updatePreview(path: String?, highlightLine: Int)
 }

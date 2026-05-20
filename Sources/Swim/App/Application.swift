@@ -13,6 +13,10 @@ class Application: WindowDelegate {
     private var lspClient: LSPClient?
     private var lspVersion: Int = 0
     private lazy var renderer = Renderer(terminal: terminal)
+    private var currentSpace: Space = .editor
+    private var editorExplorerVisible = false
+    private var editorGitVisible = false
+    private var editorCommandVisible = false
 
     init() {
         windows.assignDelegates(self)
@@ -40,7 +44,8 @@ class Application: WindowDelegate {
         let cwd = FileManager.default.currentDirectoryPath
         windows.fileExplorer.visible = true
         windows.gitPanel.visible = false
-        windows.search.visible = false
+        windows.searchResults.visible = false
+        windows.preview.visible = false
         windows.command.visible = false
         windows.fileExplorer.loadDirectory(cwd)
         windows.gitPanel.workingDirectory = cwd
@@ -55,7 +60,7 @@ class Application: WindowDelegate {
         while running {
             pollLSP()
             windows.command.pollResult()
-            windows.search.pollSearch()
+            windows.searchResults.pollSearch()
             windows.gitPanel.pollRefresh()
             tickSpinners()
             if terminal.hasResizeEvent {
@@ -101,8 +106,8 @@ class Application: WindowDelegate {
             windows.command.dirty = true
             anyDirty = true
         }
-        if windows.search.visible && windows.search.isSearching {
-            windows.search.dirty = true
+        if windows.searchResults.visible && windows.searchResults.isSearching {
+            windows.searchResults.dirty = true
             anyDirty = true
         }
         if windows.gitPanel.visible && windows.gitPanel.isRefreshing {
@@ -237,14 +242,20 @@ class Application: WindowDelegate {
                 notifyLSPChange()
             }
         } else if case .escape = key, focused !== windows.editor {
-            focused.visible = false
-            if let prev = windows.prevFocused, prev.visible {
-                windows.focused = prev
-            } else {
+            if currentSpace != .editor {
+                switchToSpace(.editor)
                 windows.focused = windows.editor
+                windows.updateFocusStates()
+            } else {
+                focused.visible = false
+                if let prev = windows.prevFocused, prev.visible {
+                    windows.focused = prev
+                } else {
+                    windows.focused = windows.editor
+                }
+                recalculateLayout()
+                windows.markAllDirty()
             }
-            recalculateLayout()
-            windows.markAllDirty()
         }
     }
 
@@ -268,19 +279,43 @@ class Application: WindowDelegate {
     }
 
     private func toggleSearch() {
-        if windows.search.visible {
-            windows.search.visible = false
+        if currentSpace == .search {
+            switchToSpace(.editor)
         } else {
-            windows.search.visible = true
+            switchToSpace(.search)
             let cwd = windows.gitPanel.workingDirectory.isEmpty
                 ? FileManager.default.currentDirectoryPath
                 : windows.gitPanel.workingDirectory
-            windows.search.prepareInput(workingDirectory: cwd)
+            windows.searchResults.prepareInput(workingDirectory: cwd)
             let searchQuery = windows.editor.searchQuery
             if !searchQuery.isEmpty {
-                windows.search.search(query: searchQuery, in: cwd)
+                windows.searchResults.search(query: searchQuery, in: cwd)
             }
-            windows.focused = windows.search
+            windows.focused = windows.searchResults
+        }
+    }
+
+    private func switchToSpace(_ space: Space) {
+        if currentSpace == .editor {
+            editorExplorerVisible = windows.fileExplorer.visible
+            editorGitVisible = windows.gitPanel.visible
+            editorCommandVisible = windows.command.visible
+        }
+        windows.fileExplorer.visible = false
+        windows.gitPanel.visible = false
+        windows.command.visible = false
+        windows.searchResults.visible = false
+        windows.preview.visible = false
+
+        currentSpace = space
+        switch space {
+        case .editor:
+            windows.fileExplorer.visible = editorExplorerVisible
+            windows.gitPanel.visible = editorGitVisible
+            windows.command.visible = editorCommandVisible
+        case .search:
+            windows.searchResults.visible = true
+            windows.preview.visible = true
         }
         recalculateLayout()
         windows.markAllDirty()
@@ -299,16 +334,17 @@ class Application: WindowDelegate {
         let layout = LayoutManager.calculate(
             terminalWidth: terminal.width,
             terminalHeight: terminal.height,
+            space: currentSpace,
             showExplorer: windows.fileExplorer.visible,
             showGit: windows.gitPanel.visible,
-            showSearch: windows.search.visible,
             showCommand: windows.command.visible
         )
 
         windows.fileExplorer.resize(x: layout.explorer.x, y: layout.explorer.y, width: layout.explorer.width, height: layout.explorer.height)
         windows.editor.resize(x: layout.editor.x, y: layout.editor.y, width: layout.editor.width, height: layout.editor.height)
         windows.gitPanel.resize(x: layout.git.x, y: layout.git.y, width: layout.git.width, height: layout.git.height)
-        windows.search.resize(x: layout.search.x, y: layout.search.y, width: layout.search.width, height: layout.search.height)
+        windows.searchResults.resize(x: layout.searchResults.x, y: layout.searchResults.y, width: layout.searchResults.width, height: layout.searchResults.height)
+        windows.preview.resize(x: layout.preview.x, y: layout.preview.y, width: layout.preview.width, height: layout.preview.height)
         windows.command.resize(x: layout.command.x, y: layout.command.y, width: layout.command.width, height: layout.command.height)
         windows.statusBar.resize(x: layout.status.x, y: layout.status.y, width: layout.status.width, height: layout.status.height)
     }
@@ -378,6 +414,9 @@ class Application: WindowDelegate {
         openFileInEditor(path)
         windows.editor.cursorLine = max(0, line - 1)
         windows.editor.ensureCursorVisible()
+        if currentSpace != .editor {
+            switchToSpace(.editor)
+        }
     }
 
     func handleEditorCommand(_ cmd: String) {
@@ -392,6 +431,10 @@ class Application: WindowDelegate {
         recalculateLayout()
         windows.updateAll()
         render()
+    }
+
+    func updatePreview(path: String?, highlightLine: Int) {
+        windows.preview.loadFile(path, highlightLine: highlightLine)
     }
 
     private func openFileInEditor(_ path: String) {

@@ -5,11 +5,12 @@ class Windows {
     let statusBar = StatusBarWindow()
     let fileExplorer = FileExplorerWindow()
     let gitPanel = GitPanelWindow()
-    let search = SearchWindow()
+    let searchResults = SearchResultsWindow()
+    let preview = PreviewWindow()
     let command = CommandWindow()
 
     var all: [Window] {
-        [editor, statusBar, fileExplorer, gitPanel, search, command]
+        [editor, statusBar, fileExplorer, gitPanel, searchResults, preview, command]
     }
 
     var focused: Window!
@@ -19,7 +20,7 @@ class Windows {
         editor.delegate = delegate
         fileExplorer.delegate = delegate
         gitPanel.delegate = delegate
-        search.delegate = delegate
+        searchResults.delegate = delegate
         command.delegate = delegate
     }
 

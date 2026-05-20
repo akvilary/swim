@@ -12,7 +12,7 @@ struct SearchResult {
     let matchLength: Int
 }
 
-class SearchWindow: Window {
+class SearchResultsWindow: Window {
     private(set) var results: [SearchResult] = []
     private(set) var groupedResults: [(dir: String, files: [(name: String, results: [SearchResult])])] = []
     private(set) var selectedIndex: Int = 0
@@ -44,15 +44,23 @@ class SearchWindow: Window {
         clear()
         fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
 
+        drawHeader()
+
+        if !inputMode {
+            drawResults()
+        }
+    }
+
+    private func drawHeader() {
         if inputMode {
             let prompt = " Search: "
-            drawLine(prompt, row: 0, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)
+            drawLine(prompt, row: 0, col: 0, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)
             let maxInput = width - prompt.count - 2
             let displayText = String(inputBuffer.suffix(max(0, maxInput)))
             drawLine(displayText, row: 0, col: prompt.count, fg: Theme.fg, bg: Theme.bgHighlight)
             let cursorCol = prompt.count + min(inputCursorPos, maxInput)
             if cursorCol < width {
-                setCell(0, cursorCol, Cell.colored(" ", fg: Theme.fg, bg: Theme.bgHighlight))
+                setCell(0, cursorCol, Cell.colored(" ", fg: Theme.fg, bg: Theme.fgGutter))
             }
             for i in (prompt.count + displayText.count + 1)..<width {
                 setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
@@ -62,7 +70,7 @@ class SearchWindow: Window {
             if isSearching {
                 headerText = " SEARCH (scanning...) "
             } else {
-                headerText = " SEARCH (\(results.count) matches) [\u{1b}] to retype "
+                headerText = " SEARCH (\(results.count) matches) "
             }
             for (i, c) in headerText.enumerated() {
                 if i < width { setCell(0, i, Cell.colored(c, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)) }
@@ -71,13 +79,19 @@ class SearchWindow: Window {
                 setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
             }
         }
+    }
 
+    private func drawResults() {
         buildFlatItems()
-        for row in 0..<(height - 1) {
+        let visibleH = height - 1
+        for row in 0..<visibleH {
             let itemIdx = scrollOffset + row
             guard itemIdx < flatItems.count else { break }
             let isSelected = itemIdx == selectedIndex
             let bg: Color = isSelected ? Theme.bgHighlight : Theme.bgDark
+            let y = row + 1
+
+            fillRegion(row: y, col: 0, width: width, height: 1, cell: Cell.colored(" ", fg: Theme.fg, bg: bg))
 
             switch flatItems[itemIdx] {
             case .directory(let dir, let count):
@@ -85,27 +99,28 @@ class SearchWindow: Window {
                 let icon = expanded ? "▾ " : "▸ "
                 let dirName = URL(fileURLWithPath: dir).lastPathComponent
                 let text = "\(icon)\(dirName) (\(count))"
-                drawLine(text, row: row + 1, fg: Theme.blue, bg: bg, bold: true)
+                drawLine(text, row: y, col: 0, fg: Theme.blue, bg: bg, bold: true)
             case .file(let dir, let name, let count):
                 let expanded = expandedFiles.contains(dir + "/" + name)
                 let icon = expanded ? "▾ " : "▸ "
                 let text = "  \(icon)\(name) (\(count))"
-                drawLine(text, row: row + 1, fg: Theme.fgDark, bg: bg)
+                drawLine(text, row: y, col: 0, fg: Theme.fgDark, bg: bg)
             case .result(let path, let lineNum, _):
                 let result = results.first { $0.filePath == path && $0.lineNumber == lineNum }
                 let indent = "      "
                 let linePrefix = "\(indent)\(lineNum): "
-                drawLine(linePrefix, row: row + 1, fg: Theme.comment, bg: bg)
+                drawLine(linePrefix, row: y, col: 0, fg: Theme.comment, bg: bg)
                 if let result = result {
                     let prefixCol = linePrefix.count
-                    let beforeEnd = min(result.matchStart, width - prefixCol - result.matchLength)
-                    let beforeMatch = String(result.lineContent.prefix(beforeEnd).trimmingCharacters(in: .whitespaces).prefix(width - prefixCol - result.matchLength))
-                    drawLine(beforeMatch, row: row + 1, col: prefixCol, fg: isSelected ? Theme.fg : Theme.fgDark, bg: bg)
+                    let availW = width - prefixCol - result.matchLength
+                    let beforeEnd = min(result.matchStart, availW)
+                    let beforeMatch = String(result.lineContent.prefix(beforeEnd).trimmingCharacters(in: .whitespaces).prefix(availW))
+                    drawLine(beforeMatch, row: y, col: prefixCol, fg: isSelected ? Theme.fg : Theme.fgDark, bg: bg)
                     let matchStart = prefixCol + beforeMatch.count
                     let startIndex = result.lineContent.index(result.lineContent.startIndex, offsetBy: result.matchStart)
                     let endIndex = result.lineContent.index(startIndex, offsetBy: result.matchLength)
                     let matchText = String(result.lineContent[startIndex..<endIndex])
-                    drawLine(matchText, row: row + 1, col: matchStart, fg: Theme.orange, bg: bg, bold: true)
+                    drawLine(matchText, row: y, col: matchStart, fg: Theme.orange, bg: bg, bold: true)
                 }
             }
         }
@@ -166,7 +181,7 @@ class SearchWindow: Window {
                 if binaryExts.contains(ext) { continue }
                 if let data = try? Data(contentsOf: URL(fileURLWithPath: fullPath), options: .mappedIfSafe),
                    let content = String(data: data, encoding: .utf8) {
-                    SearchWindow.searchIn(content: content, filePath: fullPath, query: query, results: &found)
+                    SearchResultsWindow.searchIn(content: content, filePath: fullPath, query: query, results: &found)
                 }
             }
             _searchLock.lock()
@@ -235,9 +250,9 @@ class SearchWindow: Window {
         }
         switch key {
         case .char("j"), .down:
-            if selectedIndex < flatItems.count - 1 { selectedIndex += 1; ensureVisible(); dirty = true }
+            if selectedIndex < flatItems.count - 1 { selectedIndex += 1; ensureVisible(); notifyPreviewUpdate(); dirty = true }
         case .char("k"), .up:
-            if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); dirty = true }
+            if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); notifyPreviewUpdate(); dirty = true }
         case .enter, .char("l"), .right: handleEnter()
         case .char("h"), .left: handleCollapse()
         case .escape:
@@ -316,6 +331,21 @@ class SearchWindow: Window {
         case .result: break
         }
         dirty = true
+    }
+
+    private func notifyPreviewUpdate() {
+        guard selectedIndex < flatItems.count else {
+            delegate?.updatePreview(path: nil, highlightLine: -1)
+            return
+        }
+        switch flatItems[selectedIndex] {
+        case .result(let path, let lineNum, _):
+            delegate?.updatePreview(path: path, highlightLine: lineNum)
+        case .file(let dir, let name, _):
+            delegate?.updatePreview(path: dir + "/" + name, highlightLine: -1)
+        case .directory:
+            delegate?.updatePreview(path: nil, highlightLine: -1)
+        }
     }
 
     private func ensureVisible() {
