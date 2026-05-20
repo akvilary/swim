@@ -2,6 +2,7 @@ import Foundation
 
 private nonisolated(unsafe) var _cmdResult: [Substring]?
 private nonisolated(unsafe) var _cmdDone: Bool = false
+private let _cmdLock = NSLock()
 
 class CommandWindow: Window {
     private var title: String = ""
@@ -20,8 +21,10 @@ class CommandWindow: Window {
         outputLines = []
         scrollOffset = 0
         isRunning = true
+        _cmdLock.lock()
         _cmdResult = nil
         _cmdDone = false
+        _cmdLock.unlock()
         visible = true
         dirty = true
 
@@ -35,26 +38,36 @@ class CommandWindow: Window {
             if !workDir.isEmpty { process.currentDirectoryURL = URL(fileURLWithPath: workDir) }
             process.standardOutput = pipe
             process.standardError = errPipe
+            var result: [Substring]?
             do {
                 try process.run()
                 let outData = pipe.fileHandleForReading.readDataToEndOfFile()
                 let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
                 let combined = (String(data: outData, encoding: .utf8) ?? "") + (String(data: errData, encoding: .utf8) ?? "")
-                _cmdResult = combined.split(separator: "\n", omittingEmptySubsequences: false)
+                result = combined.split(separator: "\n", omittingEmptySubsequences: false)
             } catch {
-                _cmdResult = ["error: \(error.localizedDescription)"]
+                result = ["error: \(error.localizedDescription)"]
             }
+            _cmdLock.lock()
+            _cmdResult = result
             _cmdDone = true
+            _cmdLock.unlock()
         }.start()
     }
 
     func pollResult() {
-        guard _cmdDone else { return }
-        _cmdDone = false
-        if let lines = _cmdResult {
-            outputLines = lines
+        _cmdLock.lock()
+        let done = _cmdDone
+        let result = _cmdResult
+        if done {
+            _cmdDone = false
             _cmdResult = nil
+        }
+        _cmdLock.unlock()
+        guard done else { return }
+        if let lines = result {
+            outputLines = lines
         }
         isRunning = false
         dirty = true

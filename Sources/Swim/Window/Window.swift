@@ -77,31 +77,6 @@ class Window {
         }
     }
 
-    func render(to terminal: Terminal, prevCells: inout [Cell?]) {
-        guard dirty else { return }
-
-        for row in 0..<height {
-            for col in 0..<width {
-                let screenRow = y + row
-                let screenCol = x + col
-                let cell = cells[row * width + col]
-
-                if prevCells.count <= screenRow { prevCells = Array(repeating: nil, count: screenRow + 256) }
-
-                terminal.moveCursor(row: screenRow, col: screenCol)
-                terminal.setFG(cell.fg)
-                terminal.setBG(cell.bg)
-                terminal.setBold(cell.bold)
-                terminal.setDim(cell.dim)
-                terminal.setUnderline(cell.underline)
-                terminal.setReverse(cell.reverse || (focused && false))
-                terminal.writeChar(cell.char)
-            }
-        }
-
-        dirty = false
-    }
-
     func handleKey(_ key: Key) -> Bool { false }
 
     func update() {}

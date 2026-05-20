@@ -8,6 +8,7 @@ class StatusBarWindow: Window {
     var fileEncoding: String = "utf-8"
     var fileType: String = ""
     var commandText: String = ""
+    var errorMessage: String?
 
     override func update() {
         guard height > 0 else { return }
@@ -49,7 +50,10 @@ class StatusBarWindow: Window {
 
         let centerText: String
         let centerFg: Color
-        if modeText == "COMMAND" {
+        if let err = errorMessage {
+            centerText = " \(err) "
+            centerFg = Theme.red
+        } else if modeText == "COMMAND" {
             let prefix = commandText.hasPrefix("/") ? "" : ":"
             centerText = " \(prefix)\(commandText)"
             centerFg = Theme.fg

@@ -227,11 +227,52 @@ class FileExplorerWindow: Window {
 
     private func displayWidth(_ c: Character) -> Int {
         let s = String(c)
-        let utf8 = s.utf8
-        if utf8.count >= 3 {
-            let first = utf8.first! & 0xF0
-            if first >= 0xF0 { return 2 }
-            if first >= 0xE0 { return 1 }
+        let scalars = s.unicodeScalars
+        guard let scalar = scalars.first else { return 1 }
+        let v = scalar.value
+        if v <= 0x7F { return 1 }
+        if v >= 0x1100 {
+            if v <= 0x115F { return 2 }
+            if v >= 0x231A && v <= 0x231B { return 2 }
+            if v >= 0x2329 && v <= 0x232A { return 2 }
+            if v >= 0x23E9 && v <= 0x23EC { return 2 }
+            if v == 0x23F0 { return 2 }
+            if v == 0x23F3 { return 2 }
+            if v >= 0x25FD && v <= 0x25FE { return 2 }
+            if v >= 0x2614 && v <= 0x2615 { return 2 }
+            if v >= 0x2648 && v <= 0x2653 { return 2 }
+            if v == 0x267F { return 2 }
+            if v >= 0x2693 && v <= 0x269A { return 2 }
+            if v >= 0x26A1 { return 2 }
+            if v >= 0x26AA && v <= 0x26AB { return 2 }
+            if v >= 0x26BD && v <= 0x26BC + 3 { return 2 }
+            if v >= 0x26C4 && v <= 0x26CD { return 2 }
+            if v >= 0x26CF && v <= 0x26E1 { return 2 }
+            if v >= 0x26E8 && v <= 0x26FF { return 2 }
+            if v >= 0x2702 && v <= 0x27B0 { return 2 }
+            if v >= 0x2B1B && v <= 0x2B55 { return 2 }
+            if v >= 0x2E80 && v <= 0x303E { return 2 }
+            if v >= 0x3040 && v <= 0x3247 { return 2 }
+            if v >= 0x3250 && v <= 0x4DBF { return 2 }
+            if v >= 0x4E00 && v <= 0x9FFF { return 2 }
+            if v >= 0xA960 && v <= 0xA97C { return 2 }
+            if v >= 0xAC00 && v <= 0xD7A3 { return 2 }
+            if v >= 0xF900 && v <= 0xFAFF { return 2 }
+            if v >= 0xFE10 && v <= 0xFE19 { return 2 }
+            if v >= 0xFE30 && v <= 0xFE6B { return 2 }
+            if v >= 0xFF01 && v <= 0xFF60 { return 2 }
+            if v >= 0xFFE0 && v <= 0xFFE6 { return 2 }
+            if v >= 0x1F000 && v <= 0x1F02F { return 2 }
+            if v >= 0x1F0A0 && v <= 0x1F0FF { return 2 }
+            if v >= 0x1F100 && v <= 0x1F1AD { return 2 }
+            if v >= 0x1F1E6 && v <= 0x1F6FF { return 2 }
+            if v >= 0x1F700 && v <= 0x1F77F { return 2 }
+            if v >= 0x1F780 && v <= 0x1F7FF { return 2 }
+            if v >= 0x1F800 && v <= 0x1F8FF { return 2 }
+            if v >= 0x1F900 && v <= 0x1F9FF { return 2 }
+            if v >= 0x1FA00 && v <= 0x1FA6F { return 2 }
+            if v >= 0x1FA70 && v <= 0x1FAFF { return 2 }
+            if v >= 0x20000 { return 2 }
         }
         return 1
     }

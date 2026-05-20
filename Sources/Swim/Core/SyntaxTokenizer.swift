@@ -160,7 +160,12 @@ struct SyntaxTokenizer {
 
             if chars[i] >= "0" && chars[i] <= "9" {
                 var end = i + 1
-                while end < len && ((chars[end] >= "0" && chars[end] <= "9") || chars[end] == "." || chars[end] == "x" || chars[end] == "a" || chars[end] == "b" || chars[end] == "c" || chars[end] == "d" || chars[end] == "e" || chars[end] == "f" || chars[end] == "_") { end += 1 }
+                if end < len && chars[i] == "0" && end < len && (chars[end] == "x" || chars[end] == "X") {
+                    end += 1
+                    while end < len && ((chars[end] >= "0" && chars[end] <= "9") || (chars[end] >= "a" && chars[end] <= "f") || (chars[end] >= "A" && chars[end] <= "F") || chars[end] == "_") { end += 1 }
+                } else {
+                    while end < len && ((chars[end] >= "0" && chars[end] <= "9") || chars[end] == "." || chars[end] == "e" || chars[end] == "E" || chars[end] == "_" || ((chars[end] == "+" || chars[end] == "-") && end > 0 && (chars[end - 1] == "e" || chars[end - 1] == "E"))) { end += 1 }
+                }
                 tokens.append(SyntaxToken(line: lineNum, startChar: i, length: end - i, type: "number", modifiers: 0))
                 i = end
                 continue
@@ -173,8 +178,6 @@ struct SyntaxTokenizer {
                 let type: String
                 if keywords.contains(word) {
                     type = "keyword"
-                } else if word.hasPrefix("//") {
-                    type = "comment"
                 } else if chars[i] >= "A" && chars[i] <= "Z" && word.count >= 2 {
                     type = "type"
                 } else if i > 0 && chars[i - 1] == "." {
@@ -219,13 +222,29 @@ struct SyntaxTokenizer {
         return allTokens
     }
 
+    private static nonisolated(unsafe) var mdCacheBufferId: Int = 0
+    private static nonisolated(unsafe) var mdCacheScrollY: Int = 0
+    private static nonisolated(unsafe) var mdCacheInCodeBlock: Bool = false
+    private static nonisolated(unsafe) var mdCacheLineCount: Int = 0
+
     static func tokenizeMarkdownVisible(buffer: PieceTable, scrollY: Int, height: Int) -> [SemanticToken] {
         var allTokens = [SemanticToken]()
+        let bufferId = ObjectIdentifier(buffer).hashValue
+        let lineCount = buffer.lineCount
         var inCodeBlock = false
 
-        let startLine = max(0, scrollY - 500)
+        let cacheValid = bufferId == mdCacheBufferId && lineCount == mdCacheLineCount && scrollY >= mdCacheScrollY && scrollY <= mdCacheScrollY + 200
+        var startLine: Int
+        if cacheValid {
+            startLine = mdCacheScrollY
+            inCodeBlock = mdCacheInCodeBlock
+        } else {
+            startLine = 0
+            inCodeBlock = false
+        }
+
         for lineNum in startLine..<scrollY {
-            guard lineNum < buffer.lineCount else { break }
+            guard lineNum < lineCount else { break }
             let line = buffer.getLine(lineNum)
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
@@ -233,9 +252,14 @@ struct SyntaxTokenizer {
             }
         }
 
+        mdCacheBufferId = bufferId
+        mdCacheScrollY = scrollY
+        mdCacheInCodeBlock = inCodeBlock
+        mdCacheLineCount = lineCount
+
         for row in 0..<height {
             let lineNum = scrollY + row
-            guard lineNum < buffer.lineCount else { break }
+            guard lineNum < lineCount else { break }
             let line = buffer.getLine(lineNum)
             let tokens = tokenizeMarkdownLine(line, lineNum: lineNum, inCodeBlock: &inCodeBlock)
             for t in tokens {

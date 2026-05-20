@@ -5,7 +5,12 @@
 #endif
 import Foundation
 
-private func signalHandler(_: Int32) {}
+private nonisolated(unsafe) var resizePipeWriteFd: Int32 = -1
+
+private func sigwinchHandler(_: Int32) {
+    var byte: UInt8 = 1
+    _ = write(resizePipeWriteFd, &byte, 1)
+}
 
 final class Terminal {
     private var originalTermios: termios?
@@ -13,8 +18,24 @@ final class Terminal {
     private(set) var height: Int = 24
     private var outputBuffer = [UInt8]()
 
+    private var resizePipeReadFd: Int32 = -1
+
     nonisolated(unsafe) static let shared = Terminal()
     private init() {}
+
+    var hasResizeEvent: Bool {
+        guard resizePipeReadFd >= 0 else { return false }
+        var pfd = pollfd(fd: resizePipeReadFd, events: Int16(POLLIN), revents: 0)
+        let ready = poll(&pfd, 1, 0)
+        return ready > 0 && (pfd.revents & Int16(POLLIN)) != 0
+    }
+
+    func consumeResizeEvent() {
+        guard resizePipeReadFd >= 0 else { return }
+        var buf: UInt8 = 0
+        while read(resizePipeReadFd, &buf, 1) == 1 {}
+        updateSize()
+    }
 
     func setup() {
         var raw = termios()
@@ -29,6 +50,11 @@ final class Terminal {
         raw.c_cc.16 = 0
         tcsetattr(STDIN_FILENO, TCSANOW, &raw)
 
+        var fds: [Int32] = [-1, -1]
+        _ = pipe(&fds)
+        resizePipeReadFd = fds[0]
+        resizePipeWriteFd = fds[1]
+
         updateSize()
         writeRaw("\u{1b}[?1049h")
         writeRaw("\u{1b}[2J")
@@ -36,9 +62,9 @@ final class Terminal {
 
         var sa = sigaction()
         #if canImport(Glibc)
-        sa.__sigaction_handler = .init(sa_handler: signalHandler)
+        sa.__sigaction_handler = .init(sa_handler: sigwinchHandler)
         #elseif canImport(Darwin)
-        sa.__sigaction_u.__sa_handler = signalHandler
+        sa.__sigaction_u.__sa_handler = sigwinchHandler
         #endif
         sigemptyset(&sa.sa_mask)
         sa.sa_flags = 0
@@ -50,6 +76,8 @@ final class Terminal {
             var copy = orig
             tcsetattr(STDIN_FILENO, TCSANOW, &copy)
         }
+        if resizePipeReadFd >= 0 { close(resizePipeReadFd); resizePipeReadFd = -1 }
+        if resizePipeWriteFd >= 0 { close(resizePipeWriteFd); resizePipeWriteFd = -1 }
         writeRaw("\u{1b}[?1049l")
         writeRaw("\u{1b}[?25h")
         writeRaw("")

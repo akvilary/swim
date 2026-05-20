@@ -28,11 +28,23 @@ class EditorWindow: Window {
     var modified: Bool = false
     var undoStack: [(offset: Int, deleted: String, inserted: String)] = []
     var redoStack: [(offset: Int, deleted: String, inserted: String)] = []
+    private var isUndoRedoing = false
 
-    var semanticTokens: [SemanticToken] = []
+    var semanticTokens: [SemanticToken] = [] {
+        didSet { rebuildTokenIndex() }
+    }
+    private var tokenIndex: [Int: [SemanticToken]] = [:]
 
     var onFileOpen: ((String) -> Void)?
     var onCommand: ((String) -> Void)?
+    var lastError: String?
+
+    private func rebuildTokenIndex() {
+        tokenIndex.removeAll(keepingCapacity: true)
+        for token in semanticTokens {
+            tokenIndex[token.line, default: []].append(token)
+        }
+    }
 
     private func yank(_ text: String) {
         yankBuffer = text
@@ -207,18 +219,20 @@ class EditorWindow: Window {
         let search = String(parts[0])
         let replace = parts.count > 1 ? String(parts[1]) : ""
         let flags = parts.count > 2 ? String(parts[2]) : ""
-        let lineStart = buffer!.lineStart(line: cursorLine)
-        let lineEnd = buffer!.lineEnd(line: cursorLine)
-        let lineText = buffer!.getText(range: lineStart..<lineEnd)
+        guard let buf = buffer else { return }
+        let lineStart = buf.lineStart(line: cursorLine)
+        let lineEnd = buf.lineEnd(line: cursorLine)
+        let lineText = buf.getText(range: lineStart..<lineEnd)
         let result: String
         if flags.contains("g") { result = lineText.replacingOccurrences(of: search, with: replace) }
         else {
             if let range = lineText.range(of: search) { result = lineText.replacingCharacters(in: range, with: replace) }
             else { result = lineText }
         }
-        buffer!.delete(at: lineStart, length: lineText.utf8.count)
-        buffer!.insert(result, at: lineStart)
-        modified = true
+        let deletedLen = lineText.utf8.count
+        buf.delete(at: lineStart, length: deletedLen)
+        buf.insert(result, at: lineStart)
+        recordAction(offset: lineStart, deleted: lineText, inserted: result)
     }
 
     private func saveFile() {
@@ -227,7 +241,10 @@ class EditorWindow: Window {
         do {
             try text.write(toFile: path, atomically: true, encoding: .utf8)
             modified = false
-        } catch {}
+            lastError = nil
+        } catch {
+            lastError = "Error saving: \(error.localizedDescription)"
+        }
     }
 
     private func moveCursorLeft() { if cursorCol > 0 { cursorCol -= 1 }; ensureCursorVisible() }
@@ -277,13 +294,21 @@ class EditorWindow: Window {
         cursorLine = newLine; cursorCol = buf.byteToCharOffsetInLine(line: newLine, byteOffset: byteCol); ensureCursorVisible()
     }
 
+    private func recordAction(offset: Int, deleted: String, inserted: String) {
+        guard !isUndoRedoing else { return }
+        undoStack.append((offset: offset, deleted: deleted, inserted: inserted))
+        redoStack.removeAll()
+        modified = true
+    }
+
     private func insertText(_ text: String) {
         guard let buf = buffer else { return }
         let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
         let offset = buf.lineStart(line: cursorLine) + byteOff
         buf.insert(text, at: offset)
+        recordAction(offset: offset, deleted: "", inserted: text)
         cursorCol += text.count
-        modified = true; ensureCursorVisible()
+        ensureCursorVisible()
     }
 
     private func indentSize() -> Int {
@@ -299,6 +324,7 @@ class EditorWindow: Window {
         let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
         let offset = buf.lineStart(line: cursorLine) + byteOff
         buf.insert("\n", at: offset)
+        var inserted = "\n"
         let lineContent = buf.getLine(cursorLine)
         cursorCol = 0; cursorLine += 1
         let baseIndent = leadingSpaces(lineContent)
@@ -312,31 +338,37 @@ class EditorWindow: Window {
         let closesBlock = newTrimmed.hasPrefix("}") || newTrimmed.hasPrefix(")")
         if closesBlock {
             let fullIndent = baseIndent + extra
-            buf.insert(
-                String(repeating: " ", count: fullIndent) + "\n" + String(repeating: " ", count: baseIndent),
-                at: buf.lineStart(line: cursorLine)
-            )
+            let extraText = String(repeating: " ", count: fullIndent) + "\n" + String(repeating: " ", count: baseIndent)
+            buf.insert(extraText, at: buf.lineStart(line: cursorLine))
+            inserted += extraText
             cursorCol = fullIndent
         } else {
             let indent = baseIndent + extra
             if indent > 0 {
-                buf.insert(String(repeating: " ", count: indent), at: buf.lineStart(line: cursorLine))
+                let indentText = String(repeating: " ", count: indent)
+                buf.insert(indentText, at: buf.lineStart(line: cursorLine))
+                inserted += indentText
                 cursorCol = indent
             }
         }
-        modified = true; ensureCursorVisible()
+        recordAction(offset: offset, deleted: "", inserted: inserted)
+        ensureCursorVisible()
     }
 
     private func insertNewLineBelow() {
         guard let buf = buffer else { return }
-        buf.insert("\n", at: buf.lineEnd(line: cursorLine))
-        cursorLine += 1; cursorCol = 0; modified = true; ensureCursorVisible()
+        let offset = buf.lineEnd(line: cursorLine)
+        buf.insert("\n", at: offset)
+        recordAction(offset: offset, deleted: "", inserted: "\n")
+        cursorLine += 1; cursorCol = 0; ensureCursorVisible()
     }
 
     private func insertNewLineAbove() {
         guard let buf = buffer else { return }
-        buf.insert("\n", at: buf.lineStart(line: cursorLine))
-        cursorCol = 0; modified = true; ensureCursorVisible()
+        let offset = buf.lineStart(line: cursorLine)
+        buf.insert("\n", at: offset)
+        recordAction(offset: offset, deleted: "", inserted: "\n")
+        cursorCol = 0; ensureCursorVisible()
     }
 
     private func deleteCharAtCursor() {
@@ -347,7 +379,10 @@ class EditorWindow: Window {
         let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
         let offset = buf.lineStart(line: cursorLine) + byteOff
         let deleteLen = String(chars[cursorCol]).utf8.count
-        buf.delete(at: offset, length: deleteLen); clampCol(); modified = true
+        let deletedText = String(chars[cursorCol])
+        buf.delete(at: offset, length: deleteLen)
+        recordAction(offset: offset, deleted: deletedText, inserted: "")
+        clampCol()
     }
 
     private func deleteBeforeCursor() {
@@ -357,51 +392,65 @@ class EditorWindow: Window {
             let deleteByteStart = buf.charToByteOffsetInLine(line: cursorLine, charIndex: prevIdx)
             let deleteByteEnd = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
             let offset = buf.lineStart(line: cursorLine) + deleteByteStart
-            buf.delete(at: offset, length: deleteByteEnd - deleteByteStart)
+            let deleteLen = deleteByteEnd - deleteByteStart
+            let deletedText = buf.getText(range: offset..<(offset + deleteLen))
+            buf.delete(at: offset, length: deleteLen)
+            recordAction(offset: offset, deleted: deletedText, inserted: "")
             cursorCol -= 1
         } else if cursorLine > 0 {
             let currentLineStart = buf.lineStart(line: cursorLine)
-            buf.delete(at: currentLineStart - 1, length: 1)
+            let offset = currentLineStart - 1
+            let deletedText = "\n"
+            buf.delete(at: offset, length: 1)
+            recordAction(offset: offset, deleted: deletedText, inserted: "")
             cursorLine -= 1
             cursorCol = max(0, buf.lineCharLength(line: cursorLine) - 1)
         }
-        modified = true
     }
 
     private func deleteCurrentLine() {
         guard let buf = buffer, buf.lineCount > 0 else { return }
         let start = buf.lineStart(line: cursorLine)
         let len = buf.lineEnd(line: cursorLine) - start
-        yank(buf.getLine(cursorLine) + "\n")
+        let deletedText = buf.getText(range: start..<(start + len))
+        yank(deletedText)
         buf.delete(at: start, length: len)
+        recordAction(offset: start, deleted: deletedText, inserted: "")
         if cursorLine >= buf.lineCount { cursorLine = max(0, buf.lineCount - 1) }
-        cursorCol = 0; modified = true
+        cursorCol = 0
     }
 
     private func yankCurrentLine() { guard let buf = buffer else { return }; yank(buf.getLine(cursorLine) + "\n") }
 
     private func pasteAfter() {
         guard let buf = buffer, !yankBuffer.isEmpty else { return }
+        let offset: Int
         if yankBuffer.hasSuffix("\n") {
-            buf.insert(yankBuffer, at: buf.lineEnd(line: cursorLine))
+            offset = buf.lineEnd(line: cursorLine)
+            buf.insert(yankBuffer, at: offset)
             cursorLine += 1; cursorCol = 0
         } else {
-            buf.insert(yankBuffer, at: buf.lineStart(line: cursorLine) + cursorCol + 1)
+            let charAfterOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol + 1)
+            offset = buf.lineStart(line: cursorLine) + charAfterOff
+            buf.insert(yankBuffer, at: offset)
             cursorCol += yankBuffer.count
         }
-        modified = true
+        recordAction(offset: offset, deleted: "", inserted: yankBuffer)
     }
 
     private func pasteBefore() {
         guard let buf = buffer, !yankBuffer.isEmpty else { return }
+        let offset: Int
         if yankBuffer.hasSuffix("\n") {
-            buf.insert(yankBuffer, at: buf.lineStart(line: cursorLine))
+            offset = buf.lineStart(line: cursorLine)
+            buf.insert(yankBuffer, at: offset)
             cursorCol = 0
         } else {
-            buf.insert(yankBuffer, at: buf.lineStart(line: cursorLine) + cursorCol)
+            offset = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
+            buf.insert(yankBuffer, at: offset)
             cursorCol += yankBuffer.count
         }
-        modified = true
+        recordAction(offset: offset, deleted: "", inserted: yankBuffer)
     }
 
     private func yankVisualSelection() {
@@ -418,9 +467,11 @@ class EditorWindow: Window {
         let startOffset = buf.lineStart(line: startLine) + buf.charToByteOffsetInLine(line: startLine, charIndex: startCol)
         let endOffset = buf.lineStart(line: endLine) + buf.charToByteOffsetInLine(line: endLine, charIndex: endCol + 1)
         let len = min(endOffset, buf.totalLength) - startOffset
-        yank(buf.getText(range: startOffset..<(startOffset + len)))
+        let deletedText = buf.getText(range: startOffset..<(startOffset + len))
+        yank(deletedText)
         buf.delete(at: startOffset, length: len)
-        cursorLine = startLine; cursorCol = startCol; modified = true
+        recordAction(offset: startOffset, deleted: deletedText, inserted: "")
+        cursorLine = startLine; cursorCol = startCol
     }
 
     private func visualRange() -> (startLine: Int, startCol: Int, endLine: Int, endCol: Int) {
@@ -453,11 +504,12 @@ class EditorWindow: Window {
         let start = buf.lineStart(line: startLine)
         let end = buf.lineEnd(line: endLine)
         let len = end - start
-        yank(buf.getText(range: start..<min(end, buf.totalLength)))
+        let deletedText = buf.getText(range: start..<min(end, buf.totalLength))
+        yank(deletedText)
         buf.delete(at: start, length: len)
+        recordAction(offset: start, deleted: deletedText, inserted: "")
         cursorLine = min(startLine, max(0, buf.lineCount - 1))
         cursorCol = 0
-        modified = true
     }
 
     private func searchNext() {
@@ -491,8 +543,51 @@ class EditorWindow: Window {
         clampCol(); ensureCursorVisible()
     }
 
-    private func undo() {}
-    private func redo() {}
+    private func undo() {
+        guard let buf = buffer, !undoStack.isEmpty else { return }
+        let action = undoStack.removeLast()
+        isUndoRedoing = true
+
+        if !action.inserted.isEmpty {
+            let delOffset = action.offset
+            buf.delete(at: delOffset, length: action.inserted.utf8.count)
+        }
+        if !action.deleted.isEmpty {
+            buf.insert(action.deleted, at: action.offset)
+        }
+
+        redoStack.append(action)
+        isUndoRedoing = false
+        modified = !undoStack.isEmpty
+
+        let (line, byteCol) = buf.offsetToLineCol(action.offset)
+        cursorLine = line
+        cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol)
+        ensureCursorVisible()
+    }
+
+    private func redo() {
+        guard let buf = buffer, !redoStack.isEmpty else { return }
+        let action = redoStack.removeLast()
+        isUndoRedoing = true
+
+        if !action.inserted.isEmpty {
+            buf.delete(at: action.offset, length: action.inserted.utf8.count)
+        }
+        if !action.deleted.isEmpty {
+            buf.insert(action.deleted, at: action.offset)
+        }
+
+        undoStack.append(action)
+        isUndoRedoing = false
+        modified = true
+
+        let endOffset = action.offset + action.deleted.utf8.count
+        let (line, byteCol) = buf.offsetToLineCol(min(endOffset, buf.totalLength))
+        cursorLine = line
+        cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol)
+        ensureCursorVisible()
+    }
 
     func ensureCursorVisible() {
         if cursorLine < scrollY { scrollY = cursorLine }
@@ -695,7 +790,7 @@ class EditorWindow: Window {
     }
 
     private func semanticTokensFor(line: Int) -> [SemanticToken] {
-        semanticTokens.filter { $0.line == line }
+        tokenIndex[line] ?? []
     }
 
     private func tokenColorAt(line: Int, col: Int, tokens: [SemanticToken]) -> Color {
