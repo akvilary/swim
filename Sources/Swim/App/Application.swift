@@ -13,6 +13,7 @@ class Application {
     private var fileExplorerWindow: FileExplorerWindow!
     private var gitPanelWindow: GitPanelWindow!
     private var searchWindow: SearchWindow!
+    private var commandWindow: CommandWindow!
 
     private var windows: [Window] = []
     private var focusIndex: Int = 0
@@ -28,13 +29,19 @@ class Application {
         fileExplorerWindow = FileExplorerWindow()
         gitPanelWindow = GitPanelWindow()
         searchWindow = SearchWindow()
+        commandWindow = CommandWindow()
 
-        gitPanelWindow.onNeedsRender = { [weak self] in
+        gitPanelWindow.onRunCommand = { [weak self] label, args in
+            self?.runGitCommand(label: label, args: args)
+        }
+
+        commandWindow.onNeedsRender = { [weak self] in
+            self?.recalculateLayout()
             self?.updateAllWindows()
             self?.render()
         }
 
-        windows = [editorWindow, statusBarWindow, fileExplorerWindow, gitPanelWindow, searchWindow]
+        windows = [editorWindow, statusBarWindow, fileExplorerWindow, gitPanelWindow, searchWindow, commandWindow]
 
         editorWindow.onCommand = { [weak self] cmd in
             self?.handleEditorCommand(cmd)
@@ -72,6 +79,7 @@ class Application {
         fileExplorerWindow.visible = true
         gitPanelWindow.visible = false
         searchWindow.visible = false
+        commandWindow.visible = false
         fileExplorerWindow.loadDirectory(cwd)
         gitPanelWindow.workingDirectory = cwd
 
@@ -82,8 +90,8 @@ class Application {
 
         while running {
             pollLSP()
-            gitPanelWindow.pollGitOp()
-            tickGitSpinner()
+            commandWindow.pollResult()
+            tickCommandSpinner()
             if terminal.bytesAvailable() {
                 if let key = Key.parse(from: terminal) {
                     handleGlobalKey(key)
@@ -110,15 +118,23 @@ class Application {
 
     private var lastSpinnerTick: TimeInterval = 0
 
-    private func tickGitSpinner() {
-        guard gitPanelWindow.isRunningGitOp else { return }
+    private func tickCommandSpinner() {
+        guard commandWindow.visible && commandWindow.isRunning else { return }
         let now = Date().timeIntervalSince1970
         guard now - lastSpinnerTick >= 0.1 else { return }
         lastSpinnerTick = now
-        gitPanelWindow.spinnerFrame &+= 1
-        gitPanelWindow.dirty = true
+        commandWindow.spinnerFrame &+= 1
+        commandWindow.dirty = true
         updateAllWindows()
         render()
+    }
+
+    private func runGitCommand(label: String, args: [String]) {
+        commandWindow.workingDirectory = gitPanelWindow.workingDirectory
+        commandWindow.runCommand(label, args: args)
+        recalculateLayout()
+        focusIndex = windows.firstIndex(where: { $0 === commandWindow }) ?? 0
+        markAllDirty()
     }
 
     private func setupLSP(rootPath: String) {
@@ -309,14 +325,18 @@ class Application {
 
         var gitH = 0
         var searchH = 0
+        var cmdH = 0
         if gitPanelWindow.visible {
             gitH = min(25, h / 2)
         }
         if searchWindow.visible {
             searchH = min(15, h / 3)
         }
+        if commandWindow.visible {
+            cmdH = min(25, h / 2)
+        }
 
-        let editorH = max(1, h - statusH - gitH - searchH)
+        let editorH = max(1, h - statusH - gitH - searchH - cmdH)
 
         fileExplorerWindow.resize(x: 0, y: 0, width: explorerW, height: editorH)
         editorWindow.resize(x: editorX, y: 0, width: editorW, height: editorH)
@@ -328,6 +348,10 @@ class Application {
         }
         if searchWindow.visible {
             searchWindow.resize(x: 0, y: bottomY, width: w, height: searchH)
+            bottomY += searchH
+        }
+        if commandWindow.visible {
+            commandWindow.resize(x: 0, y: bottomY, width: w, height: cmdH)
         }
 
         statusBarWindow.resize(x: 0, y: h - statusH, width: w, height: statusH)
@@ -475,6 +499,7 @@ class Application {
                     if focused === gitPanelWindow { toggleGitPanel() }
                     else if focused === searchWindow { toggleSearch() }
                     else if focused === fileExplorerWindow { toggleFileExplorer() }
+                    else if focused === commandWindow { commandWindow.visible = false; recalculateLayout(); markAllDirty() }
                 } else {
                     if cmd == "q!" { running = false }
                     else if !editorWindow.modified { running = false }
