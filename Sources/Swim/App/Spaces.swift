@@ -5,13 +5,16 @@ class Space {
     private(set) var windows: [String: Window] = [:]
     var focused: Window!
     var prevFocused: Window!
+    weak var delegate: WindowDelegate?
 
-    init(id: String) {
+    init(id: String, delegate: WindowDelegate? = nil) {
         self.id = id
+        self.delegate = delegate
     }
 
     func addWindow(_ name: String, _ window: Window) {
         windows[name] = window
+        window.delegate = delegate
     }
 
     var visibleWindows: [Window] {

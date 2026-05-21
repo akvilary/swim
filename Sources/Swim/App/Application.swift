@@ -13,9 +13,6 @@ class Application: WindowDelegate {
     private var lspClient: LSPClient?
     private var lspVersion: Int = 0
     private lazy var renderer = Renderer(terminal: terminal)
-    private var editorExplorerVisible = false
-    private var editorGitVisible = false
-    private var editorCommandVisible = false
 
     init(filePath: String? = nil) {
         let editor = EditorWindow()
@@ -26,14 +23,14 @@ class Application: WindowDelegate {
         let preview = PreviewWindow()
         let command = CommandWindow()
 
-        let editorSpace = Space(id: "editor")
+        let editorSpace = Space(id: "editor", delegate: self)
         editorSpace.addWindow("fileExplorer", fileExplorer)
         editorSpace.addWindow("editor", editor)
         editorSpace.addWindow("gitPanel", gitPanel)
         editorSpace.addWindow("command", command)
         editorSpace.addWindow("statusBar", statusBar)
 
-        let searchSpace = Space(id: "search")
+        let searchSpace = Space(id: "search", delegate: self)
         searchSpace.addWindow("searchResults", searchResults)
         searchSpace.addWindow("preview", preview)
         searchSpace.addWindow("statusBar", statusBar)
@@ -41,13 +38,6 @@ class Application: WindowDelegate {
         spaces.addSpace(editorSpace)
         spaces.addSpace(searchSpace)
         spaces.switchTo("editor")
-
-        for window in editorSpace.windows.values {
-            window.delegate = self
-        }
-        for window in searchSpace.windows.values {
-            window.delegate = self
-        }
 
         if let path = filePath {
             editor.openFile(path)
@@ -316,11 +306,14 @@ class Application: WindowDelegate {
 
     private func toggleSearch() {
         let searchResults = spaces["search"]!.windows["searchResults"]! as! SearchResultsWindow
+        let preview = spaces["search"]!.windows["preview"]!
         let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
         let gitPanel = spaces["editor"]!.windows["gitPanel"]! as! GitPanelWindow
         if spaces.current.id == "search" {
             switchToSpace("editor")
         } else {
+            searchResults.visible = true
+            preview.visible = true
             switchToSpace("search")
             let cwd = gitPanel.workingDirectory.isEmpty
                 ? FileManager.default.currentDirectoryPath
@@ -335,35 +328,7 @@ class Application: WindowDelegate {
     }
 
     private func switchToSpace(_ spaceId: String) {
-        let fileExplorer = spaces["editor"]!.windows["fileExplorer"]!
-        let gitPanel = spaces["editor"]!.windows["gitPanel"]!
-        let command = spaces["editor"]!.windows["command"]!
-        let searchResults = spaces["search"]!.windows["searchResults"]!
-        let preview = spaces["search"]!.windows["preview"]!
-
-        if spaces.current.id == "editor" {
-            editorExplorerVisible = fileExplorer.visible
-            editorGitVisible = gitPanel.visible
-            editorCommandVisible = command.visible
-        }
-        fileExplorer.visible = false
-        gitPanel.visible = false
-        command.visible = false
-        searchResults.visible = false
-        preview.visible = false
-
         spaces.switchTo(spaceId)
-        switch spaceId {
-        case "editor":
-            fileExplorer.visible = editorExplorerVisible
-            gitPanel.visible = editorGitVisible
-            command.visible = editorCommandVisible
-        case "search":
-            searchResults.visible = true
-            preview.visible = true
-        default:
-            break
-        }
         recalculateLayout()
         spaces.markAllDirty()
     }
