@@ -354,6 +354,10 @@ class GitPanelWindow: Window {
         }.start()
     }
 
+    override func poll() {
+        pollRefresh()
+    }
+
     func pollRefresh() {
         _gitLock.lock()
         let done = _gitRefreshDone

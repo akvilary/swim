@@ -81,4 +81,6 @@ class Window {
     func handleKey(_ key: Key) -> Bool { false }
 
     func update() {}
+
+    func poll() {}
 }

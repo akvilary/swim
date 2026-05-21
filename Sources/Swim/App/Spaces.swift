@@ -32,6 +32,7 @@ class Space {
 
     func update() {
         for window in windows.values {
+            window.poll()
             if window.visible {
                 window.update()
             }

@@ -191,6 +191,10 @@ class SearchResultsWindow: Window {
         }.start()
     }
 
+    override func poll() {
+        pollSearch()
+    }
+
     func pollSearch() {
         _searchLock.lock()
         let done = _searchDone

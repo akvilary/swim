@@ -80,19 +80,12 @@ class Application: WindowDelegate {
             return
         }
 
-        let command = spaces["editor"]!.windows["command"]! as! CommandWindow
-        let searchResults = spaces["search"]!.windows["searchResults"]! as! SearchResultsWindow
-        let gitPanel = spaces["editor"]!.windows["gitPanel"]! as! GitPanelWindow
-
         recalculateLayout()
         spaces.current.update()
         render()
 
         while running {
             pollLSP()
-            command.pollResult()
-            searchResults.pollSearch()
-            gitPanel.pollRefresh()
             tickSpinners()
             if terminal.hasResizeEvent {
                 terminal.consumeResizeEvent()

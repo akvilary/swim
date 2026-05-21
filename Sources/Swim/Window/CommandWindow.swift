@@ -54,6 +54,10 @@ class CommandWindow: Window {
         }.start()
     }
 
+    override func poll() {
+        pollResult()
+    }
+
     func pollResult() {
         _cmdLock.lock()
         let done = _cmdDone
