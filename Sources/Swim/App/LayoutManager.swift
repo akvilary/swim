@@ -7,16 +7,11 @@ struct WindowLayout {
     let height: Int
 }
 
-enum Space {
-    case editor
-    case search
-}
-
 struct LayoutManager {
     static func calculate(
         terminalWidth: Int,
         terminalHeight: Int,
-        space: Space,
+        space: String,
         showExplorer: Bool,
         showGit: Bool,
         showCommand: Bool
@@ -26,7 +21,7 @@ struct LayoutManager {
         let statusH = 1
         let zero = WindowLayout(x: 0, y: 0, width: 0, height: 0)
 
-        if space == .search {
+        if space == "search" {
             let resultsW = max(30, min(w / 3, w - 30))
             let searchResults = WindowLayout(x: 0, y: 0, width: resultsW, height: h - statusH)
             let preview = WindowLayout(x: resultsW, y: 0, width: w - resultsW, height: h - statusH)

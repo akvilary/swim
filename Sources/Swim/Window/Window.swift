@@ -6,7 +6,7 @@ class Window {
     var y: Int = 0
     var width: Int = 0
     var height: Int = 0
-    var visible: Bool = true
+    var visible: Bool = false
     var focused: Bool = false
     var dirty: Bool = true
 

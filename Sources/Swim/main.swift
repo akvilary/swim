@@ -19,5 +19,5 @@ if CommandLine.arguments.contains("--help") || CommandLine.arguments.contains("-
 }
 
 let filePath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
-let app = Application()
-app.run(filePath: filePath)
+let app = Application(filePath: filePath)
+app.run()

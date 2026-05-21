@@ -8,21 +8,66 @@ import Foundation
 
 class Application: WindowDelegate {
     private let terminal = Terminal.shared
-    private let windows = Windows()
+    private let spaces = Spaces()
     private var running = true
     private var lspClient: LSPClient?
     private var lspVersion: Int = 0
     private lazy var renderer = Renderer(terminal: terminal)
-    private var currentSpace: Space = .editor
     private var editorExplorerVisible = false
     private var editorGitVisible = false
     private var editorCommandVisible = false
 
-    init() {
-        windows.assignDelegates(self)
+    init(filePath: String? = nil) {
+        let editor = EditorWindow()
+        let statusBar = StatusBarWindow()
+        let fileExplorer = FileExplorerWindow()
+        let gitPanel = GitPanelWindow()
+        let searchResults = SearchResultsWindow()
+        let preview = PreviewWindow()
+        let command = CommandWindow()
+
+        let editorSpace = Space(id: "editor")
+        editorSpace.addWindow("fileExplorer", fileExplorer)
+        editorSpace.addWindow("editor", editor)
+        editorSpace.addWindow("gitPanel", gitPanel)
+        editorSpace.addWindow("command", command)
+        editorSpace.addWindow("statusBar", statusBar)
+
+        let searchSpace = Space(id: "search")
+        searchSpace.addWindow("searchResults", searchResults)
+        searchSpace.addWindow("preview", preview)
+        searchSpace.addWindow("statusBar", statusBar)
+
+        spaces.addSpace(editorSpace)
+        spaces.addSpace(searchSpace)
+        spaces.switchTo("editor")
+
+        for window in editorSpace.windows.values {
+            window.delegate = self
+        }
+        for window in searchSpace.windows.values {
+            window.delegate = self
+        }
+
+        if let path = filePath {
+            editor.openFile(path)
+        } else {
+            editor.newFile()
+        }
+
+        let cwd = FileManager.default.currentDirectoryPath
+        fileExplorer.visible = true
+        editor.visible = true
+        statusBar.visible = true
+        fileExplorer.loadDirectory(cwd)
+        gitPanel.workingDirectory = cwd
+
+        setupLSP(rootPath: cwd)
+
+        spaces.current.focused = editor
     }
 
-    func run(filePath: String? = nil) {
+    func run() {
         terminal.setup()
 
         if terminal.width < 10 || terminal.height < 5 {
@@ -35,47 +80,33 @@ class Application: WindowDelegate {
             return
         }
 
-        if let path = filePath {
-            windows.editor.openFile(path)
-        } else {
-            windows.editor.newFile()
-        }
+        let command = spaces["editor"]!.windows["command"]! as! CommandWindow
+        let searchResults = spaces["search"]!.windows["searchResults"]! as! SearchResultsWindow
+        let gitPanel = spaces["editor"]!.windows["gitPanel"]! as! GitPanelWindow
 
-        let cwd = FileManager.default.currentDirectoryPath
-        windows.fileExplorer.visible = true
-        windows.gitPanel.visible = false
-        windows.searchResults.visible = false
-        windows.preview.visible = false
-        windows.command.visible = false
-        windows.fileExplorer.loadDirectory(cwd)
-        windows.gitPanel.workingDirectory = cwd
-
-        setupLSP(rootPath: cwd)
-
-        windows.focused = windows.editor
         recalculateLayout()
-        windows.updateAll()
+        spaces.current.update()
         render()
 
         while running {
             pollLSP()
-            windows.command.pollResult()
-            windows.searchResults.pollSearch()
-            windows.gitPanel.pollRefresh()
+            command.pollResult()
+            searchResults.pollSearch()
+            gitPanel.pollRefresh()
             tickSpinners()
             if terminal.hasResizeEvent {
                 terminal.consumeResizeEvent()
                 renderer.needsFullRedraw = true
                 recalculateLayout()
-                windows.markAllDirty()
-                windows.updateAll()
+                spaces.markAllDirty()
+                spaces.current.update()
                 render()
             }
             if terminal.bytesAvailable() {
                 if let key = Key.parse(from: terminal) {
                     handleGlobalKey(key)
                 }
-                windows.updateAll()
+                spaces.current.update()
                 render()
             }
         }
@@ -87,10 +118,11 @@ class Application: WindowDelegate {
     private func pollLSP() {
         guard let client = lspClient, client.hasPendingTokens else { return }
         if let tokens = client.pendingTokens {
-            windows.editor.semanticTokens = tokens
-            windows.editor.dirty = true
+            let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
+            editor.semanticTokens = tokens
+            editor.dirty = true
             client.pendingTokens = nil
-            windows.updateAll()
+            spaces.current.update()
             render()
         }
     }
@@ -101,33 +133,38 @@ class Application: WindowDelegate {
         let now = Date().timeIntervalSince1970
         guard now - lastSpinnerTick >= 0.1 else { return }
         var anyDirty = false
-        if windows.command.visible && windows.command.isRunning {
-            windows.command.spinnerFrame &+= 1
-            windows.command.dirty = true
+        let command = spaces["editor"]!.windows["command"]! as! CommandWindow
+        let searchResults = spaces["search"]!.windows["searchResults"]! as! SearchResultsWindow
+        let gitPanel = spaces["editor"]!.windows["gitPanel"]! as! GitPanelWindow
+        if command.visible && command.isRunning {
+            command.spinnerFrame &+= 1
+            command.dirty = true
             anyDirty = true
         }
-        if windows.searchResults.visible && windows.searchResults.isSearching {
-            windows.searchResults.dirty = true
+        if searchResults.visible && searchResults.isSearching {
+            searchResults.dirty = true
             anyDirty = true
         }
-        if windows.gitPanel.visible && windows.gitPanel.isRefreshing {
-            windows.gitPanel.dirty = true
+        if gitPanel.visible && gitPanel.isRefreshing {
+            gitPanel.dirty = true
             anyDirty = true
         }
         if anyDirty {
             lastSpinnerTick = now
-            windows.updateAll()
+            spaces.current.update()
             render()
         }
     }
 
     private func runGitCommandInternal(label: String, args: [String]) {
-        windows.command.workingDirectory = windows.gitPanel.workingDirectory
-        windows.command.runCommand(label, args: args)
+        let command = spaces["editor"]!.windows["command"]! as! CommandWindow
+        let gitPanel = spaces["editor"]!.windows["gitPanel"]! as! GitPanelWindow
+        command.workingDirectory = gitPanel.workingDirectory
+        command.runCommand(label, args: args)
         recalculateLayout()
-        windows.prevFocused = windows.focused
-        windows.focused = windows.command
-        windows.markAllDirty()
+        spaces.current.prevFocused = spaces.current.focused
+        spaces.current.focused = command
+        spaces.markAllDirty()
     }
 
     private func setupLSP(rootPath: String) {
@@ -159,14 +196,16 @@ class Application: WindowDelegate {
         client.start(executable: path, rootUri: "file://\(rootPath)")
         lspClient = client
 
-        if let filePath = windows.editor.filePath {
+        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
+        if let filePath = editor.filePath {
             notifyLSPFileOpen(filePath)
         }
     }
 
     private func notifyLSPFileOpen(_ path: String) {
         guard let client = lspClient else { return }
-        guard let buf = windows.editor.buffer, buf.totalLength < 5_000_000 else { return }
+        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
+        guard let buf = editor.buffer, buf.totalLength < 5_000_000 else { return }
         let uri = "file://\(path)"
         let ext = (path as NSString).pathExtension
         let langId: String
@@ -183,16 +222,18 @@ class Application: WindowDelegate {
         case "dart": langId = "dart"
         default: langId = "plaintext"
         }
-        let text = windows.editor.buffer?.getAllText() ?? ""
+        let text = editor.buffer?.getAllText() ?? ""
         client.openDocument(uri: uri, languageId: langId, text: text)
     }
 
     private func handleGlobalKey(_ key: Key) {
-        if windows.editor.lastError != nil {
-            windows.editor.lastError = nil
+        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
+
+        if editor.lastError != nil {
+            editor.lastError = nil
         }
-        if windows.editor.mode == .command {
-            if windows.editor.handleKey(key) {
+        if editor.mode == .command {
+            if editor.handleKey(key) {
                 updateStatusBar()
             }
             return
@@ -216,166 +257,190 @@ class Application: WindowDelegate {
         }
 
         if case .tab = key {
-            if case .normal = windows.editor.mode {
+            if case .normal = editor.mode {
                 cycleFocus()
                 return
             }
         }
 
         if case .char(":") = key {
-            if windows.focused !== windows.editor {
-                windows.focused = windows.editor
-                windows.updateFocusStates()
-                windows.markAllDirty()
+            if spaces.current.focused !== editor {
+                spaces.current.focused = editor
+                spaces.current.updateFocusStates()
+                spaces.markAllDirty()
             }
-            windows.editor.mode = .command
-            windows.editor.commandBuffer = ""
-            windows.editor.dirty = true
+            editor.mode = .command
+            editor.commandBuffer = ""
+            editor.dirty = true
             updateStatusBar()
             return
         }
 
-        let focused = windows.focused ?? windows.editor
+        let focused = spaces.current.focused ?? editor
         if focused.handleKey(key) {
-            if focused === windows.editor {
+            if focused === editor {
                 updateStatusBar()
                 notifyLSPChange()
             }
-        } else if case .escape = key, focused !== windows.editor {
-            if currentSpace != .editor {
-                switchToSpace(.editor)
-                windows.focused = windows.editor
-                windows.updateFocusStates()
+        } else if case .escape = key, focused !== editor {
+            if spaces.current.id != "editor" {
+                switchToSpace("editor")
+                spaces.current.focused = editor
+                spaces.current.updateFocusStates()
             } else {
                 focused.visible = false
-                if let prev = windows.prevFocused, prev.visible {
-                    windows.focused = prev
+                if let prev = spaces.current.prevFocused, prev.visible {
+                    spaces.current.focused = prev
                 } else {
-                    windows.focused = windows.editor
+                    spaces.current.focused = editor
                 }
                 recalculateLayout()
-                windows.markAllDirty()
+                spaces.markAllDirty()
             }
         }
     }
 
     private func toggleFileExplorer() {
-        windows.fileExplorer.visible = !windows.fileExplorer.visible
-        if windows.fileExplorer.visible {
-            windows.focused = windows.fileExplorer
+        let fileExplorer = spaces["editor"]!.windows["fileExplorer"]!
+        fileExplorer.visible = !fileExplorer.visible
+        if fileExplorer.visible {
+            spaces.current.focused = fileExplorer
         }
         recalculateLayout()
-        windows.markAllDirty()
+        spaces.markAllDirty()
     }
 
     private func toggleGitPanel() {
-        windows.gitPanel.visible = !windows.gitPanel.visible
-        if windows.gitPanel.visible {
-            windows.gitPanel.refresh()
-            windows.focused = windows.gitPanel
+        let gitPanel = spaces["editor"]!.windows["gitPanel"]! as! GitPanelWindow
+        gitPanel.visible = !gitPanel.visible
+        if gitPanel.visible {
+            gitPanel.refresh()
+            spaces.current.focused = gitPanel
         }
         recalculateLayout()
-        windows.markAllDirty()
+        spaces.markAllDirty()
     }
 
     private func toggleSearch() {
-        if currentSpace == .search {
-            switchToSpace(.editor)
+        let searchResults = spaces["search"]!.windows["searchResults"]! as! SearchResultsWindow
+        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
+        let gitPanel = spaces["editor"]!.windows["gitPanel"]! as! GitPanelWindow
+        if spaces.current.id == "search" {
+            switchToSpace("editor")
         } else {
-            switchToSpace(.search)
-            let cwd = windows.gitPanel.workingDirectory.isEmpty
+            switchToSpace("search")
+            let cwd = gitPanel.workingDirectory.isEmpty
                 ? FileManager.default.currentDirectoryPath
-                : windows.gitPanel.workingDirectory
-            windows.searchResults.prepareInput(workingDirectory: cwd)
-            let searchQuery = windows.editor.searchQuery
+                : gitPanel.workingDirectory
+            searchResults.prepareInput(workingDirectory: cwd)
+            let searchQuery = editor.searchQuery
             if !searchQuery.isEmpty {
-                windows.searchResults.search(query: searchQuery, in: cwd)
+                searchResults.search(query: searchQuery, in: cwd)
             }
-            windows.focused = windows.searchResults
+            spaces.current.focused = searchResults
         }
     }
 
-    private func switchToSpace(_ space: Space) {
-        if currentSpace == .editor {
-            editorExplorerVisible = windows.fileExplorer.visible
-            editorGitVisible = windows.gitPanel.visible
-            editorCommandVisible = windows.command.visible
-        }
-        windows.fileExplorer.visible = false
-        windows.gitPanel.visible = false
-        windows.command.visible = false
-        windows.searchResults.visible = false
-        windows.preview.visible = false
+    private func switchToSpace(_ spaceId: String) {
+        let fileExplorer = spaces["editor"]!.windows["fileExplorer"]!
+        let gitPanel = spaces["editor"]!.windows["gitPanel"]!
+        let command = spaces["editor"]!.windows["command"]!
+        let searchResults = spaces["search"]!.windows["searchResults"]!
+        let preview = spaces["search"]!.windows["preview"]!
 
-        currentSpace = space
-        switch space {
-        case .editor:
-            windows.fileExplorer.visible = editorExplorerVisible
-            windows.gitPanel.visible = editorGitVisible
-            windows.command.visible = editorCommandVisible
-        case .search:
-            windows.searchResults.visible = true
-            windows.preview.visible = true
+        if spaces.current.id == "editor" {
+            editorExplorerVisible = fileExplorer.visible
+            editorGitVisible = gitPanel.visible
+            editorCommandVisible = command.visible
+        }
+        fileExplorer.visible = false
+        gitPanel.visible = false
+        command.visible = false
+        searchResults.visible = false
+        preview.visible = false
+
+        spaces.switchTo(spaceId)
+        switch spaceId {
+        case "editor":
+            fileExplorer.visible = editorExplorerVisible
+            gitPanel.visible = editorGitVisible
+            command.visible = editorCommandVisible
+        case "search":
+            searchResults.visible = true
+            preview.visible = true
+        default:
+            break
         }
         recalculateLayout()
-        windows.markAllDirty()
+        spaces.markAllDirty()
     }
 
     private func cycleFocus() {
-        let focusable = windows.focusable()
+        let focusable = spaces.current.focusable()
         guard focusable.count > 1 else { return }
-        guard let currentIdx = focusable.firstIndex(where: { $0 === windows.focused }) else { return }
-        windows.prevFocused = windows.focused
-        windows.focused = focusable[(currentIdx + 1) % focusable.count]
-        windows.markAllDirty()
+        guard let currentIdx = focusable.firstIndex(where: { $0 === spaces.current.focused }) else { return }
+        spaces.current.prevFocused = spaces.current.focused
+        spaces.current.focused = focusable[(currentIdx + 1) % focusable.count]
+        spaces.markAllDirty()
     }
 
     private func recalculateLayout() {
+        let fileExplorer = spaces["editor"]!.windows["fileExplorer"]!
+        let editor = spaces["editor"]!.windows["editor"]!
+        let gitPanel = spaces["editor"]!.windows["gitPanel"]!
+        let searchResults = spaces["search"]!.windows["searchResults"]!
+        let preview = spaces["search"]!.windows["preview"]!
+        let command = spaces["editor"]!.windows["command"]!
+        let statusBar = spaces["editor"]!.windows["statusBar"]!
+
         let layout = LayoutManager.calculate(
             terminalWidth: terminal.width,
             terminalHeight: terminal.height,
-            space: currentSpace,
-            showExplorer: windows.fileExplorer.visible,
-            showGit: windows.gitPanel.visible,
-            showCommand: windows.command.visible
+            space: spaces.current.id,
+            showExplorer: fileExplorer.visible,
+            showGit: gitPanel.visible,
+            showCommand: command.visible
         )
 
-        windows.fileExplorer.resize(x: layout.explorer.x, y: layout.explorer.y, width: layout.explorer.width, height: layout.explorer.height)
-        windows.editor.resize(x: layout.editor.x, y: layout.editor.y, width: layout.editor.width, height: layout.editor.height)
-        windows.gitPanel.resize(x: layout.git.x, y: layout.git.y, width: layout.git.width, height: layout.git.height)
-        windows.searchResults.resize(x: layout.searchResults.x, y: layout.searchResults.y, width: layout.searchResults.width, height: layout.searchResults.height)
-        windows.preview.resize(x: layout.preview.x, y: layout.preview.y, width: layout.preview.width, height: layout.preview.height)
-        windows.command.resize(x: layout.command.x, y: layout.command.y, width: layout.command.width, height: layout.command.height)
-        windows.statusBar.resize(x: layout.status.x, y: layout.status.y, width: layout.status.width, height: layout.status.height)
+        fileExplorer.resize(x: layout.explorer.x, y: layout.explorer.y, width: layout.explorer.width, height: layout.explorer.height)
+        editor.resize(x: layout.editor.x, y: layout.editor.y, width: layout.editor.width, height: layout.editor.height)
+        gitPanel.resize(x: layout.git.x, y: layout.git.y, width: layout.git.width, height: layout.git.height)
+        searchResults.resize(x: layout.searchResults.x, y: layout.searchResults.y, width: layout.searchResults.width, height: layout.searchResults.height)
+        preview.resize(x: layout.preview.x, y: layout.preview.y, width: layout.preview.width, height: layout.preview.height)
+        command.resize(x: layout.command.x, y: layout.command.y, width: layout.command.width, height: layout.command.height)
+        statusBar.resize(x: layout.status.x, y: layout.status.y, width: layout.status.width, height: layout.status.height)
     }
 
     private func render() {
+        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
         let cursorInfo: (window: Window, cursorLine: Int, cursorCol: Int, scrollY: Int, scrollX: Int, lineNumberWidth: Int, mode: EditorMode)? = (
-            windows.editor,
-            windows.editor.cursorLine,
-            windows.editor.cursorCol,
-            windows.editor.scrollY,
-            windows.editor.scrollX,
-            windows.editor.lineNumberWidth(),
-            windows.editor.mode
+            editor,
+            editor.cursorLine,
+            editor.cursorCol,
+            editor.scrollY,
+            editor.scrollX,
+            editor.lineNumberWidth(),
+            editor.mode
         )
-        renderer.render(windows: windows.all, cursorInfo: cursorInfo)
+        renderer.render(windows: spaces.current.visibleWindows, cursorInfo: cursorInfo)
     }
 
     private func updateStatusBar() {
-        windows.statusBar.modeText = modeString(windows.editor.mode)
-        windows.statusBar.fileName = windows.editor.filePath ?? "[No Name]"
-        windows.statusBar.cursorLine = windows.editor.cursorLine
-        windows.statusBar.cursorCol = windows.editor.cursorCol
-        windows.statusBar.totalLines = windows.editor.buffer?.lineCount ?? 0
-        windows.statusBar.modified = windows.editor.modified
-        windows.statusBar.commandText = windows.editor.commandBuffer
-        windows.statusBar.errorMessage = windows.editor.lastError
-        if let path = windows.editor.filePath {
+        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
+        let statusBar = spaces["editor"]!.windows["statusBar"]! as! StatusBarWindow
+        statusBar.modeText = modeString(editor.mode)
+        statusBar.fileName = editor.filePath ?? "[No Name]"
+        statusBar.cursorLine = editor.cursorLine
+        statusBar.cursorCol = editor.cursorCol
+        statusBar.totalLines = editor.buffer?.lineCount ?? 0
+        statusBar.modified = editor.modified
+        statusBar.commandText = editor.commandBuffer
+        statusBar.errorMessage = editor.lastError
+        if let path = editor.filePath {
             let ext = (path as NSString).pathExtension
-            windows.statusBar.fileType = ext.isEmpty ? "" : "[\(ext)]"
+            statusBar.fileType = ext.isEmpty ? "" : "[\(ext)]"
         }
-        windows.statusBar.dirty = true
+        statusBar.dirty = true
     }
 
     private func modeString(_ mode: EditorMode) -> String {
@@ -389,16 +454,17 @@ class Application: WindowDelegate {
     }
 
     private func handleEditorCommandInternal(_ cmd: String) {
+        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
         switch cmd {
         case "quit":
-            if windows.editor.modified { return }
+            if editor.modified { return }
             running = false
         case "forcequit":
             running = false
         case "qa":
             running = false
         case "q":
-            if !windows.editor.modified { running = false }
+            if !editor.modified { running = false }
         case "q!":
             running = false
         default:
@@ -412,10 +478,11 @@ class Application: WindowDelegate {
 
     func openFileAtLine(_ path: String, line: Int) {
         openFileInEditor(path)
-        windows.editor.cursorLine = max(0, line - 1)
-        windows.editor.ensureCursorVisible()
-        if currentSpace != .editor {
-            switchToSpace(.editor)
+        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
+        editor.cursorLine = max(0, line - 1)
+        editor.ensureCursorVisible()
+        if spaces.current.id != "editor" {
+            switchToSpace("editor")
         }
     }
 
@@ -429,26 +496,29 @@ class Application: WindowDelegate {
 
     func requestRender() {
         recalculateLayout()
-        windows.updateAll()
+        spaces.current.update()
         render()
     }
 
     func updatePreview(path: String?, highlightLine: Int) {
-        windows.preview.loadFile(path, highlightLine: highlightLine)
+        let preview = spaces["search"]!.windows["preview"]! as! PreviewWindow
+        preview.loadFile(path, highlightLine: highlightLine)
     }
 
     private func openFileInEditor(_ path: String) {
-        windows.editor.openFile(path)
-        windows.editor.dirty = true
+        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
+        editor.openFile(path)
+        editor.dirty = true
         updateStatusBar()
         notifyLSPFileOpen(path)
-        windows.focused = windows.editor
-        windows.updateFocusStates()
+        spaces.current.focused = editor
+        spaces.current.updateFocusStates()
     }
 
     private func notifyLSPChange() {
-        guard let client = lspClient, let path = windows.editor.filePath,
-              let buf = windows.editor.buffer, buf.totalLength < 5_000_000 else { return }
+        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
+        guard let client = lspClient, let path = editor.filePath,
+              let buf = editor.buffer, buf.totalLength < 5_000_000 else { return }
         lspVersion += 1
         let uri = "file://\(path)"
         let text = buf.getAllText()
