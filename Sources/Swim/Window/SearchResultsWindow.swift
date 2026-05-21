@@ -20,6 +20,7 @@ class SearchResultsWindow: Window {
     private(set) var expandedFiles: Set<String> = []
     private var scrollOffset: Int = 0
     private var flatItems: [SearchItem] = []
+    private var flatItemsDirty: Bool = false
     private var resultLookup: [String: [Int: SearchResult]] = [:]
     var workingDirectory: String = ""
     private(set) var isSearching: Bool = false
@@ -82,7 +83,10 @@ class SearchResultsWindow: Window {
     }
 
     private func drawResults() {
-        buildFlatItems()
+        if flatItemsDirty {
+            buildFlatItems()
+            flatItemsDirty = false
+        }
         let visibleH = height - 1
         for row in 0..<visibleH {
             let itemIdx = scrollOffset + row
@@ -155,6 +159,7 @@ class SearchResultsWindow: Window {
         scrollOffset = 0
         isSearching = true
         dirty = true
+        flatItemsDirty = true
 
         _searchLock.lock()
         _searchResults = nil
@@ -216,6 +221,7 @@ class SearchResultsWindow: Window {
             }
         }
         dirty = true
+        flatItemsDirty = true
         delegate?.requestRender()
     }
 
@@ -242,6 +248,7 @@ class SearchResultsWindow: Window {
             lookup[result.filePath, default: [:]][result.lineNumber] = result
         }
         resultLookup = lookup
+        flatItemsDirty = true
         groupedResults = dirMap.map { dir, files in
             (dir: dir, files: files.map { name, results in
                 (name: name, results: results.sorted { $0.lineNumber < $1.lineNumber })
@@ -320,9 +327,11 @@ class SearchResultsWindow: Window {
         switch flatItems[selectedIndex] {
         case .directory(let dir, _):
             if expandedDirs.contains(dir) { expandedDirs.remove(dir) } else { expandedDirs.insert(dir) }
+            flatItemsDirty = true
         case .file(let dir, let name, _):
             let key = dir + "/" + name
             if expandedFiles.contains(key) { expandedFiles.remove(key) } else { expandedFiles.insert(key) }
+            flatItemsDirty = true
         case .result(let path, let lineNum, _): delegate?.openFileAtLine(path, line: lineNum)
         }
         dirty = true
@@ -331,8 +340,8 @@ class SearchResultsWindow: Window {
     private func handleCollapse() {
         guard selectedIndex < flatItems.count else { return }
         switch flatItems[selectedIndex] {
-        case .directory(let dir, _): expandedDirs.remove(dir)
-        case .file(let dir, let name, _): expandedFiles.remove(dir + "/" + name)
+        case .directory(let dir, _): expandedDirs.remove(dir); flatItemsDirty = true
+        case .file(let dir, let name, _): expandedFiles.remove(dir + "/" + name); flatItemsDirty = true
         case .result: break
         }
         dirty = true

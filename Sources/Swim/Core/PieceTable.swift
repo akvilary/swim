@@ -271,7 +271,7 @@ final class PieceTable {
         let end = lineEnd(line: lineNum)
         let text = getText(range: start..<end)
         var result = text
-        if result.hasSuffix("\r\n") { result = String(result.dropLast(1)) }
+        if result.hasSuffix("\r\n") { result = String(result.dropLast(2)) }
         else if result.hasSuffix("\n") { result = String(result.dropLast()) }
         else if result.hasSuffix("\r") { result = String(result.dropLast()) }
         cachedLineNum = lineNum
@@ -324,10 +324,8 @@ final class PieceTable {
                 } else if queryIdx > 0 {
                     let restart = matchStart + 1
                     (pieceIdx, localOff) = findPieceAndLocalOffset(restart)
-                    pos = restart - 1
+                    pos = restart
                     queryIdx = 0
-                    pos += 1
-                    localOff += 1
                     continue
                 }
                 pos += 1

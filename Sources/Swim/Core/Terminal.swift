@@ -83,10 +83,6 @@ final class Terminal {
         writeRaw("")
     }
 
-    func handleResize() {
-        updateSize()
-    }
-
     private func updateSize() {
         var ws = winsize()
         _ = ioctl(STDOUT_FILENO, UInt(TIOCGWINSZ), &ws)

@@ -101,7 +101,7 @@ struct SyntaxTokenizer {
         case "go": return goKeywords
         case "js", "ts", "jsx", "tsx": return jsKeywords
         case "dart": return dartKeywords
-        default: return swiftKeywords
+        default: return []
         }
     }
 

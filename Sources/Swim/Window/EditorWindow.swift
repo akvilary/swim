@@ -204,8 +204,8 @@ class EditorWindow: Window {
         else if cmd == "q!" { delegate?.handleEditorCommand("forcequit") }
         else if cmd.hasPrefix("e ") { openFile(String(cmd.dropFirst(2)).trimmingCharacters(in: .whitespaces)) }
         else if cmd.hasPrefix("%s/") { handleSubstitute(cmd) }
-        else if commandBuffer.hasPrefix("/") {
-            searchQuery = String(commandBuffer.dropFirst())
+        else if cmd.hasPrefix("/") {
+            searchQuery = String(cmd.dropFirst())
             lastSearchForward = true
             searchNext()
         }
@@ -621,7 +621,7 @@ class EditorWindow: Window {
         let fileExt = (filePath as NSString?)?.pathExtension ?? ""
         let isJSON = fileExt == "json"
         let isMD = SyntaxTokenizer.isMarkdown(fileExt)
-        var builtinTokensCache: [Int: [SemanticToken]] = [:]
+        let builtinKeywords = useBuiltinTokens && !isMD && !isJSON ? SyntaxTokenizer.keywords(for: fileExt) : nil
 
         var mdTokenIndex: [Int: [SemanticToken]]?
         if useBuiltinTokens && isMD {
@@ -639,14 +639,15 @@ class EditorWindow: Window {
             guard lineNum < buf.lineCount else { continue }
             let line = buf.getLine(lineNum)
             let chars = Array(line)
-            let visibleChars = Array(chars.dropFirst(scrollX).prefix(textWidth))
+            let visStart = min(scrollX, chars.count)
+            let visEnd = min(visStart + textWidth, chars.count)
 
             if isJSON {
                 var colOffset = 0
                 var inString = false
                 var skipNext = false
-                var charIdx = scrollX
-                for char in visibleChars {
+                for i in visStart..<visEnd {
+                    let char = chars[i]
                     let cellX = lnWidth + colOffset
                     guard cellX < width else { break }
 
@@ -677,7 +678,6 @@ class EditorWindow: Window {
 
                     setCell(row, cellX, Cell.colored(char, fg: color, bg: Theme.bg))
                     colOffset += 1
-                    charIdx += 1
                 }
                 continue
             }
@@ -688,17 +688,13 @@ class EditorWindow: Window {
             } else if let md = mdTokenIndex {
                 tokens = md[lineNum] ?? []
             } else {
-                if builtinTokensCache[lineNum] == nil {
-                    builtinTokensCache[lineNum] = SyntaxTokenizer.tokenize(line: line, lineNum: lineNum, keywords: SyntaxTokenizer.keywords(for: fileExt))
-                }
-                tokens = builtinTokensCache[lineNum]!
+                tokens = SyntaxTokenizer.tokenize(line: line, lineNum: lineNum, keywords: builtinKeywords ?? [])
             }
 
             var colOffset = 0
-            var charIdx = scrollX
             var tokenIdx = 0
-            for char in visibleChars {
-                let absCol = charIdx
+            for i in visStart..<visEnd {
+                let absCol = i
                 while tokenIdx < tokens.count && tokens[tokenIdx].startChar + tokens[tokenIdx].length <= absCol {
                     tokenIdx += 1
                 }
@@ -710,10 +706,9 @@ class EditorWindow: Window {
                 }
                 let cellX = lnWidth + colOffset
                 if cellX < width {
-                    setCell(row, cellX, Cell.colored(char, fg: tokenColor, bg: Theme.bg))
+                    setCell(row, cellX, Cell.colored(chars[i], fg: tokenColor, bg: Theme.bg))
                 }
                 colOffset += 1
-                charIdx += 1
             }
         }
 

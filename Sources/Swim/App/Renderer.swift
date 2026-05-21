@@ -94,8 +94,7 @@ class Renderer {
     }
 
     static func isWideChar(_ c: Character) -> Bool {
-        let scalars = String(c).unicodeScalars
-        guard let scalar = scalars.first else { return false }
+        guard let scalar = c.unicodeScalars.first else { return false }
         let v = scalar.value
         if v <= 0x7F { return false }
         if v >= 0x1100 {

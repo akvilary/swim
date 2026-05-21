@@ -135,15 +135,6 @@ class Application: WindowDelegate {
         }
     }
 
-    private func runGitCommandInternal(label: String, args: [String]) {
-        command.workingDirectory = gitPanel.workingDirectory
-        command.runCommand(label, args: args)
-        recalculateLayout()
-        spaces.current.prevFocused = spaces.current.focused
-        spaces.current.focused = command
-        spaces.markAllDirty()
-    }
-
     private func setupLSP(rootPath: String) {
         let lspPaths = [
             "/usr/bin/sourcekit-lsp",
@@ -384,7 +375,7 @@ class Application: WindowDelegate {
         }
     }
 
-    private func handleEditorCommandInternal(_ cmd: String) {
+    func handleEditorCommand(_ cmd: String) {
         switch cmd {
         case "quit":
             if editor.modified { return }
@@ -403,11 +394,21 @@ class Application: WindowDelegate {
     }
 
     func openFile(_ path: String) {
-        openFileInEditor(path)
+        editor.openFile(path)
+        editor.dirty = true
+        updateStatusBar()
+        notifyLSPFileOpen(path)
+        spaces.current.focused = editor
+        spaces.current.updateFocusStates()
     }
 
     func openFileAtLine(_ path: String, line: Int) {
-        openFileInEditor(path)
+        editor.openFile(path)
+        editor.dirty = true
+        updateStatusBar()
+        notifyLSPFileOpen(path)
+        spaces.current.focused = editor
+        spaces.current.updateFocusStates()
         editor.cursorLine = max(0, line - 1)
         editor.ensureCursorVisible()
         if spaces.current.id != "editor" {
@@ -415,12 +416,13 @@ class Application: WindowDelegate {
         }
     }
 
-    func handleEditorCommand(_ cmd: String) {
-        handleEditorCommandInternal(cmd)
-    }
-
     func runGitCommand(label: String, args: [String]) {
-        runGitCommandInternal(label: label, args: args)
+        command.workingDirectory = gitPanel.workingDirectory
+        command.runCommand(label, args: args)
+        recalculateLayout()
+        spaces.current.prevFocused = spaces.current.focused
+        spaces.current.focused = command
+        spaces.markAllDirty()
     }
 
     func requestRender() {
@@ -431,15 +433,6 @@ class Application: WindowDelegate {
 
     func updatePreview(path: String?, highlightLine: Int) {
         preview.loadFile(path, highlightLine: highlightLine)
-    }
-
-    private func openFileInEditor(_ path: String) {
-        editor.openFile(path)
-        editor.dirty = true
-        updateStatusBar()
-        notifyLSPFileOpen(path)
-        spaces.current.focused = editor
-        spaces.current.updateFocusStates()
     }
 
     private func notifyLSPChange() {

@@ -1,7 +1,5 @@
 import Foundation
 
-import Foundation
-
 class Window {
     weak var delegate: WindowDelegate?
     var x: Int = 0
@@ -45,18 +43,20 @@ class Window {
         return cells[row * width + col]
     }
 
-    func clear() {
-        for i in 0..<cells.count {
-            cells[i] = .blank
-        }
-    }
-
     func fillRegion(row: Int, col: Int, width w: Int, height h: Int, cell: Cell) {
-        for r in row..<(row + h) {
-            for c in col..<(col + w) {
-                setCell(r, c, cell)
-            }
+        let rStart = max(0, row)
+        let rEnd = min(row + h, height)
+        let cStart = max(0, col)
+        let cEnd = min(col + w, width)
+        guard rStart < rEnd && cStart < cEnd else { return }
+
+        let fillWidth = cEnd - cStart
+        let fillCells = Array(repeating: cell, count: fillWidth)
+        for r in rStart..<rEnd {
+            let base = r * width + cStart
+            cells.replaceSubrange(base..<(base + fillWidth), with: fillCells)
         }
+        dirty = true
     }
 
     func writeString(_ str: String, row: Int, col: Int, fg: Color = .default, bg: Color = .default, bold: Bool = false) {

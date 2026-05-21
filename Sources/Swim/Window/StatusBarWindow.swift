@@ -5,7 +5,6 @@ class StatusBarWindow: Window {
     var cursorCol: Int = 0
     var totalLines: Int = 0
     var modified: Bool = false
-    var fileEncoding: String = "utf-8"
     var fileType: String = ""
     var commandText: String = ""
     var errorMessage: String?
@@ -71,7 +70,7 @@ class StatusBarWindow: Window {
 
         let rightParts: [String] = [
             fileType.isEmpty ? "" : " \(fileType) ",
-            " \(fileEncoding) ",
+            " utf-8 ",
             " \(cursorLine + 1):\(cursorCol + 1) ",
             " \(Int(Double(cursorLine + 1) / Double(max(totalLines, 1)) * 100))% ",
         ]

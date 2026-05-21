@@ -43,51 +43,48 @@ class GitPanelWindow: Window {
         if showDiff { drawDiff() } else { drawStatus() }
     }
 
-    private struct LayoutItem {
-        let globalIdx: Int
-        let row: Int
+    private func totalContentRowCount() -> Int {
+        var row = 1
+        if !stagedFiles.isEmpty { row += 1 + stagedFiles.count }
+        if !unstagedFiles.isEmpty { row += 1 + unstagedFiles.count }
+        if !untrackedFiles.isEmpty { row += 1 + untrackedFiles.count }
+        if !recentCommits.isEmpty { row += 1 + min(recentCommits.count, 5) }
+        return row
     }
 
-    private func buildLayout() -> (items: [LayoutItem], totalContentRows: Int) {
-        var items: [LayoutItem] = []
+    private func rowForSelectedItem() -> Int? {
         var row = 1
         var globalIdx = 0
 
         if !stagedFiles.isEmpty {
             row += 1
             for _ in stagedFiles {
-                items.append(LayoutItem(globalIdx: globalIdx, row: row))
-                globalIdx += 1
-                row += 1
+                if globalIdx == selectedIndex { return row }
+                globalIdx += 1; row += 1
             }
         }
         if !unstagedFiles.isEmpty {
             row += 1
             for _ in unstagedFiles {
-                items.append(LayoutItem(globalIdx: globalIdx, row: row))
-                globalIdx += 1
-                row += 1
+                if globalIdx == selectedIndex { return row }
+                globalIdx += 1; row += 1
             }
         }
         if !untrackedFiles.isEmpty {
             row += 1
             for _ in untrackedFiles {
-                items.append(LayoutItem(globalIdx: globalIdx, row: row))
-                globalIdx += 1
-                row += 1
+                if globalIdx == selectedIndex { return row }
+                globalIdx += 1; row += 1
             }
         }
         if !recentCommits.isEmpty {
             row += 1
-            let commitCount = min(recentCommits.count, 5)
-            for _ in 0..<commitCount {
-                items.append(LayoutItem(globalIdx: globalIdx, row: row))
-                globalIdx += 1
-                row += 1
+            for _ in 0..<min(recentCommits.count, 5) {
+                if globalIdx == selectedIndex { return row }
+                globalIdx += 1; row += 1
             }
         }
-
-        return (items, row)
+        return nil
     }
 
     private func drawStatus() {
@@ -102,7 +99,7 @@ class GitPanelWindow: Window {
             setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
         }
 
-        let (_, totalContentRows) = buildLayout()
+        let totalContentRows = totalContentRowCount()
         let visibleHeight = height - 1
 
         if totalContentRows - 1 <= visibleHeight {
@@ -271,13 +268,12 @@ class GitPanelWindow: Window {
 
     private func ensureVisible() {
         let visibleCount = height - 1
-        let (items, totalContentRows) = buildLayout()
+        let totalContentRows = totalContentRowCount()
         if totalContentRows - 1 <= visibleCount {
             scrollOffset = 0
             return
         }
-        if let item = items.first(where: { $0.globalIdx == selectedIndex }) {
-            let selectedRow = item.row
+        if let selectedRow = rowForSelectedItem() {
             if selectedRow < scrollOffset + 1 { scrollOffset = selectedRow - 1 }
             else if selectedRow >= scrollOffset + height { scrollOffset = selectedRow - height + 1 }
         }
