@@ -302,21 +302,40 @@ final class PieceTable {
     func search(_ query: String, from offset: Int = 0) -> Int? {
         guard !query.isEmpty else { return nil }
         let queryBytes = [UInt8](query.utf8)
+        let queryLen = queryBytes.count
+        guard offset + queryLen <= totalLength else { return nil }
+
+        var (pieceIdx, localOff) = findPieceAndLocalOffset(offset)
         var pos = offset
         var queryIdx = 0
+        var matchStart = offset
 
-        while pos < totalLength {
-            let ch = getChar(at: pos)
-            if ch == queryBytes[queryIdx] {
-                queryIdx += 1
-                if queryIdx == queryBytes.count { return pos - queryBytes.count + 1 }
-            } else {
-                if queryIdx > 0 {
-                    pos -= queryIdx
+        while pos + queryLen - queryIdx <= totalLength {
+            guard pieceIdx < pieces.count else { break }
+            let piece = pieces[pieceIdx]
+            let buf = buffer(for: piece)
+
+            while localOff < piece.length {
+                let ch = buf[piece.start + localOff]
+                if ch == queryBytes[queryIdx] {
+                    if queryIdx == 0 { matchStart = pos }
+                    queryIdx += 1
+                    if queryIdx == queryLen { return matchStart }
+                } else if queryIdx > 0 {
+                    let restart = matchStart + 1
+                    (pieceIdx, localOff) = findPieceAndLocalOffset(restart)
+                    pos = restart - 1
                     queryIdx = 0
+                    pos += 1
+                    localOff += 1
+                    continue
                 }
+                pos += 1
+                localOff += 1
             }
-            pos += 1
+
+            pieceIdx += 1
+            localOff = 0
         }
         return nil
     }
@@ -324,11 +343,19 @@ final class PieceTable {
     func searchBackward(_ query: String, from offset: Int) -> Int? {
         guard !query.isEmpty else { return nil }
         let queryBytes = [UInt8](query.utf8)
-        guard offset >= queryBytes.count - 1 else { return nil }
-        var pos = offset - queryBytes.count + 1
+        let queryLen = queryBytes.count
+        guard offset >= queryLen - 1 else { return nil }
+
+        let text = getText(range: max(0, offset - queryLen + 1 - 1024)..<min(offset + 1, totalLength))
+        let baseOffset = max(0, offset - queryLen + 1 - 1024)
+        if let range = text.range(of: query, options: [.backwards, .literal]) {
+            return baseOffset + text.distance(from: text.startIndex, to: range.lowerBound)
+        }
+
+        var pos = offset - queryLen + 1
         while pos >= 0 {
             var match = true
-            for i in 0..<queryBytes.count {
+            for i in 0..<queryLen {
                 if getChar(at: pos + i) != queryBytes[i] {
                     match = false
                     break
@@ -341,38 +368,77 @@ final class PieceTable {
     }
 
     func wordForward(from offset: Int) -> Int {
+        var (pieceIdx, localOff) = findPieceAndLocalOffset(offset)
         var pos = offset
-        let total = totalLength
-        var ch = getChar(at: pos)
-        if ch != nil && isWordChar(ch!) {
-            while pos < total {
-                ch = getChar(at: pos)
-                if ch == nil || !isWordChar(ch!) { break }
-                pos += 1
+
+        func currentByte() -> UInt8? {
+            guard pieceIdx < pieces.count else { return nil }
+            let piece = pieces[pieceIdx]
+            guard localOff < piece.length else { return nil }
+            return buffer(for: piece)[piece.start + localOff]
+        }
+
+        func advance() {
+            pos += 1
+            localOff += 1
+            if pieceIdx < pieces.count && localOff >= pieces[pieceIdx].length {
+                pieceIdx += 1
+                localOff = 0
             }
         }
-        while pos < total {
-            ch = getChar(at: pos)
-            if ch == nil || isWordChar(ch!) { break }
-            pos += 1
+
+        if let ch = currentByte(), isWordChar(ch) {
+            while pos < totalLength {
+                guard let ch = currentByte(), isWordChar(ch) else { break }
+                advance()
+            }
         }
-        return min(pos, max(total - 1, 0))
+        while pos < totalLength {
+            guard let ch = currentByte(), !isWordChar(ch) else { break }
+            advance()
+        }
+        return min(pos, max(totalLength - 1, 0))
     }
 
     func wordBackward(from offset: Int) -> Int {
-        var pos = max(offset - 1, 0)
-        var ch = getChar(at: pos)
-        if ch != nil && !isWordChar(ch!) {
+        let startPos = max(offset - 1, 0)
+        var (pieceIdx, localOff) = findPieceAndLocalOffset(startPos)
+        var pos = startPos
+
+        func currentByte() -> UInt8? {
+            guard pieceIdx < pieces.count else { return nil }
+            let piece = pieces[pieceIdx]
+            guard localOff < piece.length else { return nil }
+            return buffer(for: piece)[piece.start + localOff]
+        }
+
+        func retreat() {
+            if pos == 0 { return }
+            pos -= 1
+            if localOff > 0 {
+                localOff -= 1
+            } else if pieceIdx > 0 {
+                pieceIdx -= 1
+                localOff = pieces[pieceIdx].length - 1
+            }
+        }
+
+        if let ch = currentByte(), !isWordChar(ch) {
             while pos > 0 {
-                ch = getChar(at: pos)
-                if ch == nil || isWordChar(ch!) { break }
-                pos -= 1
+                guard let ch = currentByte(), !isWordChar(ch) else { break }
+                retreat()
             }
         }
         while pos > 0 {
-            ch = getChar(at: pos - 1)
-            if ch == nil || !isWordChar(ch!) { break }
-            pos -= 1
+            retreat()
+            guard let ch = currentByte(), isWordChar(ch) else {
+                if pos < startPos {
+                    let (newPieceIdx, newLocalOff) = findPieceAndLocalOffset(pos + 1)
+                    pieceIdx = newPieceIdx
+                    localOff = newLocalOff
+                }
+                break
+            }
         }
         return pos
     }

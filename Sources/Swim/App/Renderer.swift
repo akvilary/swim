@@ -66,8 +66,6 @@ class Renderer {
             }
         }
 
-        terminal.flush()
-
         if let info = cursorInfo, info.mode == .insert {
             let screenRow = info.cursorLine - info.scrollY
             let screenCol = info.cursorCol - info.scrollX
@@ -81,6 +79,7 @@ class Renderer {
             terminal.showCursor(false)
             terminal.setCursorShape(1)
         }
+
         terminal.flush()
     }
 

@@ -105,6 +105,8 @@ struct SyntaxTokenizer {
         }
     }
 
+    static let opChars: Set<Character> = ["+", "-", "*", "/", "=", "<", ">", "!", "&", "|", "^", "~", "%", "?", ":", "@", "#"]
+
     static func tokenize(line: String, lineNum: Int, keywords: Set<String>) -> [SemanticToken] {
         var tokens = [SemanticToken]()
         let chars = Array(line)
@@ -184,7 +186,6 @@ struct SyntaxTokenizer {
                 continue
             }
 
-            let opChars: Set<Character> = ["+", "-", "*", "/", "=", "<", ">", "!", "&", "|", "^", "~", "%", "?", ":", "@", "#"]
             if opChars.contains(chars[i]) {
                 var end = i + 1
                 while end < len && opChars.contains(chars[end]) { end += 1 }

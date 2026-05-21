@@ -39,7 +39,6 @@ class GitPanelWindow: Window {
     }
 
     override func update() {
-        clear()
         fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
         if showDiff { drawDiff() } else { drawStatus() }
     }
@@ -204,13 +203,6 @@ class GitPanelWindow: Window {
     private func drawSectionHeader(_ text: String, screenRow: Int) {
         guard screenRow >= 1 && screenRow < height else { return }
         drawLine(" \(text)", row: screenRow, fg: Theme.blue, bold: true)
-    }
-
-    private func drawLine(_ text: String, row: Int, col: Int = 0, fg: Color = Theme.fgDark, bg: Color = Theme.bgDark, bold: Bool = false) {
-        guard row >= 0 && row < height else { return }
-        for (i, c) in text.enumerated() {
-            if col + i < width { setCell(row, col + i, Cell.colored(c, fg: fg, bg: bg, bold: bold)) }
-        }
     }
 
     private func statusColorFor(_ status: String) -> Color {

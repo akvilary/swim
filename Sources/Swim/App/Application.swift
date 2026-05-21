@@ -14,15 +14,15 @@ class Application: WindowDelegate {
     private var lspVersion: Int = 0
     private lazy var renderer = Renderer(terminal: terminal)
 
-    init(filePath: String? = nil) {
-        let editor = EditorWindow()
-        let statusBar = StatusBarWindow()
-        let fileExplorer = FileExplorerWindow()
-        let gitPanel = GitPanelWindow()
-        let searchResults = SearchResultsWindow()
-        let preview = PreviewWindow()
-        let command = CommandWindow()
+    private let editor = EditorWindow()
+    private let statusBar = StatusBarWindow()
+    private let fileExplorer = FileExplorerWindow()
+    private let gitPanel = GitPanelWindow()
+    private let searchResults = SearchResultsWindow()
+    private let preview = PreviewWindow()
+    private let command = CommandWindow()
 
+    init(filePath: String? = nil) {
         let editorSpace = Space(id: "editor", delegate: self)
         editorSpace.addWindow("fileExplorer", fileExplorer)
         editorSpace.addWindow("editor", editor)
@@ -101,7 +101,6 @@ class Application: WindowDelegate {
     private func pollLSP() {
         guard let client = lspClient, client.hasPendingTokens else { return }
         if let tokens = client.pendingTokens {
-            let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
             editor.semanticTokens = tokens
             editor.dirty = true
             client.pendingTokens = nil
@@ -116,9 +115,6 @@ class Application: WindowDelegate {
         let now = Date().timeIntervalSince1970
         guard now - lastSpinnerTick >= 0.1 else { return }
         var anyDirty = false
-        let command = spaces["editor"]!.windows["command"]! as! CommandWindow
-        let searchResults = spaces["search"]!.windows["searchResults"]! as! SearchResultsWindow
-        let gitPanel = spaces["editor"]!.windows["gitPanel"]! as! GitPanelWindow
         if command.visible && command.isRunning {
             command.spinnerFrame &+= 1
             command.dirty = true
@@ -140,8 +136,6 @@ class Application: WindowDelegate {
     }
 
     private func runGitCommandInternal(label: String, args: [String]) {
-        let command = spaces["editor"]!.windows["command"]! as! CommandWindow
-        let gitPanel = spaces["editor"]!.windows["gitPanel"]! as! GitPanelWindow
         command.workingDirectory = gitPanel.workingDirectory
         command.runCommand(label, args: args)
         recalculateLayout()
@@ -179,7 +173,6 @@ class Application: WindowDelegate {
         client.start(executable: path, rootUri: "file://\(rootPath)")
         lspClient = client
 
-        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
         if let filePath = editor.filePath {
             notifyLSPFileOpen(filePath)
         }
@@ -187,7 +180,6 @@ class Application: WindowDelegate {
 
     private func notifyLSPFileOpen(_ path: String) {
         guard let client = lspClient else { return }
-        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
         guard let buf = editor.buffer, buf.totalLength < 5_000_000 else { return }
         let uri = "file://\(path)"
         let ext = (path as NSString).pathExtension
@@ -210,8 +202,6 @@ class Application: WindowDelegate {
     }
 
     private func handleGlobalKey(_ key: Key) {
-        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
-
         if editor.lastError != nil {
             editor.lastError = nil
         }
@@ -284,7 +274,6 @@ class Application: WindowDelegate {
     }
 
     private func toggleFileExplorer() {
-        let fileExplorer = spaces["editor"]!.windows["fileExplorer"]!
         fileExplorer.visible = !fileExplorer.visible
         if fileExplorer.visible {
             spaces.current.focused = fileExplorer
@@ -294,7 +283,6 @@ class Application: WindowDelegate {
     }
 
     private func toggleGitPanel() {
-        let gitPanel = spaces["editor"]!.windows["gitPanel"]! as! GitPanelWindow
         gitPanel.visible = !gitPanel.visible
         if gitPanel.visible {
             gitPanel.refresh()
@@ -305,10 +293,6 @@ class Application: WindowDelegate {
     }
 
     private func toggleSearch() {
-        let searchResults = spaces["search"]!.windows["searchResults"]! as! SearchResultsWindow
-        let preview = spaces["search"]!.windows["preview"]!
-        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
-        let gitPanel = spaces["editor"]!.windows["gitPanel"]! as! GitPanelWindow
         if spaces.current.id == "search" {
             switchToSpace("editor")
         } else {
@@ -343,14 +327,6 @@ class Application: WindowDelegate {
     }
 
     private func recalculateLayout() {
-        let fileExplorer = spaces["editor"]!.windows["fileExplorer"]!
-        let editor = spaces["editor"]!.windows["editor"]!
-        let gitPanel = spaces["editor"]!.windows["gitPanel"]!
-        let searchResults = spaces["search"]!.windows["searchResults"]!
-        let preview = spaces["search"]!.windows["preview"]!
-        let command = spaces["editor"]!.windows["command"]!
-        let statusBar = spaces["editor"]!.windows["statusBar"]!
-
         let layout = LayoutManager.calculate(
             terminalWidth: terminal.width,
             terminalHeight: terminal.height,
@@ -370,7 +346,6 @@ class Application: WindowDelegate {
     }
 
     private func render() {
-        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
         let cursorInfo: (window: Window, cursorLine: Int, cursorCol: Int, scrollY: Int, scrollX: Int, lineNumberWidth: Int, mode: EditorMode)? = (
             editor,
             editor.cursorLine,
@@ -384,8 +359,6 @@ class Application: WindowDelegate {
     }
 
     private func updateStatusBar() {
-        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
-        let statusBar = spaces["editor"]!.windows["statusBar"]! as! StatusBarWindow
         statusBar.modeText = modeString(editor.mode)
         statusBar.fileName = editor.filePath ?? "[No Name]"
         statusBar.cursorLine = editor.cursorLine
@@ -412,7 +385,6 @@ class Application: WindowDelegate {
     }
 
     private func handleEditorCommandInternal(_ cmd: String) {
-        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
         switch cmd {
         case "quit":
             if editor.modified { return }
@@ -436,7 +408,6 @@ class Application: WindowDelegate {
 
     func openFileAtLine(_ path: String, line: Int) {
         openFileInEditor(path)
-        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
         editor.cursorLine = max(0, line - 1)
         editor.ensureCursorVisible()
         if spaces.current.id != "editor" {
@@ -459,12 +430,10 @@ class Application: WindowDelegate {
     }
 
     func updatePreview(path: String?, highlightLine: Int) {
-        let preview = spaces["search"]!.windows["preview"]! as! PreviewWindow
         preview.loadFile(path, highlightLine: highlightLine)
     }
 
     private func openFileInEditor(_ path: String) {
-        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
         editor.openFile(path)
         editor.dirty = true
         updateStatusBar()
@@ -474,7 +443,6 @@ class Application: WindowDelegate {
     }
 
     private func notifyLSPChange() {
-        let editor = spaces["editor"]!.windows["editor"]! as! EditorWindow
         guard let client = lspClient, let path = editor.filePath,
               let buf = editor.buffer, buf.totalLength < 5_000_000 else { return }
         lspVersion += 1

@@ -1,5 +1,7 @@
 import Foundation
 
+import Foundation
+
 class Window {
     weak var delegate: WindowDelegate?
     var x: Int = 0
@@ -72,6 +74,13 @@ class Window {
                 setCell(row, c, Cell.colored(char, fg: fg, bg: bg, bold: bold))
                 c += 1
             }
+        }
+    }
+
+    func drawLine(_ text: String, row: Int, col: Int = 0, fg: Color = Theme.fgDark, bg: Color = Theme.bgDark, bold: Bool = false) {
+        guard row >= 0 && row < height else { return }
+        for (i, c) in text.enumerated() {
+            if col + i < width { setCell(row, col + i, Cell.colored(c, fg: fg, bg: bg, bold: bold)) }
         }
     }
 

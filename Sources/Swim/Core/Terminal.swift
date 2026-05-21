@@ -158,7 +158,7 @@ final class Terminal {
     }
 
     func showCursor(_ show: Bool) {
-        writeRaw(show ? "\u{1b}[?25h" : "\u{1b}[?25l")
+        outputBuffer.append(contentsOf: (show ? "\u{1b}[?25h" : "\u{1b}[?25l").utf8)
     }
 
     func setCursorShape(_ shape: Int) {

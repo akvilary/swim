@@ -17,7 +17,6 @@ class FileExplorerWindow: Window {
     var currentDirectory: String = ""
 
     override func update() {
-        clear()
         fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
 
         let headerText = " EXPLORER "

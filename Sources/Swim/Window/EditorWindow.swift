@@ -696,9 +696,18 @@ class EditorWindow: Window {
 
             var colOffset = 0
             var charIdx = scrollX
+            var tokenIdx = 0
             for char in visibleChars {
                 let absCol = charIdx
-                let tokenColor = tokenColorAt(line: lineNum, col: absCol, tokens: tokens)
+                while tokenIdx < tokens.count && tokens[tokenIdx].startChar + tokens[tokenIdx].length <= absCol {
+                    tokenIdx += 1
+                }
+                let tokenColor: Color
+                if tokenIdx < tokens.count && absCol >= tokens[tokenIdx].startChar {
+                    tokenColor = colorForTokenType(tokens[tokenIdx].type)
+                } else {
+                    tokenColor = Theme.fg
+                }
                 let cellX = lnWidth + colOffset
                 if cellX < width {
                     setCell(row, cellX, Cell.colored(char, fg: tokenColor, bg: Theme.bg))
@@ -795,15 +804,6 @@ class EditorWindow: Window {
 
     private func semanticTokensFor(line: Int) -> [SemanticToken] {
         tokenIndex[line] ?? []
-    }
-
-    private func tokenColorAt(line: Int, col: Int, tokens: [SemanticToken]) -> Color {
-        for token in tokens {
-            if col >= token.startChar && col < token.startChar + token.length {
-                return colorForTokenType(token.type)
-            }
-        }
-        return Theme.fg
     }
 
     private func colorForTokenType(_ type: String) -> Color {
