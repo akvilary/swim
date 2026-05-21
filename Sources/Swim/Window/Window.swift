@@ -45,10 +45,7 @@ class Window {
 
     func clear() {
         for i in 0..<cells.count {
-            if cells[i] != .blank {
-                cells[i] = .blank
-                dirty = true
-            }
+            cells[i] = .blank
         }
     }
 

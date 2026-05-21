@@ -15,10 +15,7 @@ final class PieceTable {
     private var lineStarts = [Int]()
     private var cachedLineNum: Int = -1
     private var cachedLineStr: String = ""
-
-    var totalLength: Int {
-        pieces.reduce(0) { $0 + $1.length }
-    }
+    private(set) var totalLength: Int = 0
 
     var lineCount: Int {
         lineStarts.count
@@ -28,12 +25,14 @@ final class PieceTable {
         let data = [UInt8](text.utf8)
         original = data
         pieces = [Piece(start: 0, length: data.count, isAdd: false)]
+        totalLength = data.count
         rebuildLineIndex()
     }
 
     init(data: [UInt8]) {
         original = data
         pieces = [Piece(start: 0, length: data.count, isAdd: false)]
+        totalLength = data.count
         rebuildLineIndex()
     }
 
@@ -47,9 +46,8 @@ final class PieceTable {
     }
 
     private func rebuildLineIndex() {
-        let totalLen = pieces.reduce(0) { $0 + $1.length }
         lineStarts = [Int]()
-        lineStarts.reserveCapacity(max(16, totalLen / 30))
+        lineStarts.reserveCapacity(max(16, totalLength / 30))
         lineStarts.append(0)
         var offset = 0
         for piece in pieces {
@@ -149,6 +147,7 @@ final class PieceTable {
         guard !text.isEmpty else { return }
         cachedLineNum = -1
         let data = [UInt8](text.utf8)
+        totalLength += data.count
         let addStart = addBuffer.count
         addBuffer.append(contentsOf: data)
 
@@ -216,6 +215,7 @@ final class PieceTable {
             pieces.removeSubrange(start...end)
         }
 
+        totalLength -= (length - remaining)
         rebuildLineIndex(fromOffset: offset)
     }
 
@@ -279,32 +279,24 @@ final class PieceTable {
         return result
     }
 
-    func getLineData(_ lineNum: Int) -> [UInt8] {
-        guard lineNum >= 0 && lineNum < lineStarts.count else { return [] }
-        let start = lineStarts[lineNum]
-        let end = lineEnd(line: lineNum)
-        var result = [UInt8]()
-        var accumulated = 0
-        for piece in pieces {
-            if accumulated >= end { break }
-            let pieceEnd = accumulated + piece.length
-            if pieceEnd <= start {
-                accumulated += piece.length
-                continue
-            }
-            let buf = buffer(for: piece)
-            let localStart = max(0, start - accumulated)
-            let localEnd = min(piece.length, end - accumulated)
-            result.append(contentsOf: buf[piece.start + localStart..<piece.start + localEnd])
-            accumulated += piece.length
+    func charToByteOffsetInLine(line: Int, charIndex: Int) -> Int {
+        let lineStr = getLine(line)
+        var bytePos = 0
+        for (idx, char) in lineStr.enumerated() {
+            guard idx < charIndex else { break }
+            bytePos += char.isASCII ? 1 : String(char).utf8.count
         }
-        if result.last == UInt8(ascii: "\n") { result.removeLast() }
-        if result.last == UInt8(ascii: "\r") { result.removeLast() }
-        return result
+        return bytePos
     }
 
-    func getAllText() -> String {
-        getText(range: 0..<totalLength)
+    func byteToCharOffsetInLine(line: Int, byteOffset: Int) -> Int {
+        let lineStr = getLine(line)
+        var bytePos = 0
+        for (idx, char) in lineStr.enumerated() {
+            if bytePos >= byteOffset { return idx }
+            bytePos += char.isASCII ? 1 : String(char).utf8.count
+        }
+        return lineStr.count
     }
 
     func search(_ query: String, from offset: Int = 0) -> Int? {
@@ -396,23 +388,7 @@ final class PieceTable {
         getLine(line).count
     }
 
-    func charToByteOffsetInLine(line: Int, charIndex: Int) -> Int {
-        let lineStr = getLine(line)
-        var bytePos = 0
-        for (idx, char) in lineStr.enumerated() {
-            guard idx < charIndex else { break }
-            bytePos += String(char).utf8.count
-        }
-        return bytePos
-    }
-
-    func byteToCharOffsetInLine(line: Int, byteOffset: Int) -> Int {
-        let lineStr = getLine(line)
-        var bytePos = 0
-        for (idx, char) in lineStr.enumerated() {
-            if bytePos >= byteOffset { return idx }
-            bytePos += String(char).utf8.count
-        }
-        return lineStr.count
+    func getAllText() -> String {
+        getText(range: 0..<totalLength)
     }
 }

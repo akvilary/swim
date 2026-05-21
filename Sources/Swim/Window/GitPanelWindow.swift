@@ -279,12 +279,12 @@ class GitPanelWindow: Window {
 
     private func ensureVisible() {
         let visibleCount = height - 1
-        let (_, totalContentRows) = buildLayout()
+        let (items, totalContentRows) = buildLayout()
         if totalContentRows - 1 <= visibleCount {
             scrollOffset = 0
             return
         }
-        if let item = buildLayout().items.first(where: { $0.globalIdx == selectedIndex }) {
+        if let item = items.first(where: { $0.globalIdx == selectedIndex }) {
             let selectedRow = item.row
             if selectedRow < scrollOffset + 1 { scrollOffset = selectedRow - 1 }
             else if selectedRow >= scrollOffset + height { scrollOffset = selectedRow - height + 1 }

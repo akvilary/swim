@@ -20,6 +20,7 @@ class SearchResultsWindow: Window {
     private(set) var expandedFiles: Set<String> = []
     private var scrollOffset: Int = 0
     private var flatItems: [SearchItem] = []
+    private var resultLookup: [String: [Int: SearchResult]] = [:]
     var workingDirectory: String = ""
     private(set) var isSearching: Bool = false
     private(set) var inputMode: Bool = true
@@ -106,7 +107,7 @@ class SearchResultsWindow: Window {
                 let text = "  \(icon)\(name) (\(count))"
                 drawLine(text, row: y, col: 0, fg: Theme.fgDark, bg: bg)
             case .result(let path, let lineNum, _):
-                let result = results.first { $0.filePath == path && $0.lineNumber == lineNum }
+                let result = resultLookup[path]?[lineNum]
                 let indent = "      "
                 let linePrefix = "\(indent)\(lineNum): "
                 drawLine(linePrefix, row: y, col: 0, fg: Theme.comment, bg: bg)
@@ -234,13 +235,14 @@ class SearchResultsWindow: Window {
 
     private func groupResults() {
         var dirMap: [String: [String: [SearchResult]]] = [:]
+        var lookup: [String: [Int: SearchResult]] = [:]
         for result in results {
             let dir = (result.filePath as NSString).deletingLastPathComponent
             let file = (result.filePath as NSString).lastPathComponent
-            if dirMap[dir] == nil { dirMap[dir] = [:] }
-            if dirMap[dir]?[file] == nil { dirMap[dir]?[file] = [] }
-            dirMap[dir]?[file]?.append(result)
+            dirMap[dir, default: [:]][file, default: []].append(result)
+            lookup[result.filePath, default: [:]][result.lineNumber] = result
         }
+        resultLookup = lookup
         groupedResults = dirMap.map { dir, files in
             (dir: dir, files: files.map { name, results in
                 (name: name, results: results.sorted { $0.lineNumber < $1.lineNumber })

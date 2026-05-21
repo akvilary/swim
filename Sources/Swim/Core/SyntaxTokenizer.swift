@@ -1,11 +1,3 @@
-struct SyntaxToken: Equatable {
-    let line: Int
-    let startChar: Int
-    let length: Int
-    let type: String
-    let modifiers: Int
-}
-
 struct SyntaxTokenizer {
     static let swiftKeywords: Set<String> = [
         "import", "class", "struct", "enum", "protocol", "extension",
@@ -113,15 +105,15 @@ struct SyntaxTokenizer {
         }
     }
 
-    static func tokenize(line: String, lineNum: Int, keywords: Set<String>) -> [SyntaxToken] {
-        var tokens = [SyntaxToken]()
+    static func tokenize(line: String, lineNum: Int, keywords: Set<String>) -> [SemanticToken] {
+        var tokens = [SemanticToken]()
         let chars = Array(line)
         let len = chars.count
         var i = 0
 
         while i < len {
             if chars[i] == "/" && i + 1 < len && chars[i + 1] == "/" {
-                tokens.append(SyntaxToken(line: lineNum, startChar: i, length: len - i, type: "comment", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: i, length: len - i, type: "comment", modifiers: 0))
                 return tokens
             }
 
@@ -129,7 +121,7 @@ struct SyntaxTokenizer {
                 var end = i + 2
                 while end + 1 < len && !(chars[end] == "*" && chars[end + 1] == "/") { end += 1 }
                 let commentLen = min(end + 2, len) - i
-                tokens.append(SyntaxToken(line: lineNum, startChar: i, length: commentLen, type: "comment", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: i, length: commentLen, type: "comment", modifiers: 0))
                 i += commentLen
                 continue
             }
@@ -141,7 +133,7 @@ struct SyntaxTokenizer {
                     if chars[end] == "\"" { end += 1; break }
                     end += 1
                 }
-                tokens.append(SyntaxToken(line: lineNum, startChar: i, length: end - i, type: "string", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: i, length: end - i, type: "string", modifiers: 0))
                 i = end
                 continue
             }
@@ -153,7 +145,7 @@ struct SyntaxTokenizer {
                     if chars[end] == "'" { end += 1; break }
                     end += 1
                 }
-                tokens.append(SyntaxToken(line: lineNum, startChar: i, length: end - i, type: "string", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: i, length: end - i, type: "string", modifiers: 0))
                 i = end
                 continue
             }
@@ -166,7 +158,7 @@ struct SyntaxTokenizer {
                 } else {
                     while end < len && ((chars[end] >= "0" && chars[end] <= "9") || chars[end] == "." || chars[end] == "e" || chars[end] == "E" || chars[end] == "_" || ((chars[end] == "+" || chars[end] == "-") && end > 0 && (chars[end - 1] == "e" || chars[end - 1] == "E"))) { end += 1 }
                 }
-                tokens.append(SyntaxToken(line: lineNum, startChar: i, length: end - i, type: "number", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: i, length: end - i, type: "number", modifiers: 0))
                 i = end
                 continue
             }
@@ -187,7 +179,7 @@ struct SyntaxTokenizer {
                 } else {
                     type = "variable"
                 }
-                tokens.append(SyntaxToken(line: lineNum, startChar: i, length: end - i, type: type, modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: i, length: end - i, type: type, modifiers: 0))
                 i = end
                 continue
             }
@@ -196,7 +188,7 @@ struct SyntaxTokenizer {
             if opChars.contains(chars[i]) {
                 var end = i + 1
                 while end < len && opChars.contains(chars[end]) { end += 1 }
-                tokens.append(SyntaxToken(line: lineNum, startChar: i, length: end - i, type: "operator", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: i, length: end - i, type: "operator", modifiers: 0))
                 i = end
                 continue
             }
@@ -210,14 +202,12 @@ struct SyntaxTokenizer {
     static func tokenizeVisibleLines(buffer: PieceTable, scrollY: Int, height: Int, fileExt: String) -> [SemanticToken] {
         let kw = keywords(for: fileExt)
         var allTokens = [SemanticToken]()
+        allTokens.reserveCapacity(height * 4)
         for row in 0..<height {
             let lineNum = scrollY + row
             guard lineNum < buffer.lineCount else { break }
             let line = buffer.getLine(lineNum)
-            let tokens = tokenize(line: line, lineNum: lineNum, keywords: kw)
-            for t in tokens {
-                allTokens.append(SemanticToken(line: t.line, startChar: t.startChar, length: t.length, type: t.type, modifiers: t.modifiers))
-            }
+            allTokens.append(contentsOf: tokenize(line: line, lineNum: lineNum, keywords: kw))
         }
         return allTokens
     }
@@ -257,20 +247,18 @@ struct SyntaxTokenizer {
         mdCacheInCodeBlock = inCodeBlock
         mdCacheLineCount = lineCount
 
+        allTokens.reserveCapacity(height * 3)
         for row in 0..<height {
             let lineNum = scrollY + row
             guard lineNum < lineCount else { break }
             let line = buffer.getLine(lineNum)
-            let tokens = tokenizeMarkdownLine(line, lineNum: lineNum, inCodeBlock: &inCodeBlock)
-            for t in tokens {
-                allTokens.append(SemanticToken(line: t.line, startChar: t.startChar, length: t.length, type: t.type, modifiers: t.modifiers))
-            }
+            allTokens.append(contentsOf: tokenizeMarkdownLine(line, lineNum: lineNum, inCodeBlock: &inCodeBlock))
         }
         return allTokens
     }
 
-    private static func tokenizeMarkdownLine(_ line: String, lineNum: Int, inCodeBlock: inout Bool) -> [SyntaxToken] {
-        var tokens = [SyntaxToken]()
+    private static func tokenizeMarkdownLine(_ line: String, lineNum: Int, inCodeBlock: inout Bool) -> [SemanticToken] {
+        var tokens = [SemanticToken]()
         let chars = Array(line)
         let len = chars.count
         var i = 0
@@ -281,19 +269,19 @@ struct SyntaxTokenizer {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
                 inCodeBlock = false
-                tokens.append(SyntaxToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
                 return tokens
             }
-            tokens.append(SyntaxToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
+            tokens.append(SemanticToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
             return tokens
         }
 
         if i < len && chars[i] == "#" {
             var end = i
             while end < len && chars[end] == "#" { end += 1 }
-            tokens.append(SyntaxToken(line: lineNum, startChar: i, length: end - i, type: "keyword", modifiers: 0))
+            tokens.append(SemanticToken(line: lineNum, startChar: i, length: end - i, type: "keyword", modifiers: 0))
             if end < len && chars[end] == " " {
-                tokens.append(SyntaxToken(line: lineNum, startChar: end + 1, length: len - end - 1, type: "type", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: end + 1, length: len - end - 1, type: "type", modifiers: 0))
             }
             return tokens
         }
@@ -301,28 +289,27 @@ struct SyntaxTokenizer {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
             inCodeBlock = true
-            tokens.append(SyntaxToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
+            tokens.append(SemanticToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
             return tokens
         }
 
         if isHorizontalRule(chars) {
-            tokens.append(SyntaxToken(line: lineNum, startChar: 0, length: len, type: "comment", modifiers: 0))
+            tokens.append(SemanticToken(line: lineNum, startChar: 0, length: len, type: "comment", modifiers: 0))
             return tokens
         }
 
         if i < len && chars[i] == ">" {
             var end = i + 1
             if end < len && chars[end] == " " { end += 1 }
-            tokens.append(SyntaxToken(line: lineNum, startChar: i, length: end - i, type: "comment", modifiers: 0))
-            tokens.append(SyntaxToken(line: lineNum, startChar: end, length: len - end, type: "comment", modifiers: 0))
+            tokens.append(SemanticToken(line: lineNum, startChar: i, length: end - i, type: "comment", modifiers: 0))
+            tokens.append(SemanticToken(line: lineNum, startChar: end, length: len - end, type: "comment", modifiers: 0))
             return tokens
         }
 
-        let listStart = i
         if i < len && (chars[i] == "-" || chars[i] == "*" || chars[i] == "+") {
                 let next = i + 1
             if next < len && chars[next] == " " {
-                tokens.append(SyntaxToken(line: lineNum, startChar: i, length: 1, type: "number", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: i, length: 1, type: "number", modifiers: 0))
                 i = next + 1
             }
         } else if i < len && chars[i] >= "0" && chars[i] <= "9" {
@@ -331,14 +318,10 @@ struct SyntaxTokenizer {
             if numEnd < len && (chars[numEnd] == "." || chars[numEnd] == ")") {
                 let afterDelim = numEnd + 1
                 if afterDelim < len && chars[afterDelim] == " " {
-                    tokens.append(SyntaxToken(line: lineNum, startChar: i, length: afterDelim - i + 1, type: "number", modifiers: 0))
+                    tokens.append(SemanticToken(line: lineNum, startChar: i, length: afterDelim - i + 1, type: "number", modifiers: 0))
                     i = afterDelim + 1
                 }
             }
-        }
-
-        if i > listStart || i > 0 {
-            // already handled list prefix
         }
 
         i = 0
@@ -357,7 +340,7 @@ struct SyntaxTokenizer {
                     }
                 }
                 let end = min(i, len)
-                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: end - start, type: "string", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: start, length: end - start, type: "string", modifiers: 0))
                 continue
             }
 
@@ -365,7 +348,7 @@ struct SyntaxTokenizer {
                 let start = i; i += 2
                 while i + 1 < len && !(chars[i] == "*" && chars[i + 1] == "*") { i += 1 }
                 if i + 1 < len { i += 2 }
-                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "keyword", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "keyword", modifiers: 0))
                 continue
             }
 
@@ -373,7 +356,7 @@ struct SyntaxTokenizer {
                 let start = i; i += 2
                 while i + 1 < len && !(chars[i] == "_" && chars[i + 1] == "_") { i += 1 }
                 if i + 1 < len { i += 2 }
-                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "keyword", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "keyword", modifiers: 0))
                 continue
             }
 
@@ -381,7 +364,7 @@ struct SyntaxTokenizer {
                 let start = i; i += 1
                 while i < len && chars[i] != "*" && chars[i] != "\n" { i += 1 }
                 if i < len && chars[i] == "*" { i += 1 }
-                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "variable", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "variable", modifiers: 0))
                 continue
             }
 
@@ -389,7 +372,7 @@ struct SyntaxTokenizer {
                 let start = i; i += 1
                 while i < len && chars[i] != "_" && chars[i] != "\n" { i += 1 }
                 if i < len && chars[i] == "_" { i += 1 }
-                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "variable", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "variable", modifiers: 0))
                 continue
             }
 
@@ -397,12 +380,12 @@ struct SyntaxTokenizer {
                 let start = i; i += 1
                 while i < len && chars[i] != "]" { i += 1 }
                 if i < len { i += 1 }
-                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "decorator", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "decorator", modifiers: 0))
                 if i < len && chars[i] == "(" {
                     let urlStart = i; i += 1
                     while i < len && chars[i] != ")" { i += 1 }
                     if i < len { i += 1 }
-                    tokens.append(SyntaxToken(line: lineNum, startChar: urlStart, length: i - urlStart, type: "string", modifiers: 0))
+                    tokens.append(SemanticToken(line: lineNum, startChar: urlStart, length: i - urlStart, type: "string", modifiers: 0))
                 }
                 continue
             }
@@ -411,12 +394,12 @@ struct SyntaxTokenizer {
                 let start = i; i += 2
                 while i < len && chars[i] != "]" { i += 1 }
                 if i < len { i += 1 }
-                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "decorator", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "decorator", modifiers: 0))
                 if i < len && chars[i] == "(" {
                     let urlStart = i; i += 1
                     while i < len && chars[i] != ")" { i += 1 }
                     if i < len { i += 1 }
-                    tokens.append(SyntaxToken(line: lineNum, startChar: urlStart, length: i - urlStart, type: "string", modifiers: 0))
+                    tokens.append(SemanticToken(line: lineNum, startChar: urlStart, length: i - urlStart, type: "string", modifiers: 0))
                 }
                 continue
             }
@@ -425,7 +408,7 @@ struct SyntaxTokenizer {
                 let start = i
                 while i < len && chars[i] != ">" { i += 1 }
                 if i < len { i += 1 }
-                tokens.append(SyntaxToken(line: lineNum, startChar: start, length: i - start, type: "string", modifiers: 0))
+                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "string", modifiers: 0))
                 continue
             }
 

@@ -35,7 +35,6 @@ class EditorWindow: Window {
     }
     private var tokenIndex: [Int: [SemanticToken]] = [:]
 
-    var onFileOpen: ((String) -> Void)?
     var lastError: String?
 
     private func rebuildTokenIndex() {
@@ -622,11 +621,17 @@ class EditorWindow: Window {
         let fileExt = (filePath as NSString?)?.pathExtension ?? ""
         let isJSON = fileExt == "json"
         let isMD = SyntaxTokenizer.isMarkdown(fileExt)
-        var builtinTokensCache: [Int: [SyntaxToken]] = [:]
+        var builtinTokensCache: [Int: [SemanticToken]] = [:]
 
-        var mdTokens: [SemanticToken]?
+        var mdTokenIndex: [Int: [SemanticToken]]?
         if useBuiltinTokens && isMD {
-            mdTokens = SyntaxTokenizer.tokenizeMarkdownVisible(buffer: buf, scrollY: scrollY, height: height)
+            let mdTokens = SyntaxTokenizer.tokenizeMarkdownVisible(buffer: buf, scrollY: scrollY, height: height)
+            var idx = [Int: [SemanticToken]]()
+            idx.reserveCapacity(height)
+            for t in mdTokens {
+                idx[t.line, default: []].append(t)
+            }
+            mdTokenIndex = idx
         }
 
         for row in 0..<height {
@@ -680,13 +685,13 @@ class EditorWindow: Window {
             let tokens: [SemanticToken]
             if !useBuiltinTokens {
                 tokens = semanticTokensFor(line: lineNum)
-            } else if let md = mdTokens {
-                tokens = md.filter { $0.line == lineNum }
+            } else if let md = mdTokenIndex {
+                tokens = md[lineNum] ?? []
             } else {
                 if builtinTokensCache[lineNum] == nil {
                     builtinTokensCache[lineNum] = SyntaxTokenizer.tokenize(line: line, lineNum: lineNum, keywords: SyntaxTokenizer.keywords(for: fileExt))
                 }
-                tokens = builtinTokensCache[lineNum]!.map { SemanticToken(line: $0.line, startChar: $0.startChar, length: $0.length, type: $0.type, modifiers: $0.modifiers) }
+                tokens = builtinTokensCache[lineNum]!
             }
 
             var colOffset = 0

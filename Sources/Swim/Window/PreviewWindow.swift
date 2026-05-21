@@ -37,11 +37,7 @@ class PreviewWindow: Window {
     }
 
     override func update() {
-        for row in 0..<height {
-            for col in 0..<width {
-                setCell(row, col, Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
-            }
-        }
+        fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
 
         let fileName: String
         if let path = filePath {
