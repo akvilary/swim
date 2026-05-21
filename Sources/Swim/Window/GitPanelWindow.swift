@@ -39,7 +39,7 @@ class GitPanelWindow: Window {
     }
 
     override func update() {
-        fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
+        clear()
         if showDiff { drawDiff() } else { drawStatus() }
     }
 
@@ -89,15 +89,7 @@ class GitPanelWindow: Window {
 
     private func drawStatus() {
         let branchLabel = isRefreshing ? "loading..." : currentBranch
-        let headerText = "  \(branchLabel) "
-        for (i, c) in headerText.enumerated() {
-            if i < width {
-                setCell(0, i, Cell.colored(c, fg: Theme.orange, bg: Theme.bgHighlight, bold: true))
-            }
-        }
-        for i in headerText.count..<width {
-            setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
-        }
+        drawHeader("  \(branchLabel) ", fg: Theme.orange)
 
         let totalContentRows = totalContentRowCount()
         let visibleHeight = height - 1
@@ -178,10 +170,7 @@ class GitPanelWindow: Window {
     }
 
     private func drawDiff() {
-        let headerText = " DIFF (Esc to close) "
-        for (i, c) in headerText.enumerated() {
-            if i < width { setCell(0, i, Cell.colored(c, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)) }
-        }
+        drawHeader(" DIFF (Esc to close) ", fg: Theme.fg)
         let visibleLines = height - 1
         for i in 0..<visibleLines {
             let lineIdx = diffScrollOffset + i

@@ -84,6 +84,19 @@ class Window {
         }
     }
 
+    func clear(bg: Color = Theme.bgDark) {
+        fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: bg))
+    }
+
+    func drawHeader(_ text: String, fg: Color, bg: Color = Theme.bgHighlight, bold: Bool = true) {
+        for (i, c) in text.enumerated() {
+            if i < width { setCell(0, i, Cell.colored(c, fg: fg, bg: bg, bold: bold)) }
+        }
+        for i in text.count..<width {
+            setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: bg))
+        }
+    }
+
     func handleKey(_ key: Key) -> Bool { false }
 
     func update() {}

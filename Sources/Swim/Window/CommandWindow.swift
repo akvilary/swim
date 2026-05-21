@@ -77,17 +77,11 @@ class CommandWindow: Window {
     }
 
     override func update() {
-        fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
+        clear()
 
         if isRunning {
             let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
-            let headerText = " \(spinner) \(title) "
-            for (i, c) in headerText.enumerated() {
-                if i < width { setCell(0, i, Cell.colored(c, fg: Theme.blue, bg: Theme.bgHighlight, bold: true)) }
-            }
-            for i in headerText.count..<width {
-                setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
-            }
+            drawHeader(" \(spinner) \(title) ", fg: Theme.blue)
             let msg = "Running \(title)..."
             let midRow = height / 2
             let startCol = max(0, (width - msg.count - 2) / 2)
@@ -98,13 +92,7 @@ class CommandWindow: Window {
                 }
             }
         } else {
-            let headerText = " \(title) — done (Esc to close) "
-            for (i, c) in headerText.enumerated() {
-                if i < width { setCell(0, i, Cell.colored(c, fg: Theme.green, bg: Theme.bgHighlight, bold: true)) }
-            }
-            for i in headerText.count..<width {
-                setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
-            }
+            drawHeader(" \(title) — done (Esc to close) ", fg: Theme.green)
             let visibleLines = height - 1
             for i in 0..<visibleLines {
                 let lineIdx = scrollOffset + i

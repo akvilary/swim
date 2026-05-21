@@ -43,7 +43,7 @@ class SearchResultsWindow: Window {
     }
 
     override func update() {
-        fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
+        clear()
 
         drawHeader()
 
@@ -73,12 +73,7 @@ class SearchResultsWindow: Window {
             } else {
                 headerText = " SEARCH (\(results.count) matches) "
             }
-            for (i, c) in headerText.enumerated() {
-                if i < width { setCell(0, i, Cell.colored(c, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)) }
-            }
-            for i in headerText.count..<width {
-                setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
-            }
+            drawHeader(headerText, fg: Theme.fg)
         }
     }
 

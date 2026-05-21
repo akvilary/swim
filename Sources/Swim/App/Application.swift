@@ -174,20 +174,7 @@ class Application: WindowDelegate {
         guard let buf = editor.buffer, buf.totalLength < 5_000_000 else { return }
         let uri = "file://\(path)"
         let ext = (path as NSString).pathExtension
-        let langId: String
-        switch ext {
-        case "swift": langId = "swift"
-        case "c": langId = "c"
-        case "cpp", "cc", "cxx": langId = "cpp"
-        case "h": langId = "objective-c"
-        case "py": langId = "python"
-        case "rs": langId = "rust"
-        case "go": langId = "go"
-        case "ts": langId = "typescript"
-        case "js": langId = "javascript"
-        case "dart": langId = "dart"
-        default: langId = "plaintext"
-        }
+        let langId = SyntaxTokenizer.languageId(for: ext)
         let text = editor.buffer?.getAllText() ?? ""
         client.openDocument(uri: uri, languageId: langId, text: text)
     }
@@ -377,16 +364,9 @@ class Application: WindowDelegate {
 
     func handleEditorCommand(_ cmd: String) {
         switch cmd {
-        case "quit":
-            if editor.modified { return }
-            running = false
-        case "forcequit":
-            running = false
-        case "qa":
-            running = false
-        case "q":
+        case "quit", "q":
             if !editor.modified { running = false }
-        case "q!":
+        case "forcequit", "qa", "q!":
             running = false
         default:
             break
@@ -394,26 +374,25 @@ class Application: WindowDelegate {
     }
 
     func openFile(_ path: String) {
-        editor.openFile(path)
-        editor.dirty = true
-        updateStatusBar()
-        notifyLSPFileOpen(path)
-        spaces.current.focused = editor
-        spaces.current.updateFocusStates()
+        openFileInEditor(path)
     }
 
     func openFileAtLine(_ path: String, line: Int) {
-        editor.openFile(path)
-        editor.dirty = true
-        updateStatusBar()
-        notifyLSPFileOpen(path)
-        spaces.current.focused = editor
-        spaces.current.updateFocusStates()
+        openFileInEditor(path)
         editor.cursorLine = max(0, line - 1)
         editor.ensureCursorVisible()
         if spaces.current.id != "editor" {
             switchToSpace("editor")
         }
+    }
+
+    private func openFileInEditor(_ path: String) {
+        editor.openFile(path)
+        editor.dirty = true
+        updateStatusBar()
+        notifyLSPFileOpen(path)
+        spaces.current.focused = editor
+        spaces.current.updateFocusStates()
     }
 
     func runGitCommand(label: String, args: [String]) {

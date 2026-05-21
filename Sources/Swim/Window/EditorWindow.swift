@@ -56,19 +56,16 @@ class EditorWindow: Window {
     func openFile(_ path: String) {
         filePath = path
         buffer = PieceTable.fromFile(path) ?? PieceTable(text: "")
-        cursorLine = 0
-        cursorCol = 0
-        scrollY = 0
-        scrollX = 0
-        modified = false
-        undoStack = []
-        redoStack = []
-        dirty = true
+        resetEditorState()
     }
 
     func newFile() {
         filePath = nil
         buffer = PieceTable(text: "")
+        resetEditorState()
+    }
+
+    private func resetEditorState() {
         cursorLine = 0
         cursorCol = 0
         scrollY = 0
@@ -280,16 +277,20 @@ class EditorWindow: Window {
     private func moveWordForward() {
         guard let buf = buffer else { return }
         let offset = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
-        let newOffset = buf.wordForward(from: offset)
-        let (newLine, byteCol) = buf.offsetToLineCol(newOffset)
-        cursorLine = newLine; cursorCol = buf.byteToCharOffsetInLine(line: newLine, byteOffset: byteCol); ensureCursorVisible()
+        moveCursorToOffset(buf.wordForward(from: offset))
     }
     private func moveWordBackward() {
         guard let buf = buffer else { return }
         let offset = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
-        let newOffset = buf.wordBackward(from: offset)
-        let (newLine, byteCol) = buf.offsetToLineCol(newOffset)
-        cursorLine = newLine; cursorCol = buf.byteToCharOffsetInLine(line: newLine, byteOffset: byteCol); ensureCursorVisible()
+        moveCursorToOffset(buf.wordBackward(from: offset))
+    }
+
+    private func moveCursorToOffset(_ offset: Int) {
+        guard let buf = buffer else { return }
+        let (line, byteCol) = buf.offsetToLineCol(offset)
+        cursorLine = line
+        cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol)
+        ensureCursorVisible()
     }
 
     private func recordAction(offset: Int, deleted: String, inserted: String) {
@@ -514,9 +515,9 @@ class EditorWindow: Window {
         guard let buf = buffer, !searchQuery.isEmpty else { return }
         let byteOff = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol) + 1
         if let found = buf.search(searchQuery, from: byteOff) {
-            let (line, byteCol) = buf.offsetToLineCol(found); cursorLine = line; cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol); ensureCursorVisible()
+            moveCursorToOffset(found)
         } else if let found = buf.search(searchQuery, from: 0) {
-            let (line, byteCol) = buf.offsetToLineCol(found); cursorLine = line; cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol); ensureCursorVisible()
+            moveCursorToOffset(found)
         }
     }
 
@@ -524,7 +525,7 @@ class EditorWindow: Window {
         guard let buf = buffer, !searchQuery.isEmpty else { return }
         let byteOff = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
         if let found = buf.searchBackward(searchQuery, from: byteOff) {
-            let (line, byteCol) = buf.offsetToLineCol(found); cursorLine = line; cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol); ensureCursorVisible()
+            moveCursorToOffset(found)
         }
     }
 
@@ -610,7 +611,7 @@ class EditorWindow: Window {
     override func update() {
         guard let buf = buffer, height > 0, width > 4 else { return }
 
-        fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bg))
+        clear(bg: Theme.bg)
 
         let lnWidth = lineNumberWidth()
         let textWidth = max(0, width - lnWidth)

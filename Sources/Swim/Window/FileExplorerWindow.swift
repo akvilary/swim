@@ -17,17 +17,9 @@ class FileExplorerWindow: Window {
     var currentDirectory: String = ""
 
     override func update() {
-        fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
+        clear()
 
-        let headerText = " EXPLORER "
-        for (i, c) in headerText.enumerated() {
-            if i < width {
-                setCell(0, i, Cell.colored(c, fg: Theme.fgDark, bg: Theme.bgHighlight, bold: true))
-            }
-        }
-        for i in headerText.count..<width {
-            setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
-        }
+        drawHeader(" EXPLORER ", fg: Theme.fgDark)
 
         let visibleCount = height - 1
         for row in 0..<visibleCount {
@@ -224,6 +216,6 @@ class FileExplorerWindow: Window {
     }
 
     private func displayWidth(_ c: Character) -> Int {
-        Renderer.isWideChar(c) ? 2 : 1
+        c.isWide ? 2 : 1
     }
 }

@@ -91,6 +91,22 @@ struct SyntaxTokenizer {
         ext == "md" || ext == "markdown" || ext == "mdx"
     }
 
+    static func languageId(for ext: String) -> String {
+        switch ext {
+        case "swift": return "swift"
+        case "c": return "c"
+        case "cpp", "cc", "cxx": return "cpp"
+        case "h": return "objective-c"
+        case "py": return "python"
+        case "rs": return "rust"
+        case "go": return "go"
+        case "ts": return "typescript"
+        case "js": return "javascript"
+        case "dart": return "dart"
+        default: return "plaintext"
+        }
+    }
+
     static func keywords(for ext: String) -> Set<String> {
         switch ext {
         case "swift": return swiftKeywords

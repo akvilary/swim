@@ -37,18 +37,10 @@ class PreviewWindow: Window {
     }
 
     override func update() {
-        fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: Theme.bgDark))
+        clear()
 
-        let fileName: String
-        if let path = filePath {
-            fileName = (path as NSString).lastPathComponent
-        } else {
-            fileName = "Preview"
-        }
-        let title = " \(fileName) "
-        for (i, c) in title.enumerated() {
-            if i < width { setCell(0, i, Cell.colored(c, fg: Theme.comment, bg: Theme.bgDark)) }
-        }
+        let fileName = filePath.map { ($0 as NSString).lastPathComponent } ?? "Preview"
+        drawHeader(" \(fileName) ", fg: Theme.comment, bg: Theme.bgDark)
 
         let visibleH = height - 1
         let lineNumW = max(3, String(max(lines.count, 1)).count + 1)

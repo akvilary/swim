@@ -37,9 +37,7 @@ class StatusBarWindow: Window {
             modeBgColor = Theme.blue
         }
 
-        for i in 0..<width {
-            setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: bgColor))
-        }
+        clear()
 
         for (i, c) in modeLabel.enumerated() {
             if i < width {
