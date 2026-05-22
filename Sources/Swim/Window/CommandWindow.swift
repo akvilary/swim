@@ -1,9 +1,5 @@
 import Foundation
 
-private nonisolated(unsafe) var _cmdResult: [Substring]?
-private nonisolated(unsafe) var _cmdDone: Bool = false
-private let _cmdLock = NSLock()
-
 class CommandWindow: Window {
     private var title: String = ""
     private var outputLines: [Substring] = []
@@ -11,6 +7,7 @@ class CommandWindow: Window {
     private(set) var isRunning: Bool = false
     var spinnerFrame: Int = 0
     var workingDirectory: String = ""
+    private let cmdTask = BackgroundTask<[Substring]>()
 
     private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -19,24 +16,16 @@ class CommandWindow: Window {
         outputLines = []
         scrollOffset = 0
         isRunning = true
-        _cmdLock.lock()
-        _cmdResult = nil
-        _cmdDone = false
-        _cmdLock.unlock()
         visible = true
         dirty = true
 
         let workDir = workingDirectory
-        Thread {
+        cmdTask.start {
             let result = Shell.git(args, workDir: workDir)
-            let lines = result.combined.isEmpty && !result.stderr.isEmpty
+            return result.combined.isEmpty && !result.stderr.isEmpty
                 ? [Substring(result.stderr)]
                 : result.combined.split(separator: "\n", omittingEmptySubsequences: false)
-            _cmdLock.lock()
-            _cmdResult = Array(lines)
-            _cmdDone = true
-            _cmdLock.unlock()
-        }.start()
+        }
     }
 
     override func poll() {
@@ -44,18 +33,8 @@ class CommandWindow: Window {
     }
 
     func pollResult() {
-        _cmdLock.lock()
-        let done = _cmdDone
-        let result = _cmdResult
-        if done {
-            _cmdDone = false
-            _cmdResult = nil
-        }
-        _cmdLock.unlock()
-        guard done else { return }
-        if let lines = result {
-            outputLines = lines
-        }
+        guard let lines = cmdTask.consume() else { return }
+        outputLines = lines
         isRunning = false
         dirty = true
         delegate?.requestRender()

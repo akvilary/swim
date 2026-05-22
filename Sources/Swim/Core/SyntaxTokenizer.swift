@@ -144,23 +144,12 @@ struct SyntaxTokenizer {
                 continue
             }
 
-            if chars[i] == "\"" {
+            if chars[i] == "\"" || chars[i] == "'" {
+                let quote = chars[i]
                 var end = i + 1
                 while end < len {
                     if chars[end] == "\\" { end += 2; continue }
-                    if chars[end] == "\"" { end += 1; break }
-                    end += 1
-                }
-                tokens.append(SemanticToken(line: lineNum, startChar: i, length: end - i, type: "string", modifiers: 0))
-                i = end
-                continue
-            }
-
-            if chars[i] == "'" {
-                var end = i + 1
-                while end < len {
-                    if chars[end] == "\\" { end += 2; continue }
-                    if chars[end] == "'" { end += 1; break }
+                    if chars[end] == quote { end += 1; break }
                     end += 1
                 }
                 tokens.append(SemanticToken(line: lineNum, startChar: i, length: end - i, type: "string", modifiers: 0))

@@ -1,10 +1,10 @@
 import Foundation
 
-private nonisolated(unsafe) var _gitBranch: String?
-private nonisolated(unsafe) var _gitStatusOutput: String?
-private nonisolated(unsafe) var _gitLogOutput: String?
-private nonisolated(unsafe) var _gitRefreshDone: Bool = false
-private let _gitLock = NSLock()
+private struct GitRefreshResult {
+    let branch: String
+    let statusOutput: String
+    let logOutput: String
+}
 
 struct GitFileStatus {
     let status: String
@@ -32,9 +32,14 @@ class GitPanelWindow: Window {
     private var showDiff: Bool = false
 
     private(set) var isRefreshing: Bool = false
+    private let gitTask = BackgroundTask<GitRefreshResult>()
 
     var workingDirectory: String = "" {
         didSet { refresh() }
+    }
+
+    private var fileSections: [(String, [GitFileStatus])] {
+        [("Staged changes", stagedFiles), ("Changes", unstagedFiles), ("Untracked", untrackedFiles)]
     }
 
     override func update() {
@@ -43,35 +48,21 @@ class GitPanelWindow: Window {
     }
 
     private func totalContentRowCount() -> Int {
-        var row = 1
-        if !stagedFiles.isEmpty { row += 1 + stagedFiles.count }
-        if !unstagedFiles.isEmpty { row += 1 + unstagedFiles.count }
-        if !untrackedFiles.isEmpty { row += 1 + untrackedFiles.count }
-        if !recentCommits.isEmpty { row += 1 + min(recentCommits.count, 5) }
-        return row
+        var count = 1
+        for (_, files) in fileSections {
+            if !files.isEmpty { count += 1 + files.count }
+        }
+        if !recentCommits.isEmpty { count += 1 + min(recentCommits.count, 5) }
+        return count
     }
 
     private func rowForSelectedItem() -> Int? {
         var row = 1
         var globalIdx = 0
-
-        if !stagedFiles.isEmpty {
+        for (_, files) in fileSections {
+            guard !files.isEmpty else { continue }
             row += 1
-            for _ in stagedFiles {
-                if globalIdx == selectedIndex { return row }
-                globalIdx += 1; row += 1
-            }
-        }
-        if !unstagedFiles.isEmpty {
-            row += 1
-            for _ in unstagedFiles {
-                if globalIdx == selectedIndex { return row }
-                globalIdx += 1; row += 1
-            }
-        }
-        if !untrackedFiles.isEmpty {
-            row += 1
-            for _ in untrackedFiles {
+            for _ in files {
                 if globalIdx == selectedIndex { return row }
                 globalIdx += 1; row += 1
             }
@@ -102,42 +93,10 @@ class GitPanelWindow: Window {
         var row = 1 - scrollOffset
         var globalIdx = 0
 
-        if !stagedFiles.isEmpty {
-            drawSectionHeader("Staged changes", screenRow: row)
-            row += 1
-            for file in stagedFiles {
-                if row >= 1 && row < height {
-                    let isSelected = globalIdx == selectedIndex
-                    drawFileRow(file, row: row, selected: isSelected)
-                }
-                globalIdx += 1
-                row += 1
-            }
+        for (title, files) in fileSections {
+            drawFileSection(title, files: files, row: &row, globalIdx: &globalIdx)
         }
-        if !unstagedFiles.isEmpty {
-            drawSectionHeader("Changes", screenRow: row)
-            row += 1
-            for file in unstagedFiles {
-                if row >= 1 && row < height {
-                    let isSelected = globalIdx == selectedIndex
-                    drawFileRow(file, row: row, selected: isSelected)
-                }
-                globalIdx += 1
-                row += 1
-            }
-        }
-        if !untrackedFiles.isEmpty {
-            drawSectionHeader("Untracked", screenRow: row)
-            row += 1
-            for file in untrackedFiles {
-                if row >= 1 && row < height {
-                    let isSelected = globalIdx == selectedIndex
-                    drawFileRow(file, row: row, selected: isSelected)
-                }
-                globalIdx += 1
-                row += 1
-            }
-        }
+
         if !recentCommits.isEmpty && row < height + scrollOffset {
             drawSectionHeader("Recent commits", screenRow: row)
             row += 1
@@ -155,6 +114,19 @@ class GitPanelWindow: Window {
 
         if stagedFiles.isEmpty && unstagedFiles.isEmpty && untrackedFiles.isEmpty && recentCommits.isEmpty {
             drawLine(" No changes", row: max(1, row), fg: Theme.comment)
+        }
+    }
+
+    private func drawFileSection(_ title: String, files: [GitFileStatus], row: inout Int, globalIdx: inout Int) {
+        guard !files.isEmpty else { return }
+        drawSectionHeader(title, screenRow: row)
+        row += 1
+        for file in files {
+            if row >= 1 && row < height {
+                drawFileRow(file, row: row, selected: globalIdx == selectedIndex)
+            }
+            globalIdx += 1
+            row += 1
         }
     }
 
@@ -310,48 +282,22 @@ class GitPanelWindow: Window {
         isRefreshing = true
         dirty = true
 
-        _gitLock.lock()
-        _gitRefreshDone = false
-        _gitLock.unlock()
-
         let workDir = workingDirectory
-        Thread {
-            let branch = Shell.git(["rev-parse", "--abbrev-ref", "HEAD"], workDir: workDir).stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            let statusOutput = Shell.git(["status", "--porcelain"], workDir: workDir).stdout
-            let logOutput = Shell.git(["log", "--oneline", "-10", "--format=%h|%an|%cr|%s"], workDir: workDir).stdout
-
-            _gitLock.lock()
-            _gitBranch = branch
-            _gitStatusOutput = statusOutput
-            _gitLogOutput = logOutput
-            _gitRefreshDone = true
-            _gitLock.unlock()
-        }.start()
+        gitTask.start { [workDir] in
+            GitRefreshResult(
+                branch: Shell.git(["rev-parse", "--abbrev-ref", "HEAD"], workDir: workDir).stdout.trimmingCharacters(in: .whitespacesAndNewlines),
+                statusOutput: Shell.git(["status", "--porcelain"], workDir: workDir).stdout,
+                logOutput: Shell.git(["log", "--oneline", "-10", "--format=%h|%an|%cr|%s"], workDir: workDir).stdout
+            )
+        }
     }
 
     override func poll() {
-        pollRefresh()
-    }
-
-    func pollRefresh() {
-        _gitLock.lock()
-        let done = _gitRefreshDone
-        let branch = _gitBranch
-        let status = _gitStatusOutput
-        let log = _gitLogOutput
-        if done {
-            _gitRefreshDone = false
-            _gitBranch = nil
-            _gitStatusOutput = nil
-            _gitLogOutput = nil
-        }
-        _gitLock.unlock()
-
-        guard done, let branch, let status, let log else { return }
+        guard let result = gitTask.consume() else { return }
         isRefreshing = false
-        currentBranch = branch.hasPrefix("fatal") ? "not a git repo" : branch
-        parseStatus(status)
-        parseLog(log)
+        currentBranch = result.branch.hasPrefix("fatal") ? "not a git repo" : result.branch
+        parseStatus(result.statusOutput)
+        parseLog(result.logOutput)
         dirty = true
         delegate?.requestRender()
     }

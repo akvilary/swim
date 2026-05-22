@@ -1,9 +1,5 @@
 import Foundation
 
-private nonisolated(unsafe) var _searchResults: [SearchResult]?
-private nonisolated(unsafe) var _searchDone: Bool = false
-private let _searchLock = NSLock()
-
 struct SearchResult {
     let filePath: String
     let lineNumber: Int
@@ -22,6 +18,7 @@ class SearchResultsWindow: Window {
     private var flatItems: [SearchItem] = []
     private var flatItemsDirty: Bool = false
     private var resultLookup: [String: [Int: SearchResult]] = [:]
+    private let searchTask = BackgroundTask<[SearchResult]>()
     var workingDirectory: String = ""
     private(set) var isSearching: Bool = false
     private(set) var inputMode: Bool = true
@@ -156,13 +153,8 @@ class SearchResultsWindow: Window {
         dirty = true
         flatItemsDirty = true
 
-        _searchLock.lock()
-        _searchResults = nil
-        _searchDone = false
-        _searchLock.unlock()
-
         let dir = directory
-        Thread {
+        searchTask.start { [dir] in
             var found = [SearchResult]()
             let fm = FileManager.default
             let enumerator = fm.enumerator(atPath: dir)
@@ -184,11 +176,8 @@ class SearchResultsWindow: Window {
                     SearchResultsWindow.searchIn(content: content, filePath: fullPath, query: query, results: &found)
                 }
             }
-            _searchLock.lock()
-            _searchResults = found
-            _searchDone = true
-            _searchLock.unlock()
-        }.start()
+            return found
+        }
     }
 
     override func poll() {
@@ -196,15 +185,7 @@ class SearchResultsWindow: Window {
     }
 
     func pollSearch() {
-        _searchLock.lock()
-        let done = _searchDone
-        let found = _searchResults
-        if done {
-            _searchDone = false
-            _searchResults = nil
-        }
-        _searchLock.unlock()
-        guard done, let found else { return }
+        guard let found = searchTask.consume() else { return }
         results = found
         isSearching = false
         groupResults()

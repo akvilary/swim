@@ -270,13 +270,13 @@ final class PieceTable {
         let start = lineStarts[lineNum]
         let end = lineEnd(line: lineNum)
         let text = getText(range: start..<end)
-        var result = text
-        if result.hasSuffix("\r\n") { result = String(result.dropLast(2)) }
-        else if result.hasSuffix("\n") { result = String(result.dropLast()) }
-        else if result.hasSuffix("\r") { result = String(result.dropLast()) }
+        var slice = text[...]
+        if slice.hasSuffix("\r\n") { slice = slice.dropLast(2) }
+        else if slice.hasSuffix("\n") { slice = slice.dropLast() }
+        else if slice.hasSuffix("\r") { slice = slice.dropLast() }
         cachedLineNum = lineNum
-        cachedLineStr = result
-        return result
+        cachedLineStr = String(slice)
+        return cachedLineStr
     }
 
     func charToByteOffsetInLine(line: Int, charIndex: Int) -> Int {
