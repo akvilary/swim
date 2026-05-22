@@ -140,7 +140,7 @@ class EditorWindow: Window {
         case .backspace: deleteBeforeCursor()
         case .tab: insertText("    ")
         case .char(let c): insertText(String(c))
-        case .left: moveCursorLeftInsert()
+        case .left: moveCursorLeft()
         case .right: moveCursorRightInsert()
         case .up: moveCursorUp()
         case .down: moveCursorDown()
@@ -250,7 +250,6 @@ class EditorWindow: Window {
         if cursorCol < maxCol { cursorCol += 1 }
         ensureCursorVisible()
     }
-    private func moveCursorLeftInsert() { if cursorCol > 0 { cursorCol -= 1 }; ensureCursorVisible() }
     private func moveCursorRightInsert() {
         guard let buf = buffer else { return }
         if cursorCol < buf.lineCharLength(line: cursorLine) { cursorCol += 1 }
@@ -779,18 +778,6 @@ class EditorWindow: Window {
                 cell.bg = Theme.visualBg
                 setCell(screenRow, col, cell)
             }
-        }
-    }
-
-    private func drawCommandLine() {
-        let cmdLine: String
-        if commandBuffer.hasPrefix("/") {
-            cmdLine = commandBuffer
-        } else {
-            cmdLine = ":" + commandBuffer
-        }
-        if height > 0 {
-            writeString(cmdLine, row: height - 1, col: 0, fg: Theme.fg, bg: Theme.bg)
         }
     }
 

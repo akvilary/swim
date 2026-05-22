@@ -21,19 +21,15 @@ final class PieceTable {
         lineStarts.count
     }
 
-    init(text: String) {
-        let data = [UInt8](text.utf8)
+    init(data: [UInt8]) {
         original = data
         pieces = [Piece(start: 0, length: data.count, isAdd: false)]
         totalLength = data.count
         rebuildLineIndex()
     }
 
-    init(data: [UInt8]) {
-        original = data
-        pieces = [Piece(start: 0, length: data.count, isAdd: false)]
-        totalLength = data.count
-        rebuildLineIndex()
+    convenience init(text: String) {
+        self.init(data: [UInt8](text.utf8))
     }
 
     static func fromFile(_ path: String) -> PieceTable? {
@@ -45,68 +41,46 @@ final class PieceTable {
         piece.isAdd ? addBuffer : original
     }
 
+    private func scanNewlines(in piece: Piece, fromLocal localStart: Int, baseOffset: Int, into lineStarts: inout [Int]) {
+        let buf = buffer(for: piece)
+        let scanLength = piece.length - localStart
+        buf.withUnsafeBufferPointer { ptr in
+            let p = ptr.baseAddress! + piece.start + localStart
+            for i in 0..<scanLength {
+                if p[i] == 10 {
+                    lineStarts.append(baseOffset + i + 1)
+                }
+            }
+        }
+    }
+
     private func rebuildLineIndex() {
         lineStarts = [Int]()
         lineStarts.reserveCapacity(max(16, totalLength / 30))
         lineStarts.append(0)
         var offset = 0
         for piece in pieces {
-            let buf = buffer(for: piece)
-            let base = piece.start
-            buf.withUnsafeBufferPointer { ptr in
-                let p = ptr.baseAddress! + base
-                for i in 0..<piece.length {
-                    if p[i] == 10 {
-                        lineStarts.append(offset + i + 1)
-                    }
-                }
-            }
+            scanNewlines(in: piece, fromLocal: 0, baseOffset: offset, into: &lineStarts)
             offset += piece.length
         }
     }
 
     private func rebuildLineIndex(fromOffset startOffset: Int) {
         let startIdx = binarySearchLineIndex(startOffset)
-        if lineStarts.count > startIdx {
-            lineStarts.removeSubrange(startIdx...)
-        }
+        lineStarts.removeSubrange(startIdx...)
 
         var offset = startOffset
         var pieceOffset = 0
-        var foundStart = false
 
         for piece in pieces {
             let pieceEnd = pieceOffset + piece.length
-            if !foundStart {
-                if startOffset >= pieceEnd {
-                    pieceOffset += piece.length
-                    continue
-                }
-                foundStart = true
-                let localStart = startOffset - pieceOffset
-                let buf = buffer(for: piece)
-                buf.withUnsafeBufferPointer { ptr in
-                    let p = ptr.baseAddress! + piece.start + localStart
-                    for i in 0..<(piece.length - localStart) {
-                        if p[i] == 10 {
-                            lineStarts.append(offset + i + 1)
-                        }
-                    }
-                }
-                offset += piece.length - localStart
+            if startOffset >= pieceEnd {
                 pieceOffset += piece.length
                 continue
             }
-            let buf = buffer(for: piece)
-            buf.withUnsafeBufferPointer { ptr in
-                let p = ptr.baseAddress! + piece.start
-                for i in 0..<piece.length {
-                    if p[i] == 10 {
-                        lineStarts.append(offset + i + 1)
-                    }
-                }
-            }
-            offset += piece.length
+            let localStart = max(0, startOffset - pieceOffset)
+            scanNewlines(in: piece, fromLocal: localStart, baseOffset: offset, into: &lineStarts)
+            offset += piece.length - localStart
             pieceOffset += piece.length
         }
     }
@@ -309,38 +283,52 @@ final class PieceTable {
         var pos = offset
         var queryIdx = 0
         var matchStart = offset
+        var matchPieceIdx = pieceIdx
+        var matchLocalOff = localOff
+
+        func currentByte() -> UInt8? {
+            guard pieceIdx < pieces.count else { return nil }
+            let piece = pieces[pieceIdx]
+            guard localOff < piece.length else { return nil }
+            return buffer(for: piece)[piece.start + localOff]
+        }
+
+        func advance() {
+            pos += 1
+            localOff += 1
+            if pieceIdx < pieces.count && localOff >= pieces[pieceIdx].length {
+                pieceIdx += 1
+                localOff = 0
+            }
+        }
 
         while pos + queryLen - queryIdx <= totalLength {
-            guard pieceIdx < pieces.count else { break }
-            let piece = pieces[pieceIdx]
-            let buf = buffer(for: piece)
-
-            while localOff < piece.length {
-                let ch = buf[piece.start + localOff]
-                if ch == queryBytes[queryIdx] {
-                    if queryIdx == 0 { matchStart = pos }
-                    queryIdx += 1
-                    if queryIdx == queryLen { return matchStart }
-                } else if queryIdx > 0 {
-                    let restart = matchStart + 1
-                    (pieceIdx, localOff) = findPieceAndLocalOffset(restart)
-                    pos = restart
-                    queryIdx = 0
-                    continue
+            guard let ch = currentByte() else { break }
+            if ch == queryBytes[queryIdx] {
+                if queryIdx == 0 {
+                    matchStart = pos
+                    matchPieceIdx = pieceIdx
+                    matchLocalOff = localOff
                 }
-                pos += 1
-                localOff += 1
+                queryIdx += 1
+                if queryIdx == queryLen { return matchStart }
+                advance()
+            } else if queryIdx > 0 {
+                pieceIdx = matchPieceIdx
+                localOff = matchLocalOff
+                pos = matchStart
+                queryIdx = 0
+                advance()
+            } else {
+                advance()
             }
-
-            pieceIdx += 1
-            localOff = 0
         }
         return nil
     }
 
     func searchBackward(_ query: String, from offset: Int) -> Int? {
         guard !query.isEmpty else { return nil }
-        let queryLen = [UInt8](query.utf8).count
+        let queryLen = query.utf8.count
         guard offset >= queryLen - 1 else { return nil }
 
         let chunkSize = 4096
