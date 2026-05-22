@@ -426,6 +426,45 @@ struct SyntaxTokenizer {
         return tokens
     }
 
+    static func tokenizeJSON(line: String, lineNum: Int) -> [SemanticToken] {
+        let chars = Array(line)
+        let len = chars.count
+        var tokens = [SemanticToken]()
+        var i = 0
+        var inString = false
+        var skipNext = false
+
+        while i < len {
+            let char = chars[i]
+            let type: String
+
+            if skipNext {
+                skipNext = false
+                type = "string"
+            } else if inString {
+                if char == "\\" { skipNext = true }
+                else if char == "\"" { inString = false }
+                type = "string"
+            } else {
+                if char == "\"" { inString = true; type = "string" }
+                else if char == "{" || char == "}" || char == "[" || char == "]" || char == "," || char == ":" { type = "punctuation" }
+                else { type = "number" }
+            }
+
+            if let lastIdx = tokens.indices.last,
+               tokens[lastIdx].type == type,
+               tokens[lastIdx].startChar + tokens[lastIdx].length == i {
+                tokens[lastIdx] = SemanticToken(line: lineNum, startChar: tokens[lastIdx].startChar, length: tokens[lastIdx].length + 1, type: type, modifiers: 0)
+            } else {
+                tokens.append(SemanticToken(line: lineNum, startChar: i, length: 1, type: type, modifiers: 0))
+            }
+
+            i += 1
+        }
+
+        return tokens
+    }
+
     private static func isHorizontalRule(_ chars: [Character]) -> Bool {
         var i = 0
         let len = chars.count

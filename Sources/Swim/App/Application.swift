@@ -175,14 +175,11 @@ class Application: WindowDelegate {
         let uri = "file://\(path)"
         let ext = (path as NSString).pathExtension
         let langId = SyntaxTokenizer.languageId(for: ext)
-        let text = editor.buffer?.getAllText() ?? ""
-        client.openDocument(uri: uri, languageId: langId, text: text)
+        client.openDocument(uri: uri, languageId: langId, text: buf.getAllText())
     }
 
     private func handleGlobalKey(_ key: Key) {
-        if editor.lastError != nil {
-            editor.lastError = nil
-        }
+        if editor.lastError != nil { editor.lastError = nil }
         if editor.mode == .command {
             if editor.handleKey(key) {
                 updateStatusBar()
@@ -324,18 +321,14 @@ class Application: WindowDelegate {
     }
 
     private func render() {
-        let cursorInfo: CursorRenderInfo?
-        if editor.visible {
+        var cursorInfo: CursorRenderInfo?
+        if editor.visible && editor.mode == .insert {
             let screenRow = editor.cursorLine - editor.scrollY
             let screenCol = editor.cursorCol - editor.scrollX
             let lnW = editor.lineNumberWidth()
-            if editor.mode == .insert && screenRow >= 0 && screenRow < editor.height && screenCol >= 0 && screenCol + lnW < editor.width {
+            if screenRow >= 0 && screenRow < editor.height && screenCol >= 0 && screenCol + lnW < editor.width {
                 cursorInfo = CursorRenderInfo(row: editor.y + screenRow, col: editor.x + lnW + screenCol, shape: 5, visible: true)
-            } else {
-                cursorInfo = nil
             }
-        } else {
-            cursorInfo = nil
         }
         renderer.render(windows: spaces.current.visibleWindows, cursorInfo: cursorInfo)
     }

@@ -17,7 +17,6 @@ class SearchResultsWindow: Window {
     private var scrollOffset: Int = 0
     private var flatItems: [SearchItem] = []
     private var flatItemsDirty: Bool = false
-    private var resultLookup: [String: [Int: SearchResult]] = [:]
     private let searchTask = BackgroundTask<[SearchResult]>()
     var workingDirectory: String = ""
     private(set) var isSearching: Bool = false
@@ -36,7 +35,7 @@ class SearchResultsWindow: Window {
     private enum SearchItem {
         case directory(String, Int)
         case file(String, String, Int)
-        case result(String, Int, Int)
+        case result(SearchResult)
     }
 
     override func update() {
@@ -101,23 +100,20 @@ class SearchResultsWindow: Window {
                 let icon = expanded ? "▾ " : "▸ "
                 let text = "  \(icon)\(name) (\(count))"
                 drawLine(text, row: y, col: 0, fg: Theme.fgDark, bg: bg)
-            case .result(let path, let lineNum, _):
-                let result = resultLookup[path]?[lineNum]
+            case .result(let result):
                 let indent = "      "
-                let linePrefix = "\(indent)\(lineNum): "
+                let linePrefix = "\(indent)\(result.lineNumber): "
                 drawLine(linePrefix, row: y, col: 0, fg: Theme.comment, bg: bg)
-                if let result = result {
-                    let prefixCol = linePrefix.count
-                    let availW = width - prefixCol - result.matchLength
-                    let beforeEnd = min(result.matchStart, availW)
-                    let beforeMatch = String(result.lineContent.prefix(beforeEnd).trimmingCharacters(in: .whitespaces).prefix(availW))
-                    drawLine(beforeMatch, row: y, col: prefixCol, fg: isSelected ? Theme.fg : Theme.fgDark, bg: bg)
-                    let matchStart = prefixCol + beforeMatch.count
-                    let startIndex = result.lineContent.index(result.lineContent.startIndex, offsetBy: result.matchStart)
-                    let endIndex = result.lineContent.index(startIndex, offsetBy: result.matchLength)
-                    let matchText = String(result.lineContent[startIndex..<endIndex])
-                    drawLine(matchText, row: y, col: matchStart, fg: Theme.orange, bg: bg, bold: true)
-                }
+                let prefixCol = linePrefix.count
+                let availW = width - prefixCol - result.matchLength
+                let beforeEnd = min(result.matchStart, availW)
+                let beforeMatch = String(result.lineContent.prefix(beforeEnd).trimmingCharacters(in: .whitespaces).prefix(availW))
+                drawLine(beforeMatch, row: y, col: prefixCol, fg: isSelected ? Theme.fg : Theme.fgDark, bg: bg)
+                let matchStart = prefixCol + beforeMatch.count
+                let startIndex = result.lineContent.index(result.lineContent.startIndex, offsetBy: result.matchStart)
+                let endIndex = result.lineContent.index(startIndex, offsetBy: result.matchLength)
+                let matchText = String(result.lineContent[startIndex..<endIndex])
+                drawLine(matchText, row: y, col: matchStart, fg: Theme.orange, bg: bg, bold: true)
             }
         }
     }
@@ -134,7 +130,7 @@ class SearchResultsWindow: Window {
                     flatItems.append(.file(group.dir, fileGroup.name, fileGroup.results.count))
                     if fileExpanded {
                         for result in fileGroup.results {
-                            flatItems.append(.result(result.filePath, result.lineNumber, result.matchStart))
+                            flatItems.append(.result(result))
                         }
                     }
                 }
@@ -216,14 +212,11 @@ class SearchResultsWindow: Window {
 
     private func groupResults() {
         var dirMap: [String: [String: [SearchResult]]] = [:]
-        var lookup: [String: [Int: SearchResult]] = [:]
         for result in results {
             let dir = (result.filePath as NSString).deletingLastPathComponent
             let file = (result.filePath as NSString).lastPathComponent
             dirMap[dir, default: [:]][file, default: []].append(result)
-            lookup[result.filePath, default: [:]][result.lineNumber] = result
         }
-        resultLookup = lookup
         flatItemsDirty = true
         groupedResults = dirMap.map { dir, files in
             (dir: dir, files: files.map { name, results in
@@ -308,7 +301,7 @@ class SearchResultsWindow: Window {
             let key = dir + "/" + name
             if expandedFiles.contains(key) { expandedFiles.remove(key) } else { expandedFiles.insert(key) }
             flatItemsDirty = true
-        case .result(let path, let lineNum, _): delegate?.openFileAtLine(path, line: lineNum)
+        case .result(let r): delegate?.openFileAtLine(r.filePath, line: r.lineNumber)
         }
         dirty = true
     }
@@ -329,8 +322,8 @@ class SearchResultsWindow: Window {
             return
         }
         switch flatItems[selectedIndex] {
-        case .result(let path, let lineNum, _):
-            delegate?.updatePreview(path: path, highlightLine: lineNum)
+        case .result(let r):
+            delegate?.updatePreview(path: r.filePath, highlightLine: r.lineNumber)
         case .file(let dir, let name, _):
             delegate?.updatePreview(path: dir + "/" + name, highlightLine: -1)
         case .directory:

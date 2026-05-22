@@ -213,7 +213,7 @@ class EditorWindow: Window {
         let parts = String(cmd.dropFirst(3)).split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count >= 2 else { return }
         let search = String(parts[0])
-        let replace = parts.count > 1 ? String(parts[1]) : ""
+        let replace = String(parts[1])
         let flags = parts.count > 2 ? String(parts[2]) : ""
         guard let buf = buffer else { return }
         let lineStart = buf.lineStart(line: cursorLine)
@@ -638,51 +638,13 @@ class EditorWindow: Window {
             let visStart = min(scrollX, chars.count)
             let visEnd = min(visStart + textWidth, chars.count)
 
-            if isJSON {
-                var colOffset = 0
-                var inString = false
-                var skipNext = false
-                for i in visStart..<visEnd {
-                    let char = chars[i]
-                    let cellX = lnWidth + colOffset
-                    guard cellX < width else { break }
-
-                    let color: Color
-                    if skipNext {
-                        skipNext = false
-                        color = Theme.green
-                    } else if inString {
-                        if char == "\\" {
-                            skipNext = true
-                            color = Theme.green
-                        } else if char == "\"" {
-                            inString = false
-                            color = Theme.green
-                        } else {
-                            color = Theme.green
-                        }
-                    } else {
-                        if char == "\"" {
-                            inString = true
-                            color = Theme.green
-                        } else if char == "{" || char == "}" || char == "[" || char == "]" || char == "," || char == ":" {
-                            color = Theme.fg
-                        } else {
-                            color = Theme.orange
-                        }
-                    }
-
-                    setCell(row, cellX, Cell.colored(char, fg: color, bg: Theme.bg))
-                    colOffset += 1
-                }
-                continue
-            }
-
             let tokens: [SemanticToken]
             if !useBuiltinTokens {
                 tokens = semanticTokensFor(line: lineNum)
             } else if let md = mdTokenIndex {
                 tokens = md[lineNum] ?? []
+            } else if isJSON {
+                tokens = SyntaxTokenizer.tokenizeJSON(line: line, lineNum: lineNum)
             } else {
                 tokens = SyntaxTokenizer.tokenize(line: line, lineNum: lineNum, keywords: builtinKeywords ?? [])
             }
@@ -796,6 +758,7 @@ class EditorWindow: Window {
         case "variable", "property": return Theme.fg
         case "parameter": return Theme.orange
         case "operator": return Theme.blue5
+        case "punctuation": return Theme.fg
         case "namespace", "module": return Theme.magenta
         case "decorator", "attribute": return Theme.yellow
         case "regexp": return Theme.red
