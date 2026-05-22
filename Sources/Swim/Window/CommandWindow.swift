@@ -28,27 +28,12 @@ class CommandWindow: Window {
 
         let workDir = workingDirectory
         Thread {
-            let process = Process()
-            let pipe = Pipe()
-            let errPipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            process.arguments = args
-            if !workDir.isEmpty { process.currentDirectoryURL = URL(fileURLWithPath: workDir) }
-            process.standardOutput = pipe
-            process.standardError = errPipe
-            var result: [Substring]?
-            do {
-                try process.run()
-                let outData = pipe.fileHandleForReading.readDataToEndOfFile()
-                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                let combined = (String(data: outData, encoding: .utf8) ?? "") + (String(data: errData, encoding: .utf8) ?? "")
-                result = combined.split(separator: "\n", omittingEmptySubsequences: false)
-            } catch {
-                result = ["error: \(error.localizedDescription)"]
-            }
+            let result = Shell.git(args, workDir: workDir)
+            let lines = result.combined.isEmpty && !result.stderr.isEmpty
+                ? [Substring(result.stderr)]
+                : result.combined.split(separator: "\n", omittingEmptySubsequences: false)
             _cmdLock.lock()
-            _cmdResult = result
+            _cmdResult = Array(lines)
             _cmdDone = true
             _cmdLock.unlock()
         }.start()

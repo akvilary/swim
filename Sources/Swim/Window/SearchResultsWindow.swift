@@ -358,8 +358,6 @@ class SearchResultsWindow: Window {
     }
 
     private func ensureVisible() {
-        let visibleCount = height - 1
-        if selectedIndex < scrollOffset { scrollOffset = selectedIndex }
-        else if selectedIndex >= scrollOffset + visibleCount { scrollOffset = selectedIndex - visibleCount + 1 }
+        scrollOffset = Window.clampedScroll(selectedIndex: selectedIndex, scrollOffset: scrollOffset, visibleCount: height - 1)
     }
 }

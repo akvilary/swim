@@ -152,7 +152,7 @@ class Application: WindowDelegate {
         }
 
         if lspPath == nil {
-            let which = runShell("/usr/bin/which", args: ["sourcekit-lsp"])
+            let which = Shell.run(executable: "/usr/bin/which", args: ["sourcekit-lsp"]).stdout
             if !which.isEmpty {
                 lspPath = which.trimmingCharacters(in: .whitespacesAndNewlines)
             }
@@ -324,15 +324,19 @@ class Application: WindowDelegate {
     }
 
     private func render() {
-        let cursorInfo: (window: Window, cursorLine: Int, cursorCol: Int, scrollY: Int, scrollX: Int, lineNumberWidth: Int, mode: EditorMode)? = (
-            editor,
-            editor.cursorLine,
-            editor.cursorCol,
-            editor.scrollY,
-            editor.scrollX,
-            editor.lineNumberWidth(),
-            editor.mode
-        )
+        let cursorInfo: CursorRenderInfo?
+        if editor.visible {
+            let screenRow = editor.cursorLine - editor.scrollY
+            let screenCol = editor.cursorCol - editor.scrollX
+            let lnW = editor.lineNumberWidth()
+            if editor.mode == .insert && screenRow >= 0 && screenRow < editor.height && screenCol >= 0 && screenCol + lnW < editor.width {
+                cursorInfo = CursorRenderInfo(row: editor.y + screenRow, col: editor.x + lnW + screenCol, shape: 5, visible: true)
+            } else {
+                cursorInfo = nil
+            }
+        } else {
+            cursorInfo = nil
+        }
         renderer.render(windows: spaces.current.visibleWindows, cursorInfo: cursorInfo)
     }
 
@@ -421,21 +425,5 @@ class Application: WindowDelegate {
         let uri = "file://\(path)"
         let text = buf.getAllText()
         client.changeDocument(uri: uri, version: lspVersion, text: text)
-    }
-
-    private func runShell(_ cmd: String, args: [String] = []) -> String {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: cmd)
-        process.arguments = args
-        process.standardOutput = pipe
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            return String(data: data, encoding: .utf8) ?? ""
-        } catch {
-            return ""
-        }
     }
 }

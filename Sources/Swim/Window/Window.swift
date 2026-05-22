@@ -79,9 +79,7 @@ class Window {
 
     func drawLine(_ text: String, row: Int, col: Int = 0, fg: Color = Theme.fgDark, bg: Color = Theme.bgDark, bold: Bool = false) {
         guard row >= 0 && row < height else { return }
-        for (i, c) in text.enumerated() {
-            if col + i < width { setCell(row, col + i, Cell.colored(c, fg: fg, bg: bg, bold: bold)) }
-        }
+        writeString(text, row: row, col: col, fg: fg, bg: bg, bold: bold)
     }
 
     func clear(bg: Color = Theme.bgDark) {
@@ -102,4 +100,10 @@ class Window {
     func update() {}
 
     func poll() {}
+
+    static func clampedScroll(selectedIndex: Int, scrollOffset: Int, visibleCount: Int) -> Int {
+        if selectedIndex < scrollOffset { return selectedIndex }
+        if selectedIndex >= scrollOffset + visibleCount { return selectedIndex - visibleCount + 1 }
+        return scrollOffset
+    }
 }

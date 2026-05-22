@@ -340,27 +340,20 @@ final class PieceTable {
 
     func searchBackward(_ query: String, from offset: Int) -> Int? {
         guard !query.isEmpty else { return nil }
-        let queryBytes = [UInt8](query.utf8)
-        let queryLen = queryBytes.count
+        let queryLen = [UInt8](query.utf8).count
         guard offset >= queryLen - 1 else { return nil }
 
-        let text = getText(range: max(0, offset - queryLen + 1 - 1024)..<min(offset + 1, totalLength))
-        let baseOffset = max(0, offset - queryLen + 1 - 1024)
-        if let range = text.range(of: query, options: [.backwards, .literal]) {
-            return baseOffset + text.distance(from: text.startIndex, to: range.lowerBound)
-        }
+        let chunkSize = 4096
+        var end = min(offset + 1, totalLength)
 
-        var pos = offset - queryLen + 1
-        while pos >= 0 {
-            var match = true
-            for i in 0..<queryLen {
-                if getChar(at: pos + i) != queryBytes[i] {
-                    match = false
-                    break
-                }
+        while end > 0 {
+            let start = max(0, end - chunkSize)
+            let text = getText(range: start..<end)
+            if let range = text.range(of: query, options: [.backwards, .literal]) {
+                return start + text[..<range.lowerBound].utf8.count
             }
-            if match { return pos }
-            pos -= 1
+            if start == 0 { break }
+            end = start + queryLen
         }
         return nil
     }

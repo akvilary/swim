@@ -34,6 +34,7 @@ class EditorWindow: Window {
         didSet { rebuildTokenIndex() }
     }
     private var tokenIndex: [Int: [SemanticToken]] = [:]
+    private var markdownCache = SyntaxTokenizer.MarkdownCache()
 
     var lastError: String?
 
@@ -542,19 +543,21 @@ class EditorWindow: Window {
         clampCol(); ensureCursorVisible()
     }
 
-    private func undo() {
-        guard let buf = buffer, !undoStack.isEmpty else { return }
-        let action = undoStack.removeLast()
-        isUndoRedoing = true
-
+    private func applyInverse(_ action: (offset: Int, deleted: String, inserted: String)) {
+        guard let buf = buffer else { return }
         if !action.inserted.isEmpty {
-            let delOffset = action.offset
-            buf.delete(at: delOffset, length: action.inserted.utf8.count)
+            buf.delete(at: action.offset, length: action.inserted.utf8.count)
         }
         if !action.deleted.isEmpty {
             buf.insert(action.deleted, at: action.offset)
         }
+    }
 
+    private func undo() {
+        guard let buf = buffer, !undoStack.isEmpty else { return }
+        let action = undoStack.removeLast()
+        isUndoRedoing = true
+        applyInverse(action)
         redoStack.append(action)
         isUndoRedoing = false
         modified = !undoStack.isEmpty
@@ -569,14 +572,7 @@ class EditorWindow: Window {
         guard let buf = buffer, !redoStack.isEmpty else { return }
         let action = redoStack.removeLast()
         isUndoRedoing = true
-
-        if !action.inserted.isEmpty {
-            buf.delete(at: action.offset, length: action.inserted.utf8.count)
-        }
-        if !action.deleted.isEmpty {
-            buf.insert(action.deleted, at: action.offset)
-        }
-
+        applyInverse(action)
         undoStack.append(action)
         isUndoRedoing = false
         modified = true
@@ -626,7 +622,7 @@ class EditorWindow: Window {
 
         var mdTokenIndex: [Int: [SemanticToken]]?
         if useBuiltinTokens && isMD {
-            let mdTokens = SyntaxTokenizer.tokenizeMarkdownVisible(buffer: buf, scrollY: scrollY, height: height)
+            let mdTokens = SyntaxTokenizer.tokenizeMarkdownVisible(buffer: buf, scrollY: scrollY, height: height, cache: &markdownCache)
             var idx = [Int: [SemanticToken]]()
             idx.reserveCapacity(height)
             for t in mdTokens {

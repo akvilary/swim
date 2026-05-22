@@ -229,22 +229,24 @@ struct SyntaxTokenizer {
         return allTokens
     }
 
-    private static nonisolated(unsafe) var mdCacheBufferId: Int = 0
-    private static nonisolated(unsafe) var mdCacheScrollY: Int = 0
-    private static nonisolated(unsafe) var mdCacheInCodeBlock: Bool = false
-    private static nonisolated(unsafe) var mdCacheLineCount: Int = 0
+    struct MarkdownCache {
+        var bufferId: Int = 0
+        var scrollY: Int = 0
+        var inCodeBlock: Bool = false
+        var lineCount: Int = 0
+    }
 
-    static func tokenizeMarkdownVisible(buffer: PieceTable, scrollY: Int, height: Int) -> [SemanticToken] {
+    static func tokenizeMarkdownVisible(buffer: PieceTable, scrollY: Int, height: Int, cache: inout MarkdownCache) -> [SemanticToken] {
         var allTokens = [SemanticToken]()
         let bufferId = ObjectIdentifier(buffer).hashValue
         let lineCount = buffer.lineCount
         var inCodeBlock = false
 
-        let cacheValid = bufferId == mdCacheBufferId && lineCount == mdCacheLineCount && scrollY >= mdCacheScrollY && scrollY <= mdCacheScrollY + 200
+        let cacheValid = bufferId == cache.bufferId && lineCount == cache.lineCount && scrollY >= cache.scrollY && scrollY <= cache.scrollY + 200
         var startLine: Int
         if cacheValid {
-            startLine = mdCacheScrollY
-            inCodeBlock = mdCacheInCodeBlock
+            startLine = cache.scrollY
+            inCodeBlock = cache.inCodeBlock
         } else {
             startLine = 0
             inCodeBlock = false
@@ -259,10 +261,10 @@ struct SyntaxTokenizer {
             }
         }
 
-        mdCacheBufferId = bufferId
-        mdCacheScrollY = scrollY
-        mdCacheInCodeBlock = inCodeBlock
-        mdCacheLineCount = lineCount
+        cache.bufferId = bufferId
+        cache.scrollY = scrollY
+        cache.inCodeBlock = inCodeBlock
+        cache.lineCount = lineCount
 
         allTokens.reserveCapacity(height * 3)
         for row in 0..<height {

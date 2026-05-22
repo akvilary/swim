@@ -76,11 +76,9 @@ final class Terminal {
             var copy = orig
             tcsetattr(STDIN_FILENO, TCSANOW, &copy)
         }
+        writeRaw("\u{1b}[?1049l\u{1b}[?25h")
         if resizePipeReadFd >= 0 { close(resizePipeReadFd); resizePipeReadFd = -1 }
         if resizePipeWriteFd >= 0 { close(resizePipeWriteFd); resizePipeWriteFd = -1 }
-        writeRaw("\u{1b}[?1049l")
-        writeRaw("\u{1b}[?25h")
-        writeRaw("")
     }
 
     private func updateSize() {
@@ -103,15 +101,7 @@ final class Terminal {
     }
 
     private func writeRaw(_ str: String) {
-        let data = [UInt8](str.utf8)
-        data.withUnsafeBufferPointer { ptr in
-            var written = 0
-            while written < data.count {
-                let n = write(STDOUT_FILENO, ptr.baseAddress! + written, data.count - written)
-                if n > 0 { written += n }
-                else { break }
-            }
-        }
+        writeBuffer([UInt8](str.utf8))
     }
 
     func writeBuffer(_ data: [UInt8]) {

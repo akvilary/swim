@@ -1,5 +1,12 @@
 import Foundation
 
+struct CursorRenderInfo {
+    let row: Int
+    let col: Int
+    let shape: Int
+    let visible: Bool
+}
+
 class Renderer {
     private let terminal: Terminal
     private var prevScreenCells: [Cell?] = []
@@ -17,7 +24,7 @@ class Renderer {
         self.terminal = terminal
     }
 
-    func render(windows: [Window], cursorInfo: (window: Window, cursorLine: Int, cursorCol: Int, scrollY: Int, scrollX: Int, lineNumberWidth: Int, mode: EditorMode)?) {
+    func render(windows: [Window], cursorInfo: CursorRenderInfo?) {
         ensureScreenSize()
 
         if needsFullRedraw {
@@ -66,14 +73,9 @@ class Renderer {
             }
         }
 
-        if let info = cursorInfo, info.mode == .insert {
-            let screenRow = info.cursorLine - info.scrollY
-            let screenCol = info.cursorCol - info.scrollX
-            if screenRow >= 0, screenRow < info.window.height,
-               screenCol >= 0, screenCol + info.lineNumberWidth < info.window.width {
-                terminal.moveCursor(row: info.window.y + screenRow, col: info.window.x + info.lineNumberWidth + screenCol)
-            }
-            terminal.setCursorShape(5)
+        if let info = cursorInfo, info.visible {
+            terminal.moveCursor(row: info.row, col: info.col)
+            terminal.setCursorShape(info.shape)
             terminal.showCursor(true)
         } else {
             terminal.showCursor(false)

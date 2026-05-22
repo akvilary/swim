@@ -27,7 +27,6 @@ class GitPanelWindow: Window {
     private(set) var selectedIndex: Int = 0
     private var scrollOffset: Int = 0
     private var currentBranch: String = ""
-    private var diffContent: String = ""
     private var diffLines: [Substring] = []
     private var diffScrollOffset: Int = 0
     private var showDiff: Bool = false
@@ -283,13 +282,13 @@ class GitPanelWindow: Window {
         switch sel.section {
         case .staged:
             let file = stagedFiles[sel.index]
-            runGit(["reset", "HEAD", "--", file.filePath])
+            Shell.git(["reset", "HEAD", "--", file.filePath], workDir: workingDirectory)
         case .unstaged:
             let file = unstagedFiles[sel.index]
-            runGit(["add", "--", file.filePath])
+            Shell.git(["add", "--", file.filePath], workDir: workingDirectory)
         case .untracked:
             let file = untrackedFiles[sel.index]
-            runGit(["add", "--", file.filePath])
+            Shell.git(["add", "--", file.filePath], workDir: workingDirectory)
         case .commit: break
         }
         refresh()
@@ -300,8 +299,7 @@ class GitPanelWindow: Window {
 
     private func runDiff(for path: String, staged: Bool) {
         let args = staged ? ["diff", "--cached", "--", path] : ["diff", "--", path]
-        diffContent = runGit(args)
-        diffLines = diffContent.split(separator: "\n", omittingEmptySubsequences: false)
+        diffLines = Shell.git(args, workDir: workingDirectory).combined.split(separator: "\n", omittingEmptySubsequences: false)
         diffScrollOffset = 0
         showDiff = true
         dirty = true
@@ -318,9 +316,9 @@ class GitPanelWindow: Window {
 
         let workDir = workingDirectory
         Thread {
-            let branch = GitPanelWindow.runGitSync(["rev-parse", "--abbrev-ref", "HEAD"], workDir: workDir).trimmingCharacters(in: .whitespacesAndNewlines)
-            let statusOutput = GitPanelWindow.runGitSync(["status", "--porcelain"], workDir: workDir)
-            let logOutput = GitPanelWindow.runGitSync(["log", "--oneline", "-10", "--format=%h|%an|%cr|%s"], workDir: workDir)
+            let branch = Shell.git(["rev-parse", "--abbrev-ref", "HEAD"], workDir: workDir).stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            let statusOutput = Shell.git(["status", "--porcelain"], workDir: workDir).stdout
+            let logOutput = Shell.git(["log", "--oneline", "-10", "--format=%h|%an|%cr|%s"], workDir: workDir).stdout
 
             _gitLock.lock()
             _gitBranch = branch
@@ -380,25 +378,4 @@ class GitPanelWindow: Window {
         }
     }
 
-    @discardableResult
-    private func runGit(_ args: [String]) -> String {
-        Self.runGitSync(args, workDir: workingDirectory)
-    }
-
-    private static func runGitSync(_ args: [String], workDir: String) -> String {
-        let process = Process()
-        let pipe = Pipe()
-        let errPipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = args
-        if !workDir.isEmpty { process.currentDirectoryURL = URL(fileURLWithPath: workDir) }
-        process.standardOutput = pipe
-        process.standardError = errPipe
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            return String(data: data, encoding: .utf8) ?? ""
-        } catch { return "" }
-    }
 }
