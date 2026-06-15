@@ -10,7 +10,7 @@ class Application: WindowDelegate {
     private let terminal = Terminal.shared
     private let spaces = Spaces()
     private var running = true
-    private var lspClient: LSPClient?
+    private var lspClients: [String: LSPClient] = [:]
     private var lspVersion: Int = 0
     private lazy var renderer = Renderer(terminal: terminal)
 
@@ -94,18 +94,20 @@ class Application: WindowDelegate {
             }
         }
 
-        lspClient?.stop()
+        for (_, client) in lspClients { client.stop() }
         terminal.restore()
     }
 
     private func pollLSP() {
-        guard let client = lspClient, client.hasPendingTokens else { return }
-        if let tokens = client.pendingTokens {
-            editor.semanticTokens = tokens
-            editor.dirty = true
-            client.pendingTokens = nil
-            spaces.current.update()
-            render()
+        for (_, client) in lspClients {
+            guard client.hasPendingTokens else { continue }
+            if let tokens = client.pendingTokens {
+                editor.semanticTokens = tokens
+                editor.dirty = true
+                client.pendingTokens = nil
+                spaces.current.update()
+                render()
+            }
         }
     }
 
@@ -136,41 +138,59 @@ class Application: WindowDelegate {
     }
 
     private func setupLSP(rootPath: String) {
-        let lspPaths = [
+        let swiftPaths = [
             "/usr/bin/sourcekit-lsp",
             "/usr/local/bin/sourcekit-lsp",
             "/home/linuxbrew/.linuxbrew/bin/sourcekit-lsp",
             "\(NSHomeDirectory())/.swiftenv/shims/sourcekit-lsp",
         ]
 
-        var lspPath: String?
-        for path in lspPaths {
-            if FileManager.default.fileExists(atPath: path) {
-                lspPath = path
-                break
-            }
+        if let path = findExecutable(paths: swiftPaths, command: "sourcekit-lsp") {
+            let client = LSPClient()
+            client.start(executable: path, rootUri: "file://\(rootPath)")
+            lspClients["swift"] = client
         }
 
-        if lspPath == nil {
-            let which = Shell.run(executable: "/usr/bin/which", args: ["sourcekit-lsp"]).stdout
-            if !which.isEmpty {
-                lspPath = which.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
+        let csharpPaths = [
+            "/usr/bin/omnisharp",
+            "/usr/local/bin/omnisharp",
+            "\(NSHomeDirectory())/.dotnet/tools/omnisharp",
+        ]
+
+        if let path = findExecutable(paths: csharpPaths, command: "omnisharp") {
+            let client = LSPClient()
+            client.start(executable: path, arguments: ["-lsp"], rootUri: "file://\(rootPath)")
+            lspClients["csharp"] = client
         }
-
-        guard let path = lspPath else { return }
-
-        let client = LSPClient()
-        client.start(executable: path, rootUri: "file://\(rootPath)")
-        lspClient = client
 
         if let filePath = editor.filePath {
             notifyLSPFileOpen(filePath)
         }
     }
 
+    private func findExecutable(paths: [String], command: String) -> String? {
+        for path in paths {
+            if FileManager.default.fileExists(atPath: path) {
+                return path
+            }
+        }
+        let which = Shell.run(executable: "/usr/bin/which", args: [command]).stdout
+        let result = which.trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.isEmpty ? nil : result
+    }
+
+    private func lspClientKey(for filePath: String) -> String? {
+        let ext = (filePath as NSString).pathExtension
+        switch ext {
+        case "swift": return "swift"
+        case "cs", "csx": return "csharp"
+        default: return nil
+        }
+    }
+
     private func notifyLSPFileOpen(_ path: String) {
-        guard let client = lspClient else { return }
+        guard let key = lspClientKey(for: path),
+              let client = lspClients[key] else { return }
         guard let buf = editor.buffer, buf.totalLength < 5_000_000 else { return }
         let uri = "file://\(path)"
         let ext = (path as NSString).pathExtension
@@ -412,7 +432,9 @@ class Application: WindowDelegate {
     }
 
     private func notifyLSPChange() {
-        guard let client = lspClient, let path = editor.filePath,
+        guard let path = editor.filePath,
+              let key = lspClientKey(for: path),
+              let client = lspClients[key],
               let buf = editor.buffer, buf.totalLength < 5_000_000 else { return }
         lspVersion += 1
         let uri = "file://\(path)"

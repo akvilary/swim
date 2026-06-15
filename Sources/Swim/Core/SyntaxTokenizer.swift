@@ -87,6 +87,23 @@ struct SyntaxTokenizer {
         "try", "type", "typedef", "var", "void", "while", "with", "yield",
     ]
 
+    static let csharpKeywords: Set<String> = [
+        "abstract", "as", "base", "bool", "break", "byte", "case", "catch",
+        "char", "checked", "class", "const", "continue", "decimal", "default",
+        "delegate", "do", "double", "else", "enum", "event", "explicit",
+        "extern", "false", "finally", "fixed", "float", "for", "foreach",
+        "goto", "if", "implicit", "in", "int", "interface", "internal", "is",
+        "lock", "long", "namespace", "new", "null", "object", "operator",
+        "out", "override", "params", "private", "protected", "public",
+        "readonly", "ref", "return", "sbyte", "sealed", "short", "sizeof",
+        "stackalloc", "static", "string", "struct", "switch", "this",
+        "throw", "true", "try", "typeof", "uint", "ulong", "unchecked",
+        "unsafe", "ushort", "using", "virtual", "void", "volatile", "while",
+        "async", "await", "dynamic", "get", "set", "var", "record",
+        "init", "required", "with", "nint", "nuint", "notnull", "unmanaged",
+        "file", "allows", "scoped",
+    ]
+
     static func isMarkdown(_ ext: String) -> Bool {
         ext == "md" || ext == "markdown" || ext == "mdx"
     }
@@ -97,6 +114,7 @@ struct SyntaxTokenizer {
         case "c": return "c"
         case "cpp", "cc", "cxx": return "cpp"
         case "h": return "objective-c"
+        case "cs", "csx": return "csharp"
         case "py": return "python"
         case "rs": return "rust"
         case "go": return "go"
@@ -112,6 +130,7 @@ struct SyntaxTokenizer {
         case "swift": return swiftKeywords
         case "c", "h": return cKeywords
         case "cpp", "cxx", "cc", "hpp", "hxx": return cppKeywords
+        case "cs", "csx": return csharpKeywords
         case "py": return pythonKeywords
         case "rs": return rustKeywords
         case "go": return goKeywords
