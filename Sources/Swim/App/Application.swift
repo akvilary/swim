@@ -130,6 +130,11 @@ class Application: WindowDelegate {
             gitPanel.dirty = true
             anyDirty = true
         }
+        if gitPanel.visible && gitPanel.isDiffLoading {
+            gitPanel.diffSpinnerFrame &+= 1
+            gitPanel.dirty = true
+            anyDirty = true
+        }
         if anyDirty {
             lastSpinnerTick = now
             spaces.current.update()

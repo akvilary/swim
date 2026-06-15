@@ -8,7 +8,7 @@ struct Shell {
     }
 
     @discardableResult
-    static func run(executable: String, args: [String] = [], workDir: String? = nil) -> Result {
+    static func run(executable: String, args: [String] = [], workDir: String? = nil, stdin: String? = nil) -> Result {
         let process = Process()
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -17,8 +17,14 @@ struct Shell {
         if let workDir { process.currentDirectoryURL = URL(fileURLWithPath: workDir) }
         process.standardOutput = outPipe
         process.standardError = errPipe
+        let inPipe = stdin != nil ? Pipe() : nil
+        if let inPipe { process.standardInput = inPipe }
         do {
             try process.run()
+            if let stdin, let inPipe {
+                inPipe.fileHandleForWriting.write(stdin.data(using: .utf8) ?? Data())
+                inPipe.fileHandleForWriting.closeFile()
+            }
             let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
             let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
@@ -32,7 +38,7 @@ struct Shell {
     }
 
     @discardableResult
-    static func git(_ args: [String], workDir: String? = nil) -> Result {
-        run(executable: "/usr/bin/git", args: args, workDir: workDir)
+    static func git(_ args: [String], workDir: String? = nil, stdin: String? = nil) -> Result {
+        run(executable: "/usr/bin/git", args: args, workDir: workDir, stdin: stdin)
     }
 }

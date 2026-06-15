@@ -19,6 +19,11 @@ struct GitCommit {
     let message: String
 }
 
+private struct DiffHunk {
+    let headerLine: Int  // index of the @@ line in diffLines
+    let contentEnd: Int  // exclusive: index of next @@ or diffLines.count
+}
+
 class GitPanelWindow: Window {
     private(set) var stagedFiles: [GitFileStatus] = []
     private(set) var unstagedFiles: [GitFileStatus] = []
@@ -28,8 +33,17 @@ class GitPanelWindow: Window {
     private var scrollOffset: Int = 0
     private var currentBranch: String = ""
     private var diffLines: [Substring] = []
+    private var diffHunks: [DiffHunk] = []
     private var diffScrollOffset: Int = 0
+    private var diffCursorRow: Int = 0
     private var showDiff: Bool = false
+    private var diffPath: String = ""
+    private var diffStaged: Bool = false
+    private var diffUntracked: Bool = false
+    private(set) var isDiffLoading: Bool = false
+    var diffSpinnerFrame: Int = 0
+    private let diffTask = BackgroundTask<[Substring]>()
+    private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     private(set) var isRefreshing: Bool = false
     private let gitTask = BackgroundTask<GitRefreshResult>()
@@ -141,19 +155,47 @@ class GitPanelWindow: Window {
     }
 
     private func drawDiff() {
-        drawHeader(" DIFF (Esc to close) ", fg: Theme.fg)
+        if isDiffLoading {
+            let spinner = Self.spinnerChars[diffSpinnerFrame % Self.spinnerChars.count]
+            drawHeader(" \(spinner) DIFF \(diffPath) ", fg: Theme.blue)
+            let msg = "\(spinner) Loading diff..."
+            let midRow = height / 2
+            let startCol = max(0, (width - msg.count - 2) / 2)
+            for (i, c) in msg.enumerated() {
+                if startCol + i < width {
+                    setCell(midRow, startCol + i, Cell.colored(c, fg: Theme.blue, bg: Theme.bgDark, bold: true))
+                }
+            }
+            return
+        }
+
+        if diffLines.isEmpty {
+            drawHeader(" DIFF: \(diffPath) (empty) ", fg: Theme.comment)
+            let msg = "No changes"
+            let midRow = height / 2
+            let startCol = max(0, (width - msg.count - 2) / 2)
+            drawLine(msg, row: midRow, col: startCol, fg: Theme.comment)
+            return
+        }
+
+        let hunkHint = diffUntracked ? "s: add file" : (diffStaged ? "s: unstage hunk" : "s: stage hunk")
+        drawHeader(" DIFF: \(diffPath) (\(hunkHint), Esc: close) ", fg: Theme.fg)
         let visibleLines = height - 1
         for i in 0..<visibleLines {
             let lineIdx = diffScrollOffset + i
             guard lineIdx < diffLines.count else { break }
             let line = diffLines[lineIdx]
             let row = i + 1
+            let isCursor = lineIdx == diffCursorRow
+
             let fg: Color
-            if line.hasPrefix("+") { fg = Theme.green }
-            else if line.hasPrefix("-") { fg = Theme.red }
+            if line.hasPrefix("+")  { fg = Theme.green }
+            else if line.hasPrefix("-")  { fg = Theme.red }
             else if line.hasPrefix("@@") { fg = Theme.cyan }
             else { fg = Theme.fgDark }
-            drawLine(String(line.prefix(width)), row: row, fg: fg)
+
+            let bg: Color = isCursor ? Theme.bgHighlight : Theme.bgDark
+            drawLine(String(line.prefix(width)), row: row, fg: fg, bg: bg)
         }
     }
 
@@ -193,12 +235,15 @@ class GitPanelWindow: Window {
         if showDiff {
             switch key {
             case .char("j"), .down:
-                let visibleLines = height - 1
-                if diffScrollOffset + visibleLines < diffLines.count {
-                    diffScrollOffset += 1; dirty = true
+                if diffCursorRow < diffLines.count - 1 {
+                    diffCursorRow += 1; ensureDiffCursorVisible(); dirty = true
                 }
             case .char("k"), .up:
-                if diffScrollOffset > 0 { diffScrollOffset -= 1; dirty = true }
+                if diffCursorRow > 0 {
+                    diffCursorRow -= 1; ensureDiffCursorVisible(); dirty = true
+                }
+            case .char("s"):
+                stageOrUnstageFromDiff()
             case .escape:
                 showDiff = false; dirty = true
             default: return false
@@ -242,10 +287,10 @@ class GitPanelWindow: Window {
     private func showDiffForSelected() {
         guard let sel = selectedFileSection() else { return }
         switch sel.section {
-        case .staged: runDiff(for: stagedFiles[sel.index].filePath, staged: true)
-        case .unstaged: runDiff(for: unstagedFiles[sel.index].filePath, staged: false)
-        case .untracked: runDiff(for: untrackedFiles[sel.index].filePath, staged: false)
-        case .commit: break
+        case .staged:    runDiff(for: stagedFiles[sel.index].filePath,    staged: true,  untracked: false)
+        case .unstaged:  runDiff(for: unstagedFiles[sel.index].filePath,  staged: false, untracked: false)
+        case .untracked: runDiff(for: untrackedFiles[sel.index].filePath, staged: false, untracked: true)
+        case .commit:    break
         }
     }
 
@@ -269,12 +314,98 @@ class GitPanelWindow: Window {
         }
     }
 
-    private func runDiff(for path: String, staged: Bool) {
-        let args = staged ? ["diff", "--cached", "--", path] : ["diff", "--", path]
-        diffLines = Shell.git(args, workDir: workingDirectory).combined.split(separator: "\n", omittingEmptySubsequences: false)
+    private func runDiff(for path: String, staged: Bool, untracked: Bool) {
+        let args: [String]
+        if untracked {
+            args = ["diff", "--no-index", "/dev/null", path]
+        } else if staged {
+            args = ["diff", "--cached", "--", path]
+        } else {
+            args = ["diff", "--", path]
+        }
+
+        diffPath = path
+        diffStaged = staged
+        diffUntracked = untracked
+        diffLines = []
+        diffHunks = []
         diffScrollOffset = 0
+        diffCursorRow = 0
+        isDiffLoading = true
         showDiff = true
         dirty = true
+
+        let workDir = workingDirectory
+        diffTask.start {
+            let result = Shell.git(args, workDir: workDir)
+            return result.combined.split(separator: "\n", omittingEmptySubsequences: false)
+        }
+    }
+
+    private func parseHunks() -> [DiffHunk] {
+        var hunks: [DiffHunk] = []
+        var currentHeader: Int? = nil
+        for (i, line) in diffLines.enumerated() {
+            if line.hasPrefix("@@") {
+                if let h = currentHeader {
+                    hunks.append(DiffHunk(headerLine: h, contentEnd: i))
+                }
+                currentHeader = i
+            }
+        }
+        if let h = currentHeader {
+            hunks.append(DiffHunk(headerLine: h, contentEnd: diffLines.count))
+        }
+        return hunks
+    }
+
+    private func activeHunkIndex() -> Int? {
+        for (i, hunk) in diffHunks.enumerated() {
+            if diffCursorRow >= hunk.headerLine && diffCursorRow < hunk.contentEnd {
+                return i
+            }
+        }
+        return nil
+    }
+
+    private func buildPatchForHunk(_ hunk: DiffHunk) -> String {
+        guard let firstHunk = diffHunks.first else { return "" }
+        var patch = ""
+        for i in 0..<firstHunk.headerLine {
+            patch += diffLines[i] + "\n"
+        }
+        for i in hunk.headerLine..<hunk.contentEnd {
+            patch += diffLines[i] + "\n"
+        }
+        return patch
+    }
+
+    private func stageOrUnstageFromDiff() {
+        guard !diffPath.isEmpty else { return }
+
+        if diffUntracked {
+            Shell.git(["add", "--", diffPath], workDir: workingDirectory)
+        } else if let hunkIdx = activeHunkIndex() {
+            let patch = buildPatchForHunk(diffHunks[hunkIdx])
+            guard !patch.isEmpty else { return }
+            if diffStaged {
+                Shell.git(["apply", "--reverse", "--cached"], workDir: workingDirectory, stdin: patch)
+            } else {
+                Shell.git(["apply", "--cached"], workDir: workingDirectory, stdin: patch)
+            }
+        }
+
+        refresh()
+        runDiff(for: diffPath, staged: diffStaged, untracked: diffUntracked)
+    }
+
+    private func ensureDiffCursorVisible() {
+        let visibleLines = height - 1
+        if diffCursorRow < diffScrollOffset {
+            diffScrollOffset = diffCursorRow
+        } else if diffCursorRow >= diffScrollOffset + visibleLines {
+            diffScrollOffset = diffCursorRow - visibleLines + 1
+        }
     }
 
     func refresh() {
@@ -293,13 +424,28 @@ class GitPanelWindow: Window {
     }
 
     override func poll() {
-        guard let result = gitTask.consume() else { return }
-        isRefreshing = false
-        currentBranch = result.branch.hasPrefix("fatal") ? "not a git repo" : result.branch
-        parseStatus(result.statusOutput)
-        parseLog(result.logOutput)
-        dirty = true
-        delegate?.requestRender()
+        var anyUpdate = false
+
+        if let result = gitTask.consume() {
+            isRefreshing = false
+            currentBranch = result.branch.hasPrefix("fatal") ? "not a git repo" : result.branch
+            parseStatus(result.statusOutput)
+            parseLog(result.logOutput)
+            anyUpdate = true
+        }
+
+        if isDiffLoading, let lines = diffTask.consume() {
+            diffLines = lines
+            diffHunks = parseHunks()
+            isDiffLoading = false
+            if diffLines.isEmpty { showDiff = false }
+            anyUpdate = true
+        }
+
+        if anyUpdate {
+            dirty = true
+            delegate?.requestRender()
+        }
     }
 
     private func parseStatus(_ output: String) {
