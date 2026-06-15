@@ -15,6 +15,8 @@ final class PieceTable {
     private var lineStarts = [Int]()
     private var cachedLineNum: Int = -1
     private var cachedLineStr: String = ""
+    private var cachedLineCharsNum: Int = -1
+    private var cachedLineChars: [Character] = []
     private(set) var totalLength: Int = 0
 
     var lineCount: Int {
@@ -33,7 +35,7 @@ final class PieceTable {
     }
 
     static func fromFile(_ path: String) -> PieceTable? {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) else { return nil }
         return PieceTable(data: [UInt8](data))
     }
 
@@ -120,6 +122,7 @@ final class PieceTable {
     func insert(_ text: String, at offset: Int) {
         guard !text.isEmpty else { return }
         cachedLineNum = -1
+        cachedLineCharsNum = -1
         let data = [UInt8](text.utf8)
         totalLength += data.count
         let addStart = addBuffer.count
@@ -147,6 +150,7 @@ final class PieceTable {
     func delete(at offset: Int, length: Int) {
         guard length > 0 else { return }
         cachedLineNum = -1
+        cachedLineCharsNum = -1
         var remaining = length
         var currentOffset = offset
         var removeRanges = [(start: Int, end: Int)]()
@@ -253,24 +257,33 @@ final class PieceTable {
         return cachedLineStr
     }
 
+    func getLineChars(_ lineNum: Int) -> [Character] {
+        if lineNum == cachedLineCharsNum { return cachedLineChars }
+        let str = getLine(lineNum)
+        let chars = Array(str)
+        cachedLineCharsNum = lineNum
+        cachedLineChars = chars
+        return chars
+    }
+
     func charToByteOffsetInLine(line: Int, charIndex: Int) -> Int {
-        let lineStr = getLine(line)
+        let chars = getLineChars(line)
         var bytePos = 0
-        for (idx, char) in lineStr.enumerated() {
+        for (idx, char) in chars.enumerated() {
             guard idx < charIndex else { break }
-            bytePos += char.isASCII ? 1 : String(char).utf8.count
+            bytePos += char.isASCII ? 1 : char.utf8.count
         }
         return bytePos
     }
 
     func byteToCharOffsetInLine(line: Int, byteOffset: Int) -> Int {
-        let lineStr = getLine(line)
+        let chars = getLineChars(line)
         var bytePos = 0
-        for (idx, char) in lineStr.enumerated() {
+        for (idx, char) in chars.enumerated() {
             if bytePos >= byteOffset { return idx }
-            bytePos += char.isASCII ? 1 : String(char).utf8.count
+            bytePos += char.isASCII ? 1 : char.utf8.count
         }
-        return lineStr.count
+        return chars.count
     }
 
     func search(_ query: String, from offset: Int = 0) -> Int? {
@@ -430,7 +443,7 @@ final class PieceTable {
     }
 
     func lineCharLength(line: Int) -> Int {
-        getLine(line).count
+        getLineChars(line).count
     }
 
     func getAllText() -> String {

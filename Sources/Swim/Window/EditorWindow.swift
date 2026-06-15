@@ -372,12 +372,11 @@ class EditorWindow: Window {
 
     private func deleteCharAtCursor() {
         guard let buf = buffer else { return }
-        let line = buf.getLine(cursorLine)
-        let chars = Array(line)
+        let chars = buf.getLineChars(cursorLine)
         guard cursorCol < chars.count else { return }
         let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
         let offset = buf.lineStart(line: cursorLine) + byteOff
-        let deleteLen = String(chars[cursorCol]).utf8.count
+        let deleteLen = chars[cursorCol].utf8.count
         let deletedText = String(chars[cursorCol])
         buf.delete(at: offset, length: deleteLen)
         recordAction(offset: offset, deleted: deletedText, inserted: "")
@@ -633,8 +632,7 @@ class EditorWindow: Window {
         for row in 0..<height {
             let lineNum = scrollY + row
             guard lineNum < buf.lineCount else { continue }
-            let line = buf.getLine(lineNum)
-            let chars = Array(line)
+            let chars = buf.getLineChars(lineNum)
             let visStart = min(scrollX, chars.count)
             let visEnd = min(visStart + textWidth, chars.count)
 
@@ -644,9 +642,9 @@ class EditorWindow: Window {
             } else if let md = mdTokenIndex {
                 tokens = md[lineNum] ?? []
             } else if isJSON {
-                tokens = SyntaxTokenizer.tokenizeJSON(line: line, lineNum: lineNum)
+                tokens = SyntaxTokenizer.tokenizeJSON(lineChars: chars, lineNum: lineNum)
             } else {
-                tokens = SyntaxTokenizer.tokenize(line: line, lineNum: lineNum, keywords: builtinKeywords ?? [])
+                tokens = SyntaxTokenizer.tokenize(lineChars: chars, lineNum: lineNum, keywords: builtinKeywords ?? [])
             }
 
             var colOffset = 0

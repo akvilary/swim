@@ -124,8 +124,11 @@ struct SyntaxTokenizer {
     static let opChars: Set<Character> = ["+", "-", "*", "/", "=", "<", ">", "!", "&", "|", "^", "~", "%", "?", ":", "@", "#"]
 
     static func tokenize(line: String, lineNum: Int, keywords: Set<String>) -> [SemanticToken] {
+        tokenize(lineChars: Array(line), lineNum: lineNum, keywords: keywords)
+    }
+
+    static func tokenize(lineChars chars: [Character], lineNum: Int, keywords: Set<String>) -> [SemanticToken] {
         var tokens = [SemanticToken]()
-        let chars = Array(line)
         let len = chars.count
         var i = 0
 
@@ -260,14 +263,14 @@ struct SyntaxTokenizer {
             let lineNum = scrollY + row
             guard lineNum < lineCount else { break }
             let line = buffer.getLine(lineNum)
-            allTokens.append(contentsOf: tokenizeMarkdownLine(line, lineNum: lineNum, inCodeBlock: &inCodeBlock))
+            let chars = buffer.getLineChars(lineNum)
+            allTokens.append(contentsOf: tokenizeMarkdownLine(line, lineChars: chars, lineNum: lineNum, inCodeBlock: &inCodeBlock))
         }
         return allTokens
     }
 
-    private static func tokenizeMarkdownLine(_ line: String, lineNum: Int, inCodeBlock: inout Bool) -> [SemanticToken] {
+    private static func tokenizeMarkdownLine(_ line: String, lineChars chars: [Character], lineNum: Int, inCodeBlock: inout Bool) -> [SemanticToken] {
         var tokens = [SemanticToken]()
-        let chars = Array(line)
         let len = chars.count
         var i = 0
 
@@ -427,7 +430,10 @@ struct SyntaxTokenizer {
     }
 
     static func tokenizeJSON(line: String, lineNum: Int) -> [SemanticToken] {
-        let chars = Array(line)
+        tokenizeJSON(lineChars: Array(line), lineNum: lineNum)
+    }
+
+    static func tokenizeJSON(lineChars chars: [Character], lineNum: Int) -> [SemanticToken] {
         let len = chars.count
         var tokens = [SemanticToken]()
         var i = 0
