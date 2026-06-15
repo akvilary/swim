@@ -40,6 +40,7 @@ class GitPanelWindow: Window {
     private var diffPath: String = ""
     private var diffStaged: Bool = false
     private var diffUntracked: Bool = false
+    private var diffCommitHash: String = ""
     private(set) var isDiffLoading: Bool = false
     var diffSpinnerFrame: Int = 0
     private let diffTask = BackgroundTask<[Substring]>()
@@ -155,10 +156,13 @@ class GitPanelWindow: Window {
     }
 
     private func drawDiff() {
+        let isCommit = !diffCommitHash.isEmpty
+        let title = isCommit ? "COMMIT \(diffCommitHash)" : "DIFF \(diffPath)"
+
         if isDiffLoading {
             let spinner = Self.spinnerChars[diffSpinnerFrame % Self.spinnerChars.count]
-            drawHeader(" \(spinner) DIFF \(diffPath) ", fg: Theme.blue)
-            let msg = "\(spinner) Loading diff..."
+            drawHeader(" \(spinner) \(title) ", fg: Theme.blue)
+            let msg = "\(spinner) Loading..."
             let midRow = height / 2
             let startCol = max(0, (width - msg.count - 2) / 2)
             for (i, c) in msg.enumerated() {
@@ -170,7 +174,7 @@ class GitPanelWindow: Window {
         }
 
         if diffLines.isEmpty {
-            drawHeader(" DIFF: \(diffPath) (empty) ", fg: Theme.comment)
+            drawHeader(" \(title) (empty) ", fg: Theme.comment)
             let msg = "No changes"
             let midRow = height / 2
             let startCol = max(0, (width - msg.count - 2) / 2)
@@ -178,8 +182,12 @@ class GitPanelWindow: Window {
             return
         }
 
-        let hunkHint = diffUntracked ? "s: add file" : (diffStaged ? "s: unstage hunk" : "s: stage hunk")
-        drawHeader(" DIFF: \(diffPath) (\(hunkHint), Esc: close) ", fg: Theme.fg)
+        if isCommit {
+            drawHeader(" \(title) (Esc to close) ", fg: Theme.fg)
+        } else {
+            let hunkHint = diffUntracked ? "s: add file" : (diffStaged ? "s: unstage hunk" : "s: stage hunk")
+            drawHeader(" \(title) (\(hunkHint), Esc: close) ", fg: Theme.fg)
+        }
         let visibleLines = height - 1
         for i in 0..<visibleLines {
             let lineIdx = diffScrollOffset + i
@@ -290,7 +298,7 @@ class GitPanelWindow: Window {
         case .staged:    runDiff(for: stagedFiles[sel.index].filePath,    staged: true,  untracked: false)
         case .unstaged:  runDiff(for: unstagedFiles[sel.index].filePath,  staged: false, untracked: false)
         case .untracked: runDiff(for: untrackedFiles[sel.index].filePath, staged: false, untracked: true)
-        case .commit:    break
+        case .commit:    runDiffForCommit(recentCommits[sel.index].hash)
         }
     }
 
@@ -327,6 +335,7 @@ class GitPanelWindow: Window {
         diffPath = path
         diffStaged = staged
         diffUntracked = untracked
+        diffCommitHash = ""
         diffLines = []
         diffHunks = []
         diffScrollOffset = 0
@@ -338,6 +347,26 @@ class GitPanelWindow: Window {
         let workDir = workingDirectory
         diffTask.start {
             let result = Shell.git(args, workDir: workDir)
+            return result.combined.split(separator: "\n", omittingEmptySubsequences: false)
+        }
+    }
+
+    private func runDiffForCommit(_ hash: String) {
+        diffPath = ""
+        diffStaged = false
+        diffUntracked = false
+        diffCommitHash = hash
+        diffLines = []
+        diffHunks = []
+        diffScrollOffset = 0
+        diffCursorRow = 0
+        isDiffLoading = true
+        showDiff = true
+        dirty = true
+
+        let workDir = workingDirectory
+        diffTask.start {
+            let result = Shell.git(["show", hash], workDir: workDir)
             return result.combined.split(separator: "\n", omittingEmptySubsequences: false)
         }
     }
