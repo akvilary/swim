@@ -24,6 +24,11 @@ private struct DiffHunk {
     let contentEnd: Int  // exclusive: index of next @@ or diffLines.count
 }
 
+private enum GitPanelMode {
+    case normal
+    case visual
+}
+
 class GitPanelWindow: Window {
     private(set) var stagedFiles: [GitFileStatus] = []
     private(set) var unstagedFiles: [GitFileStatus] = []
@@ -48,6 +53,11 @@ class GitPanelWindow: Window {
 
     private(set) var isRefreshing: Bool = false
     private let gitTask = BackgroundTask<GitRefreshResult>()
+
+    private var mode: GitPanelMode = .normal
+    private var pendingY: Bool = false
+    private var statusVisualStart: Int = 0
+    private var diffVisualStart: Int = 0
 
     var workingDirectory: String = "" {
         didSet { refresh() }
@@ -94,7 +104,11 @@ class GitPanelWindow: Window {
 
     private func drawStatus() {
         let branchLabel = isRefreshing ? "loading..." : currentBranch
-        drawHeader("  \(branchLabel) ", fg: Theme.orange)
+        if mode == .visual {
+            drawHeader(" [ VISUAL ] \(branchLabel) ", fg: Theme.purple)
+        } else {
+            drawHeader("  \(branchLabel) ", fg: Theme.orange)
+        }
 
         let totalContentRows = totalContentRowCount()
         let visibleHeight = height - 1
@@ -117,8 +131,7 @@ class GitPanelWindow: Window {
             row += 1
             for commit in recentCommits.prefix(5) {
                 if row >= 1 && row < height {
-                    let isSelected = globalIdx == selectedIndex
-                    let bg: Color = isSelected ? Theme.bgHighlight : Theme.bgDark
+                    let bg = bgForStatusRow(globalIdx)
                     let commitText = " \(commit.hash.prefix(7)) \(commit.message.prefix(width - 14))"
                     drawLine(commitText, row: row, fg: Theme.green1, bg: bg)
                 }
@@ -138,21 +151,22 @@ class GitPanelWindow: Window {
         row += 1
         for file in files {
             if row >= 1 && row < height {
-                drawFileRow(file, row: row, selected: globalIdx == selectedIndex)
+                drawFileRow(file, row: row, globalIdx: globalIdx)
             }
             globalIdx += 1
             row += 1
         }
     }
 
-    private func drawFileRow(_ file: GitFileStatus, row: Int, selected: Bool) {
-        let bg: Color = selected ? Theme.bgHighlight : Theme.bgDark
+    private func drawFileRow(_ file: GitFileStatus, row: Int, globalIdx: Int) {
+        let bg = bgForStatusRow(globalIdx)
+        let isSelected = isStatusRowSelected(globalIdx)
         let statusColor = statusColorFor(file.status)
         let statusText = " \(file.status) "
         drawLine(statusText, row: row, col: 0, fg: statusColor, bg: bg, bold: true)
         let nameStart = statusText.count
         let name = file.filePath.prefix(width - nameStart)
-        drawLine(String(name), row: row, col: nameStart, fg: selected ? Theme.fg : Theme.fgDark, bg: bg)
+        drawLine(String(name), row: row, col: nameStart, fg: isSelected ? Theme.fg : Theme.fgDark, bg: bg)
     }
 
     private func drawDiff() {
@@ -183,12 +197,16 @@ class GitPanelWindow: Window {
         }
 
         if isCommit {
-            drawHeader(" \(title) (Esc to close) ", fg: Theme.fg)
+            drawHeader(" \(title) (yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
         } else {
             let hunkHint = diffUntracked ? "s: add file" : (diffStaged ? "s: unstage hunk" : "s: stage hunk")
-            drawHeader(" \(title) (\(hunkHint), Esc: close) ", fg: Theme.fg)
+            drawHeader(" \(title) (\(hunkHint), yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
+        }
+        if mode == .visual {
+            drawHeader(" [ VISUAL ] \(title) (y: copy, Esc: cancel) ", fg: Theme.purple)
         }
         let visibleLines = height - 1
+        let visualRange = mode == .visual ? diffVisualRange() : nil
         for i in 0..<visibleLines {
             let lineIdx = diffScrollOffset + i
             guard lineIdx < diffLines.count else { break }
@@ -202,7 +220,12 @@ class GitPanelWindow: Window {
             else if line.hasPrefix("@@") { fg = Theme.cyan }
             else { fg = Theme.fgDark }
 
-            let bg: Color = isCursor ? Theme.bgHighlight : Theme.bgDark
+            let bg: Color
+            if let vr = visualRange, vr.contains(lineIdx) {
+                bg = Theme.visualBg
+            } else {
+                bg = isCursor ? Theme.bgHighlight : Theme.bgDark
+            }
             drawLine(String(line.prefix(width)), row: row, fg: fg, bg: bg)
         }
     }
@@ -228,15 +251,29 @@ class GitPanelWindow: Window {
     }
 
     private func selectedFileSection() -> (section: FileSection, index: Int)? {
-        var idx = selectedIndex
+        fileSection(for: selectedIndex)
+    }
+
+    private func fileSection(for globalIdx: Int) -> (section: FileSection, index: Int)? {
+        var idx = globalIdx
         if idx < stagedFiles.count { return (.staged, idx) }
         idx -= stagedFiles.count
         if idx < unstagedFiles.count { return (.unstaged, idx) }
-        idx -= unstagedFiles.count
+        idx -= untrackedFiles.count
         if idx < untrackedFiles.count { return (.untracked, idx) }
         idx -= untrackedFiles.count
         if idx < min(recentCommits.count, 5) { return (.commit, idx) }
         return nil
+    }
+
+    private func visibleTextForItem(at globalIdx: Int) -> String? {
+        guard let sel = fileSection(for: globalIdx) else { return nil }
+        switch sel.section {
+        case .staged:    return " \(stagedFiles[sel.index].status) \(stagedFiles[sel.index].filePath)"
+        case .unstaged:  return " \(unstagedFiles[sel.index].status) \(unstagedFiles[sel.index].filePath)"
+        case .untracked: return " \(untrackedFiles[sel.index].status) \(untrackedFiles[sel.index].filePath)"
+        case .commit:    return " \(recentCommits[sel.index].hash.prefix(7)) \(recentCommits[sel.index].message)"
+        }
     }
 
     override func handleKey(_ key: Key) -> Bool {
@@ -246,15 +283,36 @@ class GitPanelWindow: Window {
                 if diffCursorRow < diffLines.count - 1 {
                     diffCursorRow += 1; ensureDiffCursorVisible(); dirty = true
                 }
+                pendingY = false
             case .char("k"), .up:
                 if diffCursorRow > 0 {
                     diffCursorRow -= 1; ensureDiffCursorVisible(); dirty = true
                 }
+                pendingY = false
             case .char("s"):
                 stageOrUnstageFromDiff()
+                pendingY = false
+            case .char("y"):
+                if pendingY {
+                    yankDiffLines(diffCursorRow...diffCursorRow)
+                    pendingY = false
+                } else if mode == .visual {
+                    yankDiffLines(diffVisualRange())
+                    mode = .normal; dirty = true
+                } else {
+                    pendingY = true
+                }
+            case .char("V"):
+                mode = (mode == .visual) ? .normal : .visual
+                diffVisualStart = diffCursorRow
+                pendingY = false; dirty = true
             case .escape:
-                showDiff = false; dirty = true
-            default: return false
+                if mode == .visual { mode = .normal; dirty = true }
+                else { showDiff = false; dirty = true }
+                pendingY = false
+            default:
+                pendingY = false
+                return false
             }
             return true
         }
@@ -263,14 +321,45 @@ class GitPanelWindow: Window {
         case .char("j"), .down:
             let total = totalItemCount()
             if selectedIndex < total - 1 { selectedIndex += 1; ensureVisible(); dirty = true }
+            pendingY = false
         case .char("k"), .up:
             if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); dirty = true }
-        case .enter: showDiffForSelected()
-        case .char("s"): stageOrUnstageSelected()
-        case .char("-"): delegate?.runGitCommand(label: "git pull", args: ["pull"])
-        case .char("+"): delegate?.runGitCommand(label: "git push", args: ["push"])
-        case .escape: return false
-        default: return false
+            pendingY = false
+        case .enter:
+            mode = .normal; pendingY = false
+            showDiffForSelected()
+        case .char("s"):
+            mode = .normal; pendingY = false
+            stageOrUnstageSelected()
+        case .char("-"):
+            mode = .normal; pendingY = false
+            delegate?.runGitCommand(label: "git pull", args: ["pull"])
+        case .char("+"):
+            mode = .normal; pendingY = false
+            delegate?.runGitCommand(label: "git push", args: ["push"])
+        case .char("y"):
+            if pendingY {
+                if let text = visibleTextForItem(at: selectedIndex) { Terminal.shared.osc52Copy(text) }
+                pendingY = false
+            } else if mode == .visual {
+                let lo = min(statusVisualStart, selectedIndex)
+                let hi = max(statusVisualStart, selectedIndex)
+                yankStatusItems(lo...hi)
+                mode = .normal; dirty = true
+            } else {
+                pendingY = true
+            }
+        case .char("V"):
+            mode = (mode == .visual) ? .normal : .visual
+            statusVisualStart = selectedIndex
+            pendingY = false; dirty = true
+        case .escape:
+            if mode == .visual { mode = .normal; dirty = true; pendingY = false; return true }
+            pendingY = false
+            return false
+        default:
+            pendingY = false
+            return false
         }
         return true
     }
@@ -342,6 +431,8 @@ class GitPanelWindow: Window {
         diffCursorRow = 0
         isDiffLoading = true
         showDiff = true
+        mode = .normal
+        pendingY = false
         dirty = true
 
         let workDir = workingDirectory
@@ -362,6 +453,8 @@ class GitPanelWindow: Window {
         diffCursorRow = 0
         isDiffLoading = true
         showDiff = true
+        mode = .normal
+        pendingY = false
         dirty = true
 
         let workDir = workingDirectory
@@ -437,6 +530,43 @@ class GitPanelWindow: Window {
         }
     }
 
+    private func isStatusRowSelected(_ globalIdx: Int) -> Bool {
+        if mode == .visual {
+            let lo = min(statusVisualStart, selectedIndex)
+            let hi = max(statusVisualStart, selectedIndex)
+            return globalIdx >= lo && globalIdx <= hi
+        }
+        return globalIdx == selectedIndex
+    }
+
+    private func bgForStatusRow(_ globalIdx: Int) -> Color {
+        guard isStatusRowSelected(globalIdx) else { return Theme.bgDark }
+        return mode == .visual ? Theme.visualBg : Theme.bgHighlight
+    }
+
+    private func diffVisualRange() -> ClosedRange<Int> {
+        let lo = min(diffVisualStart, diffCursorRow)
+        let hi = max(diffVisualStart, diffCursorRow)
+        return lo...hi
+    }
+
+    private func yankDiffLines(_ range: ClosedRange<Int>) {
+        guard range.lowerBound >= 0, range.upperBound < diffLines.count else { return }
+        var text = ""
+        for i in range {
+            text += diffLines[i] + "\n"
+        }
+        Terminal.shared.osc52Copy(text)
+    }
+
+    private func yankStatusItems(_ range: ClosedRange<Int>) {
+        var text = ""
+        for i in range {
+            if let t = visibleTextForItem(at: i) { text += t + "\n" }
+        }
+        if !text.isEmpty { Terminal.shared.osc52Copy(text) }
+    }
+
     func refresh() {
         guard !workingDirectory.isEmpty else { return }
         isRefreshing = true
@@ -467,7 +597,7 @@ class GitPanelWindow: Window {
             diffLines = lines
             diffHunks = parseHunks()
             isDiffLoading = false
-            if diffLines.isEmpty { showDiff = false }
+            if diffLines.isEmpty { showDiff = false; mode = .normal }
             anyUpdate = true
         }
 
