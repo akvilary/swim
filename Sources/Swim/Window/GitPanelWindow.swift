@@ -133,7 +133,7 @@ class GitPanelWindow: Window {
                 if row >= 1 && row < height {
                     let bg = bgForStatusRow(globalIdx)
                     let commitText = " \(commit.hash.prefix(7)) \(commit.message.prefix(width - 14))"
-                    drawLine(commitText, row: row, fg: Theme.green1, bg: bg)
+                    drawLine(commitText, row: row, fg: Theme.cyan, bg: bg)
                 }
                 globalIdx += 1
                 row += 1
@@ -214,11 +214,7 @@ class GitPanelWindow: Window {
             let row = i + 1
             let isCursor = lineIdx == diffCursorRow
 
-            let fg: Color
-            if line.hasPrefix("+")  { fg = Theme.green }
-            else if line.hasPrefix("-")  { fg = Theme.red }
-            else if line.hasPrefix("@@") { fg = Theme.cyan }
-            else { fg = Theme.fgDark }
+            let style = diffLineStyle(for: line)
 
             let bg: Color
             if let vr = visualRange, vr.contains(lineIdx) {
@@ -226,8 +222,23 @@ class GitPanelWindow: Window {
             } else {
                 bg = isCursor ? Theme.bgHighlight : Theme.bgDark
             }
-            drawLine(String(line.prefix(width)), row: row, fg: fg, bg: bg)
+            drawLine(String(line.prefix(width)), row: row, fg: style.fg, bg: bg, bold: style.bold)
         }
+    }
+
+    private func diffLineStyle(for line: Substring) -> (fg: Color, bold: Bool) {
+        if line.hasPrefix("commit ") { return (Theme.blue, true) }
+        if line.hasPrefix("Author:") || line.hasPrefix("Date:") { return (Theme.cyan, false) }
+        if line.hasPrefix("diff --git") { return (Theme.magenta, true) }
+        if line.hasPrefix("index ")
+            || line.hasPrefix("new file mode")
+            || line.hasPrefix("deleted file mode")
+            || line.hasPrefix("old mode")
+            || line.hasPrefix("new mode") { return (Theme.comment, false) }
+        if line.hasPrefix("+")  { return (Theme.green, false) }
+        if line.hasPrefix("-")  { return (Theme.red, false) }
+        if line.hasPrefix("@@") { return (Theme.cyan, false) }
+        return (Theme.fgDark, false)
     }
 
     private func drawSectionHeader(_ text: String, screenRow: Int) {
