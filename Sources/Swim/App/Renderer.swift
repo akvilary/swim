@@ -61,11 +61,11 @@ class Renderer {
                         if termUnderline != cell.underline { terminal.setUnderline(cell.underline); termUnderline = cell.underline }
                         if termReverse != cell.reverse { terminal.setReverse(cell.reverse); termReverse = cell.reverse }
 
-                        terminal.writeChar(cell.char)
+                        terminal.writeChar(cell.char.displayWidth > 0 ? cell.char : " ")
 
                         prevScreenCells[idx] = cell
 
-                        if cell.char.isWide, screenCol + 1 < screenW {
+                        if cell.char.displayWidth == 2, screenCol + 1 < screenW {
                             prevScreenCells[screenRow * screenW + screenCol + 1] = window.getCell(row, col + 1)
                         }
                     }

@@ -53,7 +53,7 @@ class FileExplorerWindow: Window {
             }
 
             for c in icon {
-                let w = displayWidth(c)
+                let w = c.displayWidth
                 if col + w <= width {
                     setCell(row + 1, col, Cell.colored(c, fg: nameFg, bg: bg, bold: entry.isDirectory))
                     if w == 2 {
@@ -211,9 +211,5 @@ class FileExplorerWindow: Window {
 
     private func ensureVisible() {
         scrollOffset = Window.clampedScroll(selectedIndex: selectedIndex, scrollOffset: scrollOffset, visibleCount: height - 1)
-    }
-
-    private func displayWidth(_ c: Character) -> Int {
-        c.isWide ? 2 : 1
     }
 }

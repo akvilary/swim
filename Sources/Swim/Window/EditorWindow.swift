@@ -585,9 +585,10 @@ class EditorWindow: Window {
     func ensureCursorVisible() {
         if cursorLine < scrollY { scrollY = cursorLine }
         else if cursorLine >= scrollY + height { scrollY = cursorLine - height + 1 }
-        if cursorCol < scrollX { scrollX = cursorCol }
-        else if cursorCol >= scrollX + width - lineNumberWidth() - 1 {
-            scrollX = cursorCol - width + lineNumberWidth() + 2
+        let dispCol = displayColForChar(line: cursorLine, charCol: cursorCol)
+        if dispCol < scrollX { scrollX = dispCol }
+        else if dispCol >= scrollX + width - lineNumberWidth() - 1 {
+            scrollX = dispCol - width + lineNumberWidth() + 2
         }
     }
 
@@ -600,6 +601,35 @@ class EditorWindow: Window {
         var count = 0
         for c in str { if c == " " { count += 1 } else if c == "\t" { count += 4 } else { break } }
         return count
+    }
+
+    private func charDisplayStep(_ ch: Character, atDisplayCol col: Int) -> Int {
+        if ch == "\t" { return 4 - (col % 4) }
+        let w = ch.displayWidth
+        return w > 0 ? w : 0
+    }
+
+    /// display-колонка (ширина в клетках терминала), с которой начинается символ charCol на строке line.
+    func displayColForChar(line: Int, charCol: Int) -> Int {
+        guard let buf = buffer else { return 0 }
+        let chars = buf.getLineChars(line)
+        var col = 0
+        for i in 0..<min(charCol, chars.count) {
+            col += charDisplayStep(chars[i], atDisplayCol: col)
+        }
+        return col
+    }
+
+    /// Индекс первого символа строки, чья display-колонка >= target (для горизонтального скролла).
+    func charIndexAtDisplayCol(line: Int, target: Int) -> Int {
+        guard let buf = buffer else { return 0 }
+        let chars = buf.getLineChars(line)
+        var col = 0
+        for (i, ch) in chars.enumerated() {
+            if col >= target { return i }
+            col += charDisplayStep(ch, atDisplayCol: col)
+        }
+        return chars.count
     }
 
     override func update() {
@@ -660,11 +690,31 @@ class EditorWindow: Window {
                 } else {
                     tokenColor = Theme.fg
                 }
-                let cellX = lnWidth + colOffset
-                if cellX < width {
-                    setCell(row, cellX, Cell.colored(chars[i], fg: tokenColor, bg: Theme.bg))
+                if chars[i] == "\t" {
+                    let spaces = 4 - (colOffset % 4)
+                    for _ in 0..<spaces {
+                        let cellX = lnWidth + colOffset
+                        if cellX < width {
+                            setCell(row, cellX, Cell.colored(" ", fg: tokenColor, bg: Theme.bg))
+                        }
+                        colOffset += 1
+                    }
+                } else {
+                    let w = chars[i].displayWidth
+                    guard w > 0 else { continue }
+                    let cellX = lnWidth + colOffset
+                    if cellX < width {
+                        setCell(row, cellX, Cell.colored(chars[i], fg: tokenColor, bg: Theme.bg))
+                        if w == 2, cellX + 1 < width {
+                            var cont = Cell.blank
+                            cont.fg = tokenColor
+                            cont.bg = Theme.bg
+                            cont.wideContinuation = true
+                            setCell(row, cellX + 1, cont)
+                        }
+                    }
+                    colOffset += w
                 }
-                colOffset += 1
             }
         }
 
