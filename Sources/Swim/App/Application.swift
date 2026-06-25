@@ -168,6 +168,20 @@ class Application: WindowDelegate {
             lspClients["csharp"] = client
         }
 
+        let goPaths = [
+            "/usr/bin/gopls",
+            "/usr/local/bin/gopls",
+            "/home/linuxbrew/.linuxbrew/bin/gopls",
+            "/opt/homebrew/bin/gopls",
+            "\(NSHomeDirectory())/go/bin/gopls",
+        ]
+
+        if let path = findExecutable(paths: goPaths, command: "gopls") {
+            let client = LSPClient()
+            client.start(executable: path, rootUri: "file://\(rootPath)")
+            lspClients["go"] = client
+        }
+
         if let filePath = editor.filePath {
             notifyLSPFileOpen(filePath)
         }
@@ -189,6 +203,7 @@ class Application: WindowDelegate {
         switch ext {
         case "swift": return "swift"
         case "cs", "csx": return "csharp"
+        case "go": return "go"
         default: return nil
         }
     }
