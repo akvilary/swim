@@ -599,12 +599,18 @@ class EditorWindow: Window {
 
     private func leadingSpaces(_ str: String) -> Int {
         var count = 0
-        for c in str { if c == " " { count += 1 } else if c == "\t" { count += 4 } else { break } }
+        let t = tabWidth
+        for c in str { if c == " " { count += 1 } else if c == "\t" { count += t } else { break } }
         return count
     }
 
+    /// Ширина табуляции в клетках для текущего файла (tabstop). Go — 2, прочее — 4.
+    private var tabWidth: Int {
+        ((filePath as NSString?)?.pathExtension == "go") ? 2 : 4
+    }
+
     private func charDisplayStep(_ ch: Character, atDisplayCol col: Int) -> Int {
-        if ch == "\t" { return 4 - (col % 4) }
+        if ch == "\t" { let t = tabWidth; return t - (col % t) }
         let w = ch.displayWidth
         return w > 0 ? w : 0
     }
@@ -663,8 +669,7 @@ class EditorWindow: Window {
             let lineNum = scrollY + row
             guard lineNum < buf.lineCount else { continue }
             let chars = buf.getLineChars(lineNum)
-            let visStart = min(scrollX, chars.count)
-            let visEnd = min(visStart + textWidth, chars.count)
+            let visStart = charIndexAtDisplayCol(line: lineNum, target: scrollX)
 
             let tokens: [SemanticToken]
             if !useBuiltinTokens {
@@ -677,9 +682,10 @@ class EditorWindow: Window {
                 tokens = SyntaxTokenizer.tokenize(lineChars: chars, lineNum: lineNum, keywords: builtinKeywords ?? [])
             }
 
-            var colOffset = 0
+            var colOffset = displayColForChar(line: lineNum, charCol: visStart) - scrollX
             var tokenIdx = 0
-            for i in visStart..<visEnd {
+            for i in visStart..<chars.count {
+                if colOffset >= textWidth { break }
                 let absCol = i
                 while tokenIdx < tokens.count && tokens[tokenIdx].startChar + tokens[tokenIdx].length <= absCol {
                     tokenIdx += 1
@@ -691,7 +697,8 @@ class EditorWindow: Window {
                     tokenColor = Theme.fg
                 }
                 if chars[i] == "\t" {
-                    let spaces = 4 - (colOffset % 4)
+                    let t = tabWidth
+                    let spaces = t - (colOffset % t)
                     for _ in 0..<spaces {
                         let cellX = lnWidth + colOffset
                         if cellX < width {
@@ -749,7 +756,7 @@ class EditorWindow: Window {
     private func drawCursor(lnWidth: Int) {
         guard cursorLine >= scrollY && cursorLine < scrollY + height else { return }
         let screenRow = cursorLine - scrollY
-        let screenCol = cursorCol - scrollX
+        let screenCol = displayColForChar(line: cursorLine, charCol: cursorCol) - scrollX
         guard screenCol >= 0 && screenCol + lnWidth < width else { return }
         let absCol = lnWidth + screenCol
         if mode == .insert { return }
@@ -767,13 +774,18 @@ class EditorWindow: Window {
             let lineEnd = max(0, buf.lineCharLength(line: lineNum) - 1)
             let colStart = (lineNum == startLine) ? startCol : 0
             let colEnd = (lineNum == endLine) ? min(endCol, lineEnd) : lineEnd
-            for c in colStart...colEnd {
-                let screenCol = c - scrollX
-                guard screenCol >= 0 && screenCol + lnWidth < width else { continue }
-                let absCol = lnWidth + screenCol
-                var cell = getCell(screenRow, absCol)
-                cell.bg = Theme.visualBg
-                setCell(screenRow, absCol, cell)
+            let startDisp = displayColForChar(line: lineNum, charCol: colStart)
+            let endDisp = displayColForChar(line: lineNum, charCol: min(colEnd + 1, buf.lineCharLength(line: lineNum)))
+            let scLo = startDisp - scrollX
+            let scHi = endDisp - scrollX
+            if scLo < scHi {
+                for sc in scLo..<scHi {
+                    guard sc >= 0 && sc + lnWidth < width else { continue }
+                    let absCol = lnWidth + sc
+                    var cell = getCell(screenRow, absCol)
+                    cell.bg = Theme.visualBg
+                    setCell(screenRow, absCol, cell)
+                }
             }
         }
     }
