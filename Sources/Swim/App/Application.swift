@@ -182,6 +182,20 @@ class Application: WindowDelegate {
             lspClients["go"] = client
         }
 
+        let rustPaths = [
+            "/usr/bin/rust-analyzer",
+            "/usr/local/bin/rust-analyzer",
+            "/home/linuxbrew/.linuxbrew/bin/rust-analyzer",
+            "/opt/homebrew/bin/rust-analyzer",
+            "\(NSHomeDirectory())/.cargo/bin/rust-analyzer",
+        ]
+
+        if let path = findExecutable(paths: rustPaths, command: "rust-analyzer") {
+            let client = LSPClient()
+            client.start(executable: path, rootUri: "file://\(rootPath)")
+            lspClients["rust"] = client
+        }
+
         if let filePath = editor.filePath {
             notifyLSPFileOpen(filePath)
         }
@@ -204,6 +218,7 @@ class Application: WindowDelegate {
         case "swift": return "swift"
         case "cs", "csx": return "csharp"
         case "go": return "go"
+        case "rs": return "rust"
         default: return nil
         }
     }
