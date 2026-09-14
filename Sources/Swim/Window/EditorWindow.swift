@@ -1140,7 +1140,7 @@ class EditorWindow: Window {
         case "parameter": return Theme.yellow
         case "operator": return Theme.blue5
         case "punctuation": return Theme.fg
-        case "namespace", "module": return Theme.magenta
+        case "namespace", "module": return Theme.green1
         case "decorator", "attribute": return Theme.yellow
         case "regexp": return Theme.red
         case "macro": return Theme.red1
