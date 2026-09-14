@@ -94,8 +94,11 @@ class EditorWindow: Window {
             }
 
             func graphemeIndex(ofUtf16 target: Int) -> Int {
+                // prefix has chars.count + 1 entries; the full-length entry
+                // (index chars.count) must be reachable or tokens ending at
+                // end-of-line get truncated by one grapheme.
                 var lo = 0
-                var hi = chars.count
+                var hi = chars.count + 1
                 while lo < hi {
                     let mid = (lo + hi) / 2
                     if prefix[mid] <= target { lo = mid + 1 } else { hi = mid }
