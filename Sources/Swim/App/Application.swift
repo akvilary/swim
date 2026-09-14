@@ -47,27 +47,35 @@ class Application: WindowDelegate {
         spaces.switchTo("editor")
 
         tabBar.tabsSource = editor
-        tabBar.visible = true
 
+        var startDir = FileManager.default.currentDirectoryPath
+        if let path = filePath, isDirectory(path) {
+            startDir = path
+        }
+
+        var fileToOpen: String?
         if let path = filePath, !isDirectory(path) {
+            fileToOpen = path
             editor.openFile(path)
         } else {
-            // No file argument (or a directory like `swim .`): start with a
-            // pristine [No Name] tab; the first opened file replaces it.
+            // No file argument (or a directory like `swim .`): keep the
+            // editor closed — the explorer fills the terminal until the
+            // user opens a concrete file. A pristine [No Name] tab waits
+            // behind it and is replaced by the first opened file.
             editor.newFile()
         }
         updateStatusBar()
 
-        let cwd = FileManager.default.currentDirectoryPath
         fileExplorer.visible = true
-        editor.visible = true
+        editor.visible = fileToOpen != nil
+        tabBar.visible = fileToOpen != nil
         statusBar.visible = true
-        fileExplorer.loadDirectory(cwd)
-        gitPanel.workingDirectory = cwd
+        fileExplorer.loadDirectory(startDir)
+        gitPanel.workingDirectory = startDir
 
-        setupLSP(rootPath: cwd)
+        setupLSP(rootPath: startDir)
 
-        spaces.current.focused = editor
+        spaces.current.focused = fileToOpen != nil ? editor : fileExplorer
     }
 
     func run() {
@@ -495,10 +503,14 @@ class Application: WindowDelegate {
             running = false
             return
         case .ctrl("x"):
-            closeCurrentTab(force: false)
+            if editor.visible {
+                closeCurrentTab(force: false)
+            }
             return
         case .ctrl("z"):
-            closeOtherTabs()
+            if editor.visible {
+                closeOtherTabs()
+            }
             return
         case .ctrl("s"):
             if spaces.current.focused !== editor {
@@ -521,7 +533,7 @@ class Application: WindowDelegate {
             }
         }
 
-        if case .char(":") = key {
+        if case .char(":") = key, editor.visible {
             if spaces.current.focused !== editor {
                 spaces.current.focused = editor
                 spaces.current.updateFocusStates()
@@ -544,26 +556,46 @@ class Application: WindowDelegate {
             if maximized != nil { restoreMaximized() }
             if spaces.current.id != "editor" {
                 switchToSpace("editor")
-                spaces.current.focused = editor
+                spaces.current.focused = editor.visible ? editor : fileExplorer
                 spaces.current.updateFocusStates()
             } else {
-                focused.visible = false
-                if let prev = spaces.current.prevFocused, prev.visible {
-                    spaces.current.focused = prev
-                } else {
-                    spaces.current.focused = editor
+                let hasOtherVisible = spaces.current.visibleWindows.contains {
+                    $0 !== focused && $0 !== statusBar && $0 !== tabBar
                 }
+                guard hasOtherVisible else { return }
+                focused.visible = false
+                refocus(from: focused)
                 recalculateLayout()
                 spaces.markAllDirty()
             }
         }
     }
 
+    /// Moves focus off a window that is being hidden: to the previously
+    /// focused window if still visible, else to the first visible one.
+    private func refocus(from window: Window) {
+        if let prev = spaces.current.prevFocused, prev !== window, prev.visible {
+            spaces.current.focused = prev
+        } else {
+            spaces.current.focused = spaces.current.visibleWindows.first {
+                $0 !== statusBar && $0 !== tabBar
+            } ?? editor
+        }
+    }
+
     private func toggleFileExplorer() {
-        if maximized != nil { restoreMaximized() }
+        if maximized != nil {
+            restoreMaximized()
+            recalculateLayout()
+            spaces.markAllDirty()
+        }
+        // Without an editor there is nothing else to show — keep the explorer.
+        guard editor.visible || !fileExplorer.visible else { return }
         fileExplorer.visible = !fileExplorer.visible
         if fileExplorer.visible {
             spaces.current.focused = fileExplorer
+        } else if spaces.current.focused === fileExplorer {
+            refocus(from: fileExplorer)
         }
         recalculateLayout()
         spaces.markAllDirty()
@@ -575,6 +607,8 @@ class Application: WindowDelegate {
         if gitPanel.visible {
             gitPanel.refresh()
             spaces.current.focused = gitPanel
+        } else if spaces.current.focused === gitPanel {
+            refocus(from: gitPanel)
         }
         recalculateLayout()
         spaces.markAllDirty()
@@ -665,9 +699,10 @@ class Application: WindowDelegate {
             terminalHeight: terminal.height,
             space: spaces.current.id,
             showExplorer: fileExplorer.visible,
+            showEditor: editor.visible,
             showGit: gitPanel.visible,
             showCommand: command.visible,
-            showTabBar: true,
+            showTabBar: editor.visible && tabBar.visible,
             halfScreen: halfScreenRole()
         )
 
@@ -683,6 +718,15 @@ class Application: WindowDelegate {
         if let maximized {
             maximized.resize(x: 0, y: 0, width: terminal.width, height: max(1, terminal.height - 1))
         }
+    }
+
+    /// Shows the editor (and tab bar) when a file gets opened or the user
+    /// explicitly requests another panel while the editor is still closed.
+    private func ensureEditorVisible() {
+        guard !editor.visible else { return }
+        editor.visible = true
+        tabBar.visible = true
+        recalculateLayout()
     }
 
     private func render() {
@@ -798,6 +842,7 @@ class Application: WindowDelegate {
     }
 
     private func openFileInEditor(_ path: String) {
+        ensureEditorVisible()
         let isNew = editor.openFile(path)
         editor.dirty = true
         updateStatusBar()

@@ -22,6 +22,7 @@ struct LayoutManager {
         terminalHeight: Int,
         space: String,
         showExplorer: Bool,
+        showEditor: Bool,
         showGit: Bool,
         showCommand: Bool,
         showTabBar: Bool = false,
@@ -47,9 +48,13 @@ struct LayoutManager {
         var explorerW = 0
 
         if showExplorer {
-            explorerW = halfScreen == .explorer ? max(10, w / 2) : min(28, w / 4)
-            editorX = explorerW
-            editorW = w - explorerW
+            if showEditor {
+                explorerW = halfScreen == .explorer ? max(10, w / 2) : min(28, w / 4)
+                editorX = explorerW
+                editorW = w - explorerW
+            } else {
+                explorerW = w
+            }
         }
 
         var gitH = 0
@@ -59,7 +64,7 @@ struct LayoutManager {
 
         let tabH = showTabBar ? 1 : 0
         let editorH = max(1, h - statusH - gitH - cmdH - tabH)
-        let explorerH = h - statusH - gitH - cmdH
+        let explorerH = max(1, h - statusH - gitH - cmdH)
 
         let explorer = WindowLayout(x: 0, y: 0, width: explorerW, height: explorerH)
         let tabbar = showTabBar ? WindowLayout(x: editorX, y: 0, width: editorW, height: 1) : zero
