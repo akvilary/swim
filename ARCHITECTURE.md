@@ -254,10 +254,12 @@ pieces: [
 - Полоса вкладок (`TabBarWindow`, высота 1) видна всегда, активная вкладка подсвечена, `+` = modified; при переполнении скроллится так, что активная всегда видна
 
 **Режимы (`EditorMode`):**
-- `.normal` — перемещение, команды (h/j/k/l, dd, yy, p, x, i, v, gt/gT, :, /...)
+- `.normal` — перемещение, команды (h/j/k/l, dd, yy, p, x, i, gd, gt/gT, v, Ctrl+H/L, :, /...)
 - `.insert` — ввод текста (Escape для выхода)
 - `.visual` — визуальное выделение (y — копировать, d — удалить)
 - `.command` — командная строка (:w, :q, :wq, :q!, :e path, :e! path, :bd, :bd!, :%s/old/new/g, /search)
+
+**Go to definition (`gd`):** позиция курсора конвертируется в UTF-16 (`utf16ColForCharIndex`), отправляется `textDocument/definition` активному LSP-клиенту. Ответ (Location/LocationLink[]) приходит асинхронно в `pendingDefinition` (NSLock), `pollLSP()` выполняет прыжок: uri → путь → вкладка (новая или существующая — дедуп, без reload несохранённых буферов) → `goToPosition` (UTF-16 → графемы, с клэмпом). Не найдено / нет сервера — сообщение в статус-баре.
 
 **Система координат:**
 - `cursorLine` / `cursorCol` — позиция курсора в символах (не байтах!)

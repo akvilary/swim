@@ -116,7 +116,51 @@ class Application: WindowDelegate {
                     render()
                 }
             }
+            if let result = client.takePendingDefinition() {
+                switch result {
+                case .notFound:
+                    editor.lastError = "No definition found"
+                    updateStatusBar()
+                    spaces.current.update()
+                    render()
+                case .found(let definition):
+                    performDefinitionJump(definition)
+                }
+            }
         }
+    }
+
+    private func performDefinitionJump(_ definition: LSPDefinition) {
+        let path = pathFromUri(definition.uri)
+        guard !path.isEmpty else { return }
+        if path != editor.filePath {
+            // Tab-aware open: new tab, or switch to the existing one — no
+            // reload, so unsaved changes in any tab survive the jump.
+            openFileInEditor(path)
+        }
+        editor.goToPosition(line: definition.line, colUtf16: definition.charUtf16)
+        if spaces.current.id != "editor" {
+            switchToSpace("editor")
+        }
+        updateStatusBar()
+        spaces.current.update()
+        render()
+    }
+
+    func requestGoToDefinition(line: Int, charUtf16: Int) {
+        guard let path = editor.filePath else {
+            editor.lastError = "Unnamed buffer — save the file first"
+            return
+        }
+        guard let key = lspClientKey(for: path), let client = lspClients[key] else {
+            editor.lastError = "No LSP server for this file type"
+            return
+        }
+        guard client.isReady else {
+            editor.lastError = "LSP server is not ready"
+            return
+        }
+        client.requestDefinition(uri: "file://\(path)", line: line, character: charUtf16)
     }
 
     private func pathFromUri(_ uri: String) -> String {
@@ -264,9 +308,9 @@ class Application: WindowDelegate {
         guard let key = lspClientKey(for: path),
               let client = lspClients[key] else { return }
         guard let buf = editor.buffer, buf.totalLength < 5_000_000 else { return }
-        let uri = "file://\(path)"
-        let ext = (path as NSString).pathExtension
-        let langId = SyntaxTokenizer.languageId(for: ext)
+        let normalized = BufferManager.normalize(path)
+        let uri = "file://\(normalized)"
+        let langId = SyntaxTokenizer.languageId(for: (normalized as NSString).pathExtension)
         client.openDocument(uri: uri, languageId: langId, text: buf.getAllText())
     }
 

@@ -298,6 +298,29 @@ final class PieceTable {
         return units
     }
 
+    func utf16ColForCharIndex(line: Int, charIndex: Int) -> Int {
+        let chars = getLineChars(line)
+        var units = 0
+        var idx = 0
+        for char in chars {
+            guard idx < charIndex else { break }
+            units += char.isASCII ? 1 : char.utf16.count
+            idx += 1
+        }
+        return units
+    }
+
+    func charIndexForUtf16(line: Int, colUtf16: Int) -> Int {
+        let chars = getLineChars(line)
+        var units = 0
+        for (idx, char) in chars.enumerated() {
+            let next = units + (char.isASCII ? 1 : char.utf16.count)
+            if next > colUtf16 { return idx }
+            units = next
+        }
+        return chars.count
+    }
+
     func search(_ query: String, from offset: Int = 0) -> Int? {
         guard !query.isEmpty else { return nil }
         let queryBytes = [UInt8](query.utf8)

@@ -8,4 +8,5 @@ protocol WindowDelegate: AnyObject {
     func requestRender()
     func updatePreview(path: String?, highlightLine: Int)
     func bufferClosed(_ buffer: EditorBuffer)
+    func requestGoToDefinition(line: Int, charUtf16: Int)
 }

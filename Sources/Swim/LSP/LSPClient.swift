@@ -41,6 +41,30 @@ class LSPClient {
         return pending
     }
 
+    private let definitionLock = NSLock()
+    private var _pendingDefinition: LSPDefinitionResult?
+    var pendingDefinition: LSPDefinitionResult? {
+        get {
+            definitionLock.lock()
+            defer { definitionLock.unlock() }
+            return _pendingDefinition
+        }
+        set {
+            definitionLock.lock()
+            _pendingDefinition = newValue
+            definitionLock.unlock()
+        }
+    }
+    var hasPendingDefinition: Bool { pendingDefinition != nil }
+
+    func takePendingDefinition() -> LSPDefinitionResult? {
+        definitionLock.lock()
+        defer { definitionLock.unlock() }
+        let pending = _pendingDefinition
+        _pendingDefinition = nil
+        return pending
+    }
+
     var isReady: Bool { initialized && alive }
     var isAlive: Bool { alive }
 
@@ -190,6 +214,45 @@ class LSPClient {
             "textDocument": ["uri": uri] as [String: Any]
         ]
         sendNotification(method: "textDocument/didClose", params: params)
+    }
+
+    func requestDefinition(uri: String, line: Int, character: Int) {
+        guard initialized else { return }
+        let params: [String: Any] = [
+            "textDocument": ["uri": uri] as [String: Any],
+            "position": ["line": line, "character": character] as [String: Any]
+        ]
+        sendRequest(method: "textDocument/definition", params: params) { [weak self] data in
+            self?.handleDefinitionResponse(data)
+        }
+    }
+
+    /// Handles Location | Location[] | LocationLink[] | null result shapes.
+    private func handleDefinitionResponse(_ data: Data) {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            pendingDefinition = .notFound
+            return
+        }
+        guard let result = json["result"], !(result is NSNull) else {
+            pendingDefinition = .notFound
+            return
+        }
+        var location = result as? [String: Any]
+        if location == nil, let array = result as? [Any] {
+            location = array.first as? [String: Any]
+        }
+        guard let loc = location,
+              let uri = (loc["uri"] as? String) ?? (loc["targetUri"] as? String),
+              let range = (loc["range"] as? [String: Any])
+                  ?? (loc["targetSelectionRange"] as? [String: Any])
+                  ?? (loc["targetRange"] as? [String: Any]),
+              let start = range["start"] as? [String: Any],
+              let line = start["line"] as? Int,
+              let character = start["character"] as? Int else {
+            pendingDefinition = .notFound
+            return
+        }
+        pendingDefinition = .found(LSPDefinition(uri: uri, line: line, charUtf16: character))
     }
 
     private func handleSemanticTokensResponse(_ data: Data, uri: String) {

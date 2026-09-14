@@ -121,6 +121,23 @@ class EditorWindow: Window {
         }
     }
 
+    /// Positions the cursor at an LSP (line, UTF-16 column) pair, clamped to
+    /// the buffer. Used by go-to-definition jumps.
+    func goToPosition(line: Int, colUtf16: Int) {
+        guard let buf = buffer else { return }
+        cursorLine = min(max(0, line), max(0, buf.lineCount - 1))
+        cursorCol = buf.charIndexForUtf16(line: cursorLine, colUtf16: colUtf16)
+        clampCol()
+        ensureCursorVisible()
+        dirty = true
+    }
+
+    private func goToDefinition() {
+        guard let buf = buffer else { return }
+        let charUtf16 = buf.utf16ColForCharIndex(line: cursorLine, charIndex: cursorCol)
+        delegate?.requestGoToDefinition(line: cursorLine, charUtf16: charUtf16)
+    }
+
     private func yank(_ text: String) {
         yankBuffer = text
         Terminal.shared.osc52Copy(text)
@@ -249,8 +266,8 @@ class EditorWindow: Window {
         case .char("I"): cursorCol = 0; mode = .insert
         case .char("x"): deleteCharAtCursor()
         case .char("d"):
-            pendingG = false
-            if pendingD { deleteCurrentLine(); pendingD = false }
+            if pendingG { pendingG = false; goToDefinition() }
+            else if pendingD { deleteCurrentLine(); pendingD = false }
             else { pendingD = true; return true }
         case .char("y"):
             pendingG = false
