@@ -16,6 +16,7 @@ class Application: WindowDelegate {
 
     private let editor = EditorWindow()
     private let statusBar = StatusBarWindow()
+    private let tabBar = TabBarWindow()
     private let fileExplorer = FileExplorerWindow()
     private let gitPanel = GitPanelWindow()
     private let searchResults = SearchResultsWindow()
@@ -25,6 +26,7 @@ class Application: WindowDelegate {
     init(filePath: String? = nil) {
         let editorSpace = Space(id: "editor", delegate: self)
         editorSpace.addWindow("fileExplorer", fileExplorer)
+        editorSpace.addWindow("tabBar", tabBar)
         editorSpace.addWindow("editor", editor)
         editorSpace.addWindow("gitPanel", gitPanel)
         editorSpace.addWindow("command", command)
@@ -38,6 +40,9 @@ class Application: WindowDelegate {
         spaces.addSpace(editorSpace)
         spaces.addSpace(searchSpace)
         spaces.switchTo("editor")
+
+        tabBar.tabsSource = editor
+        tabBar.visible = true
 
         if let path = filePath {
             editor.openFile(path)
@@ -100,15 +105,23 @@ class Application: WindowDelegate {
 
     private func pollLSP() {
         for (_, client) in lspClients {
-            guard client.hasPendingTokens else { continue }
-            if let tokens = client.pendingTokens {
-                editor.semanticTokens = tokens
-                editor.dirty = true
-                client.pendingTokens = nil
-                spaces.current.update()
-                render()
+            if let pending = client.takePendingTokens() {
+                let path = pathFromUri(pending.uri)
+                guard let target = editor.findBuffer(forNormalizedPath: path) else { continue }
+                if editor.applySemanticTokens(pending.tokens, to: target) {
+                    spaces.current.update()
+                    render()
+                }
             }
         }
+    }
+
+    private func pathFromUri(_ uri: String) -> String {
+        guard uri.hasPrefix("file://") else { return uri }
+        if let url = URL(string: uri), url.scheme == "file" {
+            return BufferManager.normalize(url.path)
+        }
+        return BufferManager.normalize(String(uri.dropFirst("file://".count)))
     }
 
     private var lastSpinnerTick: TimeInterval = 0
@@ -380,10 +393,12 @@ class Application: WindowDelegate {
             space: spaces.current.id,
             showExplorer: fileExplorer.visible,
             showGit: gitPanel.visible,
-            showCommand: command.visible
+            showCommand: command.visible,
+            showTabBar: true
         )
 
         fileExplorer.resize(x: layout.explorer.x, y: layout.explorer.y, width: layout.explorer.width, height: layout.explorer.height)
+        tabBar.resize(x: layout.tabbar.x, y: layout.tabbar.y, width: layout.tabbar.width, height: layout.tabbar.height)
         editor.resize(x: layout.editor.x, y: layout.editor.y, width: layout.editor.width, height: layout.editor.height)
         gitPanel.resize(x: layout.git.x, y: layout.git.y, width: layout.git.width, height: layout.git.height)
         searchResults.resize(x: layout.searchResults.x, y: layout.searchResults.y, width: layout.searchResults.width, height: layout.searchResults.height)
@@ -414,6 +429,7 @@ class Application: WindowDelegate {
         statusBar.modified = editor.modified
         statusBar.commandText = editor.commandBuffer
         statusBar.errorMessage = editor.lastError
+        tabBar.dirty = true
         if let path = editor.filePath {
             let ext = (path as NSString).pathExtension
             statusBar.fileType = ext.isEmpty ? "" : "[\(ext)]"
@@ -433,13 +449,39 @@ class Application: WindowDelegate {
 
     func handleEditorCommand(_ cmd: String) {
         switch cmd {
-        case "quit", "q":
-            if !editor.modified { running = false }
-        case "forcequit", "qa", "q!":
+        case "quit", "q", "bd":
+            closeCurrentTab(force: false)
+        case "forcequit", "bd!":
+            closeCurrentTab(force: true)
+        case "qa":
             running = false
         default:
             break
         }
+    }
+
+    private func closeCurrentTab(force: Bool) {
+        let wasLast = editor.tabCount == 1
+        guard let closed = editor.closeCurrentTab(force: force) else {
+            editor.lastError = "No write since last change (add ! to force)"
+            updateStatusBar()
+            return
+        }
+        notifyLSPClose(closed.filePath)
+        updateStatusBar()
+        if wasLast { running = false }
+    }
+
+    func bufferClosed(_ buffer: EditorBuffer) {
+        notifyLSPClose(buffer.filePath)
+        tabBar.dirty = true
+    }
+
+    private func notifyLSPClose(_ filePath: String?) {
+        guard let path = filePath,
+              let key = lspClientKey(for: path),
+              let client = lspClients[key] else { return }
+        client.closeDocument(uri: "file://\(path)")
     }
 
     func openFile(_ path: String) {
@@ -456,10 +498,10 @@ class Application: WindowDelegate {
     }
 
     private func openFileInEditor(_ path: String) {
-        editor.openFile(path)
+        let isNew = editor.openFile(path)
         editor.dirty = true
         updateStatusBar()
-        notifyLSPFileOpen(path)
+        if isNew { notifyLSPFileOpen(path) }
         spaces.current.focused = editor
         spaces.current.updateFocusStates()
     }

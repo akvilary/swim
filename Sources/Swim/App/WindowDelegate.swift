@@ -7,4 +7,5 @@ protocol WindowDelegate: AnyObject {
     func runGitCommand(label: String, args: [String])
     func requestRender()
     func updatePreview(path: String?, highlightLine: Int)
+    func bufferClosed(_ buffer: EditorBuffer)
 }

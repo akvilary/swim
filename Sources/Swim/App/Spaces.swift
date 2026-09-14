@@ -43,7 +43,7 @@ class Space {
     }
 
     func focusable() -> [Window] {
-        visibleWindows.filter { !($0 is StatusBarWindow) }
+        visibleWindows.filter { !($0 is StatusBarWindow) && !($0 is TabBarWindow) }
     }
 }
 

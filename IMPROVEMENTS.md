@@ -8,15 +8,9 @@
 
 ---
 
-## 1. Множественные буферы и вкладки (A)
+## 1. ~~Множественные буферы и вкладки (A)~~ — РЕАЛИЗОВАНО
 
-Сейчас `EditorWindow` хранит один `PieceTable`. При открытии нового файла старый теряется. Нет возможности переключаться между файлами без File Explorer.
-
-**Решение:**
-- Ввести `BufferManager` с массивом `(buffer: PieceTable, filePath: String?, modified: Bool, cursorState: ...)`
-- `EditorWindow` отображает текущий активный буфер
-- Tab bar в строке над редактором (как в VS Code)
-- Горячие клавиши: `gt` / `gT` — следующий/предыдущий таб, `:bd` — закрыть таб
+`BufferManager` + `EditorBuffer` (Core/EditorBuffer.swift), `TabBarWindow`, `gt`/`gT`, `:bd`, `:e` (vim-семантика), дедуп по нормализованному пути, LSP didClose + uri-маршрутизация токенов.
 
 ---
 

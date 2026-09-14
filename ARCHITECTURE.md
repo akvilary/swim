@@ -45,23 +45,25 @@ Sources/Swim/
 ├── main.swift                    — Точка входа
 ├── App/
 │   └── Application.swift         — Главный контроллер
-├── Core/
-│   ├── Cell.swift                — Ячейка экрана + цвет
-│   ├── Theme.swift               — Палитра Tokyo Night Storm
-│   ├── Terminal.swift            — Низкоуровневый терминальный I/O
-│   ├── PieceTable.swift          — Структура данных текстового буфера
-│   ├── Input.swift               — Парсинг клавиш
-│   └── SyntaxTokenizer.swift     — Встроенная подсветка синтаксиса
-├── Window/
-│   ├── Window.swift              — Базовый класс окна (cell-буфер)
-│   ├── EditorWindow.swift        — Vim-редактор
-│   ├── FileExplorerWindow.swift  — Файловый проводник
-│   ├── GitPanelWindow.swift      — Git-панель
-│   ├── SearchWindow.swift        — Поиск по проекту
-│   └── StatusBarWindow.swift     — Строка состояния
-└── LSP/
-    ├── LSPClient.swift           — Клиент Language Server Protocol
-    └── LSPProtocol.swift         — Типы данных LSP
+ ├── Core/
+ │   ├── Cell.swift                — Ячейка экрана + цвет
+ │   ├── Theme.swift               — Палитра Tokyo Night Storm
+ │   ├── Terminal.swift            — Низкоуровневый терминальный I/O
+ │   ├── PieceTable.swift          — Структура данных текстового буфера
+ │   ├── EditorBuffer.swift        — Состояние одного буфера + BufferManager (вкладки)
+ │   ├── Input.swift               — Парсинг клавиш
+ │   └── SyntaxTokenizer.swift     — Встроенная подсветка синтаксиса
+ ├── Window/
+ │   ├── Window.swift              — Базовый класс окна (cell-буфер)
+ │   ├── EditorWindow.swift        — Vim-редактор
+ │   ├── TabBarWindow.swift        — Полоса вкладок над редактором
+ │   ├── FileExplorerWindow.swift  — Файловый проводник
+ │   ├── GitPanelWindow.swift      — Git-панель
+ │   ├── SearchWindow.swift        — Поиск по проекту
+ │   └── StatusBarWindow.swift     — Строка состояния
+ └── LSP/
+     ├── LSPClient.swift           — Клиент Language Server Protocol
+     └── LSPProtocol.swift         — Типы данных LSP
 ```
 
 ---
@@ -244,11 +246,18 @@ pieces: [
 
 Центральный компонент — vim-подобный модальный редактор.
 
+**Вкладки (`BufferManager`):** каждый файл открыт в своей вкладке — `EditorBuffer` хранит пофайловое состояние (PieceTable, курсор, scroll, undo/redo стеки, LSP pending changes, semantic tokens, markdown cache, mode). EditorWindow пробрасывает свои свойства к `tabs.active` вычисляемыми аксессорами — внешний интерфейс не изменился. Пути нормализуются в абсолютные (`BufferManager.normalize`) — дедуп вкладок и матчинг LSP uri стабильны.
+
+- Открытие файла — новая вкладка или переключение к существующей (дедуп по пути)
+- `gt` / `gT` — следующая/предыдущая вкладка (wrap-around), `:bd` / `:bd!` — закрыть, `:e file` — заменить текущую (vim), последняя закрытая вкладка завершает приложение
+- Закрытие вкладки отправляет LSP `textDocument/didClose`; поздно пришедшие токены маршрутизируются во вкладку-владельца по uri
+- Полоса вкладок (`TabBarWindow`, высота 1) видна всегда, активная вкладка подсвечена, `+` = modified; при переполнении скроллится так, что активная всегда видна
+
 **Режимы (`EditorMode`):**
-- `.normal` — перемещение, команды (h/j/k/l, dd, yy, p, x, i, v, :, /...)
+- `.normal` — перемещение, команды (h/j/k/l, dd, yy, p, x, i, v, gt/gT, :, /...)
 - `.insert` — ввод текста (Escape для выхода)
 - `.visual` — визуальное выделение (y — копировать, d — удалить)
-- `.command` — командная строка (:w, :q, :wq, :q!, :e path, :%s/old/new/g, /search)
+- `.command` — командная строка (:w, :q, :wq, :q!, :e path, :e! path, :bd, :bd!, :%s/old/new/g, /search)
 
 **Система координат:**
 - `cursorLine` / `cursorCol` — позиция курсора в символах (не байтах!)

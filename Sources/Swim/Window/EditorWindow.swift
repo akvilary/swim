@@ -1,21 +1,62 @@
 import Foundation
 
-enum EditorMode {
-    case normal
-    case insert
-    case visual
-    case visualLine
-    case command
-}
-
 class EditorWindow: Window {
-    var buffer: PieceTable?
-    var filePath: String?
-    var mode: EditorMode = .normal
-    var cursorLine: Int = 0
-    var cursorCol: Int = 0
-    var scrollY: Int = 0
-    var scrollX: Int = 0
+    let tabs = BufferManager()
+
+    // Per-buffer state forwarded to the active tab
+    var buffer: PieceTable? { tabs.active.buffer }
+    var filePath: String? { tabs.active.filePath }
+    var mode: EditorMode {
+        get { tabs.active.mode }
+        set { tabs.active.mode = newValue }
+    }
+    var cursorLine: Int {
+        get { tabs.active.cursorLine }
+        set { tabs.active.cursorLine = newValue }
+    }
+    var cursorCol: Int {
+        get { tabs.active.cursorCol }
+        set { tabs.active.cursorCol = newValue }
+    }
+    var scrollY: Int {
+        get { tabs.active.scrollY }
+        set { tabs.active.scrollY = newValue }
+    }
+    var scrollX: Int {
+        get { tabs.active.scrollX }
+        set { tabs.active.scrollX = newValue }
+    }
+    var visualStartLine: Int {
+        get { tabs.active.visualStartLine }
+        set { tabs.active.visualStartLine = newValue }
+    }
+    var visualStartCol: Int {
+        get { tabs.active.visualStartCol }
+        set { tabs.active.visualStartCol = newValue }
+    }
+    var modified: Bool {
+        get { tabs.active.modified }
+        set { tabs.active.modified = newValue }
+    }
+    var undoStack: [(offset: Int, deleted: String, inserted: String)] {
+        get { tabs.active.undoStack }
+        set { tabs.active.undoStack = newValue }
+    }
+    var redoStack: [(offset: Int, deleted: String, inserted: String)] {
+        get { tabs.active.redoStack }
+        set { tabs.active.redoStack = newValue }
+    }
+    private var lspPendingChanges: [LSPTextChange] {
+        get { tabs.active.lspPendingChanges }
+        set { tabs.active.lspPendingChanges = newValue }
+    }
+    var semanticTokens: [SemanticToken] { tabs.active.semanticTokens }
+    private var markdownCache: SyntaxTokenizer.MarkdownCache {
+        get { tabs.active.markdownCache }
+        set { tabs.active.markdownCache = newValue }
+    }
+
+    // Window-global state (registers, pending keys, transient UI)
     var commandBuffer: String = ""
     var yankBuffer: String = ""
     var searchQuery: String = ""
@@ -23,21 +64,12 @@ class EditorWindow: Window {
     var pendingG: Bool = false
     var pendingD: Bool = false
     var pendingY: Bool = false
-    var visualStartLine: Int = 0
-    var visualStartCol: Int = 0
-    var modified: Bool = false
-    var undoStack: [(offset: Int, deleted: String, inserted: String)] = []
-    var redoStack: [(offset: Int, deleted: String, inserted: String)] = []
     private var isUndoRedoing = false
-    private var lspPendingChanges: [LSPTextChange] = []
 
-    var semanticTokens: [SemanticToken] = [] {
-        didSet { rebuildTokenIndex() }
-    }
     private var tokenIndex: [Int: [SemanticToken]] = [:]
-    private var markdownCache = SyntaxTokenizer.MarkdownCache()
 
     var lastError: String?
+    var tabCount: Int { tabs.count }
 
     private func rebuildTokenIndex() {
         tokenIndex.removeAll(keepingCapacity: true)
@@ -98,27 +130,81 @@ class EditorWindow: Window {
         super.init(x: x, y: y, width: width, height: height)
     }
 
-    func openFile(_ path: String) {
-        filePath = path
-        buffer = PieceTable.fromFile(path) ?? PieceTable(text: "")
-        resetEditorState()
+    /// Opens a file in a new tab (or switches to its existing tab).
+    /// Returns true when a new tab was created (LSP didOpen needed).
+    @discardableResult
+    func openFile(_ path: String) -> Bool {
+        let (_, isNew) = tabs.open(path: path)
+        activateCurrentTab()
+        return isNew
     }
 
     func newFile() {
-        filePath = nil
-        buffer = PieceTable(text: "")
-        resetEditorState()
+        let current = tabs.active
+        guard current.filePath != nil || current.modified || current.buffer.totalLength > 0 else { return }
+        let old = tabs.replaceCurrent(path: "") // "" normalizes to empty -> fresh [No Name]
+        if let old { delegate?.bufferClosed(old) }
+        activateCurrentTab()
     }
 
-    private func resetEditorState() {
-        cursorLine = 0
-        cursorCol = 0
-        scrollY = 0
-        scrollX = 0
-        modified = false
-        undoStack = []
-        redoStack = []
-        lspPendingChanges = []
+    /// `:e [file]` — replaces the current tab (vim semantics). When the target
+    /// is already open in another tab, switches there instead.
+    /// Returns the discarded buffer (caller sends LSP didClose), nil on switch.
+    @discardableResult
+    func editFile(_ path: String) -> EditorBuffer? {
+        guard !path.isEmpty else { return nil }
+        let discarded = tabs.replaceCurrent(path: path)
+        if let discarded { delegate?.bufferClosed(discarded) }
+        activateCurrentTab()
+        return discarded
+    }
+
+    /// Closes the active tab. Returns the closed buffer, or nil when refused
+    /// because of unsaved changes.
+    @discardableResult
+    func closeCurrentTab(force: Bool) -> EditorBuffer? {
+        switch tabs.closeActive(force: force) {
+        case .refusedModified:
+            return nil
+        case .closed(let closed):
+            activateCurrentTab()
+            return closed
+        }
+    }
+
+    /// `gt` / `gT`
+    func cycleTab(_ delta: Int) {
+        tabs.cycle(delta)
+        activateCurrentTab()
+    }
+
+    func findBuffer(forNormalizedPath path: String) -> EditorBuffer? {
+        tabs.buffer(forNormalizedPath: path)
+    }
+
+    /// Routes LSP tokens to the owning tab. Returns true when the active tab
+    /// was updated (caller must re-render).
+    @discardableResult
+    func applySemanticTokens(_ tokens: [SemanticToken], to target: EditorBuffer) -> Bool {
+        target.semanticTokens = tokens
+        guard target === tabs.active else { return false }
+        rebuildTokenIndex()
+        dirty = true
+        return true
+    }
+
+    func tabInfos() -> [(name: String, active: Bool, modified: Bool)] {
+        tabs.buffers.enumerated().map { index, buf in
+            (name: buf.displayName, active: index == tabs.activeIndex, modified: buf.modified)
+        }
+    }
+
+    private func activateCurrentTab() {
+        rebuildTokenIndex()
+        guard let buf = buffer else { return }
+        if cursorLine >= buf.lineCount { cursorLine = max(0, buf.lineCount - 1) }
+        clampCol()
+        ensureCursorVisible()
         dirty = true
     }
 
@@ -145,7 +231,15 @@ class EditorWindow: Window {
         case .char("$"), .end: moveToEndOfLine()
         case .char("g"):
             if pendingG { cursorLine = 0; cursorCol = 0; ensureCursorVisible(); pendingG = false }
-            else { pendingG = true; return true }
+            else { pendingD = false; pendingY = false; pendingG = true; return true }
+        case .char("t"):
+            guard pendingG else { pendingG = false; pendingD = false; pendingY = false; return false }
+            pendingG = false
+            cycleTab(1)
+        case .char("T"):
+            guard pendingG else { pendingG = false; pendingD = false; pendingY = false; return false }
+            pendingG = false
+            cycleTab(-1)
         case .char("G"): cursorLine = max(0, buffer!.lineCount - 1); cursorCol = 0; ensureCursorVisible()
         case .char("i"): mode = .insert
         case .char("a"): moveCursorRight(); mode = .insert
@@ -155,9 +249,11 @@ class EditorWindow: Window {
         case .char("I"): cursorCol = 0; mode = .insert
         case .char("x"): deleteCharAtCursor()
         case .char("d"):
+            pendingG = false
             if pendingD { deleteCurrentLine(); pendingD = false }
             else { pendingD = true; return true }
         case .char("y"):
+            pendingG = false
             if pendingY { yankCurrentLine(); pendingY = false }
             else { pendingY = true; return true }
         case .char("p"): pasteAfter()
@@ -242,10 +338,17 @@ class EditorWindow: Window {
     private func executeCommand() {
         let cmd = commandBuffer
         if cmd == "w" { saveFile() }
-        else if cmd == "q" { delegate?.handleEditorCommand("quit") }
+        else if cmd == "q" || cmd == "bd" { delegate?.handleEditorCommand(cmd) }
         else if cmd == "wq" || cmd == "x" { saveFile(); delegate?.handleEditorCommand("quit") }
-        else if cmd == "q!" { delegate?.handleEditorCommand("forcequit") }
-        else if cmd.hasPrefix("e ") { openFile(String(cmd.dropFirst(2)).trimmingCharacters(in: .whitespaces)) }
+        else if cmd == "q!" || cmd == "forcequit" { delegate?.handleEditorCommand("forcequit") }
+        else if cmd == "bd!" { delegate?.handleEditorCommand("bd!") }
+        else if cmd.hasPrefix("e! ") {
+            editFile(String(cmd.dropFirst(3)).trimmingCharacters(in: .whitespaces))
+        }
+        else if cmd.hasPrefix("e ") {
+            if modified { lastError = "No write since last change (add ! to override)" }
+            else { editFile(String(cmd.dropFirst(2)).trimmingCharacters(in: .whitespaces)) }
+        }
         else if cmd.hasPrefix("%s/") { handleSubstitute(cmd) }
         else if cmd.hasPrefix("/") {
             searchQuery = String(cmd.dropFirst())

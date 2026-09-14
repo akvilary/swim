@@ -14,8 +14,9 @@ struct LayoutManager {
         space: String,
         showExplorer: Bool,
         showGit: Bool,
-        showCommand: Bool
-    ) -> (explorer: WindowLayout, editor: WindowLayout, git: WindowLayout, searchResults: WindowLayout, preview: WindowLayout, command: WindowLayout, status: WindowLayout) {
+        showCommand: Bool,
+        showTabBar: Bool = false
+    ) -> (explorer: WindowLayout, editor: WindowLayout, tabbar: WindowLayout, git: WindowLayout, searchResults: WindowLayout, preview: WindowLayout, command: WindowLayout, status: WindowLayout) {
         let w = max(10, terminalWidth)
         let h = max(5, terminalHeight)
         let statusH = 1
@@ -26,7 +27,7 @@ struct LayoutManager {
             let searchResults = WindowLayout(x: 0, y: 0, width: resultsW, height: h - statusH)
             let preview = WindowLayout(x: resultsW, y: 0, width: w - resultsW, height: h - statusH)
             let status = WindowLayout(x: 0, y: h - statusH, width: w, height: statusH)
-            return (zero, zero, zero, searchResults, preview, zero, status)
+            return (zero, zero, zero, zero, searchResults, preview, zero, status)
         }
 
         var editorX = 0
@@ -44,18 +45,21 @@ struct LayoutManager {
         if showGit { gitH = min(25, h / 2) }
         if showCommand { cmdH = min(25, h / 2) }
 
-        let editorH = max(1, h - statusH - gitH - cmdH)
+        let tabH = showTabBar ? 1 : 0
+        let editorH = max(1, h - statusH - gitH - cmdH - tabH)
+        let explorerH = h - statusH - gitH - cmdH
 
-        let explorer = WindowLayout(x: 0, y: 0, width: explorerW, height: editorH)
-        let editor = WindowLayout(x: editorX, y: 0, width: editorW, height: editorH)
+        let explorer = WindowLayout(x: 0, y: 0, width: explorerW, height: explorerH)
+        let tabbar = showTabBar ? WindowLayout(x: editorX, y: 0, width: editorW, height: 1) : zero
+        let editor = WindowLayout(x: editorX, y: tabH, width: editorW, height: editorH)
 
-        var bottomY = editorH
+        var bottomY = explorerH
         let git = WindowLayout(x: 0, y: bottomY, width: w, height: gitH)
         if showGit { bottomY += gitH }
         let command = WindowLayout(x: 0, y: bottomY, width: w, height: cmdH)
 
         let status = WindowLayout(x: 0, y: h - statusH, width: w, height: statusH)
 
-        return (explorer, editor, git, zero, zero, command, status)
+        return (explorer, editor, tabbar, git, zero, zero, command, status)
     }
 }

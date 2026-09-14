@@ -18,8 +18,8 @@ class LSPClient {
     var onDiagnostics: ((String, [Any]) -> Void)?
 
     private let tokensLock = NSLock()
-    private var _pendingTokens: [SemanticToken]?
-    var pendingTokens: [SemanticToken]? {
+    private var _pendingTokens: (uri: String, tokens: [SemanticToken])?
+    var pendingTokens: (uri: String, tokens: [SemanticToken])? {
         get {
             tokensLock.lock()
             defer { tokensLock.unlock() }
@@ -32,6 +32,14 @@ class LSPClient {
         }
     }
     var hasPendingTokens: Bool { pendingTokens != nil }
+
+    func takePendingTokens() -> (uri: String, tokens: [SemanticToken])? {
+        tokensLock.lock()
+        defer { tokensLock.unlock() }
+        let pending = _pendingTokens
+        _pendingTokens = nil
+        return pending
+    }
 
     var isReady: Bool { initialized && alive }
     var isAlive: Bool { alive }
@@ -172,11 +180,19 @@ class LSPClient {
             "textDocument": ["uri": uri] as [String: Any]
         ]
         sendRequest(method: "textDocument/semanticTokens/full", params: params) { [weak self] data in
-            self?.handleSemanticTokensResponse(data)
+            self?.handleSemanticTokensResponse(data, uri: uri)
         }
     }
 
-    private func handleSemanticTokensResponse(_ data: Data) {
+    func closeDocument(uri: String) {
+        guard initialized else { return }
+        let params: [String: Any] = [
+            "textDocument": ["uri": uri] as [String: Any]
+        ]
+        sendNotification(method: "textDocument/didClose", params: params)
+    }
+
+    private func handleSemanticTokensResponse(_ data: Data, uri: String) {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = json["result"] as? [String: Any],
               let tokenData = result["data"] as? [Int] else { return }
@@ -218,7 +234,7 @@ class LSPClient {
             i += 5
         }
 
-        pendingTokens = tokens
+        pendingTokens = (uri: uri, tokens: tokens)
     }
 
     private func sendRequest(method: String, params: [String: Any], callback: @escaping (Data) -> Void) {
