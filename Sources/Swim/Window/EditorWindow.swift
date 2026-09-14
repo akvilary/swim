@@ -105,15 +105,33 @@ class EditorWindow: Window {
 
             var converted = [SemanticToken]()
             converted.reserveCapacity(tokens.count)
+            // sourcekit-lsp marks declaration names as bare `identifier`;
+            // recolor them from the declaration keyword that precedes them.
+            let declTypeKeywords: Set<String> = [
+                "class", "struct", "enum", "protocol", "interface", "actor",
+                "extension", "typealias", "associatedtype",
+            ]
+            var prevKeyword: (text: String, endCol: Int)?
             for t in tokens {
                 let start = graphemeIndex(ofUtf16: t.startChar)
                 let end = graphemeIndex(ofUtf16: t.startChar + t.length)
                 let length = max(1, end - start)
+                var type = t.type
+                if type == "identifier", let prev = prevKeyword,
+                   start >= prev.endCol, start - prev.endCol <= 1 {
+                    if declTypeKeywords.contains(prev.text) { type = "class" }
+                    else if prev.text == "func" { type = "function" }
+                }
+                if t.type == "keyword", start + length <= chars.count {
+                    prevKeyword = (String(chars[start..<start + length]), start + length)
+                } else {
+                    prevKeyword = nil
+                }
                 converted.append(SemanticToken(
                     line: t.line,
                     startChar: start,
                     length: length,
-                    type: t.type,
+                    type: type,
                     modifiers: t.modifiers
                 ))
             }
