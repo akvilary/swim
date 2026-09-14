@@ -309,6 +309,10 @@ class Application: WindowDelegate {
 
         // Python: basedpyright only — it is the pyright fork that implements
         // semantic tokens (pyright lacks them entirely). pip/uv install.
+        // [tool.basedpyright]/[tool.pyright] extraPaths and pyrightconfig.json
+        // are read by the server itself; as a fallback we forward pytest's
+        // [tool.pytest.ini_options].pythonpath via initializationOptions —
+        // but never when an explicit server config exists (it would override).
         let basedPyrightPaths = [
             "/usr/local/bin/basedpyright-langserver",
             "/usr/bin/basedpyright-langserver",
@@ -319,7 +323,12 @@ class Application: WindowDelegate {
 
         if let path = findExecutable(paths: basedPyrightPaths, command: "basedpyright-langserver") {
             let client = LSPClient()
-            client.start(executable: path, arguments: ["--stdio"], rootUri: "file://\(rootPath)")
+            client.start(
+                executable: path,
+                arguments: ["--stdio"],
+                rootUri: "file://\(rootPath)",
+                initializationOptions: pythonInitializationOptions(rootPath: rootPath)
+            )
             lspClients["python"] = client
         }
 
@@ -331,6 +340,86 @@ class Application: WindowDelegate {
     private func isDirectory(_ path: String) -> Bool {
         var isDir: ObjCBool = false
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    /// Builds basedpyright initializationOptions with extraPaths taken from
+    /// pytest's `[tool.pytest.ini_options].pythonpath` (pyproject.toml).
+    /// Returns nil when the server has its own config ([tool.basedpyright],
+    /// [tool.pyright] or pyrightconfig.json) — that config must win.
+    private func pythonInitializationOptions(rootPath: String) -> [String: Any]? {
+        let pyprojectPath = rootPath + "/pyproject.toml"
+        guard let text = try? String(contentsOfFile: pyprojectPath, encoding: .utf8) else { return nil }
+        guard !Self.tomlHasSection(text, "tool.basedpyright"),
+              !Self.tomlHasSection(text, "tool.pyright"),
+              !FileManager.default.fileExists(atPath: rootPath + "/pyrightconfig.json") else { return nil }
+        let extra = Self.tomlStringArray(in: text, section: "tool.pytest.ini_options", key: "pythonpath")
+        guard !extra.isEmpty else { return nil }
+        let absolute = extra.map { $0.hasPrefix("/") ? $0 : rootPath + "/" + $0 }
+        return ["settings": [["uri": "file://\(rootPath)", "settings": ["extraPaths": absolute]]]]
+    }
+
+    /// True when the TOML text contains the `[section]` header.
+    private static func tomlHasSection(_ text: String, _ section: String) -> Bool {
+        text.split(separator: "\n").contains { line in
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix("["), t.hasSuffix("]") else { return false }
+            return t.dropFirst().dropLast().trimmingCharacters(in: .whitespaces) == section
+        }
+    }
+
+    /// Extracts a string-array value of `key` from a `[section]` of TOML text
+    /// (pyproject-lite: quoted strings, # comments, multi-line arrays).
+    private static func tomlStringArray(in text: String, section: String, key: String) -> [String] {
+        func parseArray(_ s: String) -> [String] {
+            guard let open = s.firstIndex(of: "["), let close = s.lastIndex(of: "]"), open < close else { return [] }
+            return s[s.index(after: open)..<close]
+                .split(separator: ",")
+                .compactMap { item -> String? in
+                    var t = item.trimmingCharacters(in: .whitespaces)
+                    if let hash = t.firstIndex(of: "#") {
+                        t = String(t[..<hash]).trimmingCharacters(in: .whitespaces)
+                    }
+                    guard t.count >= 2 else { return nil }
+                    let first = t.first, last = t.last
+                    if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                        return String(t.dropFirst().dropLast())
+                    }
+                    return nil
+                }
+        }
+
+        var inSection = false
+        var collecting = false
+        var buffer = ""
+        var result = [String]()
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") && line.hasSuffix("]") {
+                inSection = line.dropFirst().dropLast().trimmingCharacters(in: .whitespaces) == section
+                continue
+            }
+            guard inSection else { continue }
+            if collecting {
+                buffer += " " + line
+                if line.contains("]") {
+                    collecting = false
+                    result.append(contentsOf: parseArray(buffer))
+                    buffer = ""
+                }
+                continue
+            }
+            if line.hasPrefix("#") { continue }
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            guard line[..<eq].trimmingCharacters(in: .whitespaces) == key else { continue }
+            let value = String(line[line.index(after: eq)...])
+            if value.contains("]") {
+                result.append(contentsOf: parseArray(value))
+            } else {
+                buffer = value
+                collecting = true
+            }
+        }
+        return result
     }
 
     private func findExecutable(paths: [String], command: String) -> String? {

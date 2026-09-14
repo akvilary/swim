@@ -70,7 +70,7 @@ class LSPClient {
 
     private var pendingDidOpen: (uri: String, languageId: String, text: String)?
 
-    func start(executable: String, arguments: [String] = [], rootUri: String?) {
+    func start(executable: String, arguments: [String] = [], rootUri: String?, initializationOptions: [String: Any]? = nil) {
         guard FileManager.default.fileExists(atPath: executable) else { return }
         guard FileManager.default.isExecutableFile(atPath: executable) else { return }
 
@@ -100,7 +100,7 @@ class LSPClient {
             try process.run()
             self.process = process
             self.alive = true
-            sendInitialize(rootUri: rootUri)
+            sendInitialize(rootUri: rootUri, initializationOptions: initializationOptions)
         } catch {
             self.process = nil
         }
@@ -114,7 +114,7 @@ class LSPClient {
         }
     }
 
-    private func sendInitialize(rootUri: String?) {
+    private func sendInitialize(rootUri: String?, initializationOptions: [String: Any]?) {
         // LSP 3.16: client semanticTokens capabilities require the
         // `requests` object; `full`/`delta` live inside it. Putting them at
         // the top level (server-provider shape) makes sourcekit-lsp 6.2+
@@ -142,6 +142,9 @@ class LSPClient {
             // them it assumes "/" as the workspace root and analyzes nothing.
             let name = (uri as NSString).lastPathComponent
             params["workspaceFolders"] = [["uri": uri, "name": name.isEmpty ? "workspace" : name]]
+        }
+        if let options = initializationOptions {
+            params["initializationOptions"] = options
         }
 
         sendRequest(method: "initialize", params: params) { [weak self] data in

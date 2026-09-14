@@ -364,7 +364,7 @@ Diff подсвечивается: зелёный для добавлений, �
 - **Go** — gopls
 - **Rust** — rust-analyzer
 - **Bash** — bash-language-server (`start`)
-- **Python** — basedpyright-langserver (`--stdio`, `pip install basedpyright` / `uv tool install basedpyright`). pyright исключён: не реализует semantic tokens; basedpyright поддерживает и подсветку, и `gd`
+- **Python** — basedpyright-langserver (`--stdio`, `pip install basedpyright` / `uv tool install basedpyright`). pyright исключён: не реализует semantic tokens; basedpyright поддерживает и подсветку, и `gd`. Пути поиска модулей: `[tool.basedpyright]/[tool.pyright].extraPaths` и `pyrightconfig.json` сервер читает сам (относительные — от корня проекта); pytest-конвенцию `[tool.pytest.ini_options].pythonpath` swim форвардит через `initializationOptions` (только при отсутствии явной серверной конфигурации, чтобы не перекрывать её)
 
 **Протокол:** JSON-RPC 2.0 поверх stdin/stdout с framing `Content-Length: N\r\n\r\n`.
 
