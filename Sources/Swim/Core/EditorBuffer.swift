@@ -25,6 +25,9 @@ final class EditorBuffer {
     var lspPendingChanges: [LSPTextChange] = []
     var semanticTokens: [SemanticToken] = []
     var markdownCache = SyntaxTokenizer.MarkdownCache()
+    /// State of multi-line strings before each line; built lazily for the
+    /// visible viewport, truncated on edits below the cursor.
+    var mlStringStates: [SyntaxTokenizer.MultilineStringState] = []
 
     init(buffer: PieceTable, filePath: String? = nil) {
         self.buffer = buffer

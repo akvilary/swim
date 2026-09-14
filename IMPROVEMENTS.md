@@ -178,13 +178,11 @@ LSP отправляет `textDocument/publishDiagnostics`, но `onDiagnostics`
 
 ---
 
-## 17. Syntax highlighting: multi-line comments и строк (B)
+## 17. Syntax highlighting: multi-line comments и строк (B) — строки РЕАЛИЗОВАНО
 
-Встроенный tokenizer обрабатывает только `/* */` в пределах одной строки. Multi-line комментарии и строки не отслеживаются.
+Многострочные строки отслеживаются с состоянием между строк (кеш по вкладке, инвалидация от строки правки). Правила по языкам (`SyntaxTokenizer.multilineStringRules`): Python `'''`/`"""`, Swift `"""`, Go backtick, Rust `"` (легально многострочные), C# `@"…"`/`"""…"""`. Работает и под LSP-слоем (gap-fill), и в чистом builtin-режиме.
 
-**Решение:**
-- Хранить состояние (inComment, inString) между строками
-- Аналогично markdown code block кешированию — передавать состояние от предыдущей строки
+Осталось: multi-line блочные комментарии `/* */` между строк.
 
 ---
 

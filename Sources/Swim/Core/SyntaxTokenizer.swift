@@ -147,15 +147,94 @@ struct SyntaxTokenizer {
         tokenize(lineChars: Array(line), lineNum: lineNum, keywords: keywords)
     }
 
+    /// Multi-line string syntax per language (keyed by file extension — works
+    /// for both LSP-backed and builtin highlighting).
+    struct MultilineStringRule {
+        let open: String
+        let close: String
+        let escapes: Bool
+    }
+
+    enum MultilineStringState: Equatable {
+        case none
+        case active(ruleIndex: Int)
+    }
+
+    static func multilineStringRules(for fileExt: String) -> [MultilineStringRule] {
+        let rules: [MultilineStringRule]
+        switch fileExt {
+        case "py", "pyw", "pyi":
+            rules = [
+                MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true),
+                MultilineStringRule(open: "'''", close: "'''", escapes: true),
+            ]
+        case "swift":
+            rules = [MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true)]
+        case "go":
+            rules = [MultilineStringRule(open: "`", close: "`", escapes: false)]
+        case "rs":
+            // Rust "..." literals may legally span lines
+            rules = [MultilineStringRule(open: "\"", close: "\"", escapes: true)]
+        case "cs", "csx":
+            rules = [
+                MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true),
+                MultilineStringRule(open: "@\"", close: "\"", escapes: true),
+            ]
+        default:
+            rules = []
+        }
+        // Longest opener first so """ wins over " and @" at the same position
+        return rules.sorted { $0.open.count > $1.open.count }
+    }
+
     static func tokenize(lineChars chars: [Character], lineNum: Int, keywords: Set<String>) -> [SemanticToken] {
+        tokenize(chars: chars, lineNum: lineNum, keywords: keywords).tokens
+    }
+
+    static func tokenize(chars: [Character], lineNum: Int, keywords: Set<String>,
+                         mlRules: [MultilineStringRule] = [],
+                         initialState: MultilineStringState = .none) -> (tokens: [SemanticToken], endState: MultilineStringState) {
         var tokens = [SemanticToken]()
         let len = chars.count
         var i = 0
+        var state = initialState
+
+        func matches(_ seq: String, at pos: Int) -> Bool {
+            guard pos + seq.count <= len else { return false }
+            for (k, c) in seq.enumerated() where chars[pos + k] != c { return false }
+            return true
+        }
+
+        // Scans for rule.close starting at `from`; returns (closeStart, afterClose).
+        func scanClose(_ rule: MultilineStringRule, from: Int) -> (Int, Int)? {
+            var j = from
+            while j < len {
+                if rule.escapes && chars[j] == "\\" { j += 2; continue }
+                if matches(rule.close, at: j) { return (j, j + rule.close.count) }
+                j += 1
+            }
+            return nil
+        }
+
+        // Continuation of a multi-line string opened on a previous line
+        if case .active(let ruleIndex) = state {
+            let rule = mlRules[ruleIndex]
+            if let (_, after) = scanClose(rule, from: 0) {
+                // The closing delimiter is part of the string token,
+                // matching the single-line string convention.
+                tokens.append(SemanticToken(line: lineNum, startChar: 0, length: after, type: "string", modifiers: 0))
+                i = after
+                state = .none
+            } else {
+                tokens.append(SemanticToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
+                return (tokens, state)
+            }
+        }
 
         while i < len {
             if chars[i] == "/" && i + 1 < len && chars[i + 1] == "/" {
                 tokens.append(SemanticToken(line: lineNum, startChar: i, length: len - i, type: "comment", modifiers: 0))
-                return tokens
+                return (tokens, .none)
             }
 
             if chars[i] == "/" && i + 1 < len && chars[i + 1] == "*" {
@@ -164,6 +243,28 @@ struct SyntaxTokenizer {
                 let commentLen = min(end + 2, len) - i
                 tokens.append(SemanticToken(line: lineNum, startChar: i, length: commentLen, type: "comment", modifiers: 0))
                 i += commentLen
+                continue
+            }
+
+            // Multi-line string openers (checked before the single-line branch
+            // so """ wins over " and @" over "). Rules are per file extension:
+            // python files never scan for rust-style " strings and vice versa.
+            // The first-character pre-check keeps per-char cost at a compare.
+            var matchedRule: (index: Int, rule: MultilineStringRule)?
+            let c = chars[i]
+            for (idx, rule) in mlRules.enumerated()
+            where rule.open.first == c && matches(rule.open, at: i) {
+                matchedRule = (idx, rule)
+                break
+            }
+            if let m = matchedRule {
+                if let (_, after) = scanClose(m.rule, from: i + m.rule.open.count) {
+                    tokens.append(SemanticToken(line: lineNum, startChar: i, length: after - i, type: "string", modifiers: 0))
+                    i = after
+                } else {
+                    tokens.append(SemanticToken(line: lineNum, startChar: i, length: len - i, type: "string", modifiers: 0))
+                    return (tokens, .active(ruleIndex: m.index))
+                }
                 continue
             }
 
@@ -225,7 +326,7 @@ struct SyntaxTokenizer {
             i += 1
         }
 
-        return tokens
+        return (tokens, .none)
     }
 
     static func tokenizeVisibleLines(buffer: PieceTable, scrollY: Int, height: Int, fileExt: String) -> [SemanticToken] {

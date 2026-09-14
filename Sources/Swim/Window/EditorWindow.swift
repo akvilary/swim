@@ -55,6 +55,10 @@ class EditorWindow: Window {
         get { tabs.active.markdownCache }
         set { tabs.active.markdownCache = newValue }
     }
+    private var mlStringStates: [SyntaxTokenizer.MultilineStringState] {
+        get { tabs.active.mlStringStates }
+        set { tabs.active.mlStringStates = newValue }
+    }
 
     // Window-global state (registers, pending keys, transient UI)
     var commandBuffer: String = ""
@@ -516,8 +520,30 @@ class EditorWindow: Window {
         return changes
     }
 
+    /// Extends mlStringStates (state before each line) up to `line`.
+    private func ensureMLStringStates(through line: Int, buffer: PieceTable,
+                                      rules: [SyntaxTokenizer.MultilineStringRule],
+                                      keywords: Set<String>) {
+        while mlStringStates.count <= line {
+            let idx = mlStringStates.count
+            let initial: SyntaxTokenizer.MultilineStringState = idx == 0 ? .none : mlStringStates[idx - 1]
+            let chars = buffer.getLineChars(idx)
+            let endState = SyntaxTokenizer.tokenize(chars: chars, lineNum: idx, keywords: keywords,
+                                                    mlRules: rules, initialState: initial).endState
+            mlStringStates.append(endState)
+        }
+    }
+
     private func trackLSPChange(offset: Int, replaced: String, inserted: String) {
         guard let buf = buffer else { return }
+        // The edit invalidates multi-line string state from its line on;
+        // states before the cursor line stay valid.
+        if !mlStringStates.isEmpty {
+            let keep = min(mlStringStates.count, cursorLine + 1)
+            if keep < mlStringStates.count {
+                mlStringStates.removeSubrange(keep...)
+            }
+        }
         let (line, byteCol) = buf.offsetToLineCol(offset)
         let startChar = buf.utf16Col(line: line, byteCol: byteCol)
         var endLine = line
@@ -905,6 +931,15 @@ class EditorWindow: Window {
             ? SyntaxTokenizer.keywords(for: fileExt)
             : nil
 
+        // Multi-line string state per language, lazily built up to the viewport
+        let mlRules = SyntaxTokenizer.multilineStringRules(for: fileExt)
+        if mlRules.isEmpty {
+            mlStringStates = []
+        } else {
+            ensureMLStringStates(through: min(scrollY + height, buf.lineCount),
+                                 buffer: buf, rules: mlRules, keywords: builtinKeywords ?? [])
+        }
+
         var mdTokenIndex: [Int: [SemanticToken]]?
         if useBuiltinTokens && isMD {
             let mdTokens = SyntaxTokenizer.tokenizeMarkdownVisible(buffer: buf, scrollY: scrollY, height: height, cache: &markdownCache)
@@ -929,7 +964,10 @@ class EditorWindow: Window {
                 // untyped (sourcekit-lsp). Layer the syntactic tokenizer
                 // underneath: builtin tokens fill the gaps between LSP ones.
                 let lsp = semanticTokensFor(line: lineNum)
-                let builtin = SyntaxTokenizer.tokenize(lineChars: chars, lineNum: lineNum, keywords: builtinKeywords ?? [])
+                let initial = lineNum < mlStringStates.count ? mlStringStates[lineNum] : .none
+                let builtin = SyntaxTokenizer.tokenize(chars: chars, lineNum: lineNum,
+                                                       keywords: builtinKeywords ?? [],
+                                                       mlRules: mlRules, initialState: initial).tokens
                 let merged = builtin.filter { b in
                     !lsp.contains { l in
                         b.startChar < l.startChar + l.length && l.startChar < b.startChar + b.length
@@ -943,7 +981,10 @@ class EditorWindow: Window {
             } else if isJSON {
                 tokens = SyntaxTokenizer.tokenizeJSON(lineChars: chars, lineNum: lineNum)
             } else {
-                tokens = SyntaxTokenizer.tokenize(lineChars: chars, lineNum: lineNum, keywords: builtinKeywords ?? [])
+                let initial = lineNum < mlStringStates.count ? mlStringStates[lineNum] : .none
+                tokens = SyntaxTokenizer.tokenize(chars: chars, lineNum: lineNum,
+                                                  keywords: builtinKeywords ?? [],
+                                                  mlRules: mlRules, initialState: initial).tokens
             }
 
             var colOffset = displayColForChar(line: lineNum, charCol: visStart) - scrollX
