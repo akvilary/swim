@@ -271,6 +271,35 @@ class Application: WindowDelegate {
             lspClients["bash"] = client
         }
 
+        // Python: basedpyright (pip/uv) and pyright (npm) share the same
+        // engine, protocol and --stdio launch mode — probe both.
+        let pythonServers: [(command: String, paths: [String])] = [
+            ("basedpyright-langserver", [
+                "/usr/local/bin/basedpyright-langserver",
+                "/usr/bin/basedpyright-langserver",
+                "/home/linuxbrew/.linuxbrew/bin/basedpyright-langserver",
+                "/opt/homebrew/bin/basedpyright-langserver",
+                "\(NSHomeDirectory())/.local/bin/basedpyright-langserver",
+            ]),
+            ("pyright-langserver", [
+                "/usr/local/bin/pyright-langserver",
+                "/usr/bin/pyright-langserver",
+                "/home/linuxbrew/.linuxbrew/bin/pyright-langserver",
+                "/opt/homebrew/bin/pyright-langserver",
+                "\(NSHomeDirectory())/.npm-global/bin/pyright-langserver",
+                "\(NSHomeDirectory())/.local/bin/pyright-langserver",
+            ]),
+        ]
+
+        for server in pythonServers {
+            if let path = findExecutable(paths: server.paths, command: server.command) {
+                let client = LSPClient()
+                client.start(executable: path, arguments: ["--stdio"], rootUri: "file://\(rootPath)")
+                lspClients["python"] = client
+                break
+            }
+        }
+
         if let filePath = editor.filePath {
             notifyLSPFileOpen(filePath)
         }
@@ -300,6 +329,7 @@ class Application: WindowDelegate {
         case "go": return "go"
         case "rs": return "rust"
         case "sh", "bash": return "bash"
+        case "py", "pyw", "pyi": return "python"
         default: return nil
         }
     }

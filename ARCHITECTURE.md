@@ -356,7 +356,14 @@ Diff подсвечивается: зелёный для добавлений, �
 
 ### LSP/LSPClient.swift — LSP-клиент
 
-Клиент Language Server Protocol для семантической подсветки через sourcekit-lsp.
+Клиент Language Server Protocol для семантической подсветки и go-to-definition. Поддерживаемые серверы (`Application.setupLSP` ищет по стандартным путям + `which`):
+
+- **Swift** — sourcekit-lsp
+- **C#** — OmniSharp
+- **Go** — gopls
+- **Rust** — rust-analyzer
+- **Bash** — bash-language-server (`start`)
+- **Python** — basedpyright-langserver / pyright-langserver (`--stdio`), общий движок — пробаются по очереди
 
 **Протокол:** JSON-RPC 2.0 поверх stdin/stdout с framing `Content-Length: N\r\n\r\n`.
 
