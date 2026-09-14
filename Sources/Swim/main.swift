@@ -1,6 +1,6 @@
 import Foundation
 
-let version = "0.0.13"
+let version = "0.0.14"
 
 if CommandLine.arguments.contains("--version") || CommandLine.arguments.contains("-v") {
     print("swim \(version)")
