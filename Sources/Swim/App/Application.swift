@@ -49,6 +49,7 @@ class Application: WindowDelegate {
         } else {
             editor.newFile()
         }
+        updateStatusBar()
 
         let cwd = FileManager.default.currentDirectoryPath
         fileExplorer.visible = true
