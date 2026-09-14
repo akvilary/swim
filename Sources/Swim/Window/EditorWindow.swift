@@ -79,6 +79,10 @@ class EditorWindow: Window {
         tokenIndex.removeAll(keepingCapacity: true)
         guard let buf = buffer else { return }
 
+        // LSP servers classify boolean/null literals as keywords; they are
+        // values — recolor to the number (value) color, per language.
+        let lspLiterals = SyntaxTokenizer.valueLiterals(for: (filePath as NSString?)?.pathExtension ?? "")
+
         var byLine = [Int: [SemanticToken]]()
         for token in semanticTokens {
             byLine[token.line, default: []].append(token)
@@ -124,6 +128,10 @@ class EditorWindow: Window {
                 let end = graphemeIndex(ofUtf16: t.startChar + t.length)
                 let length = max(1, end - start)
                 var type = t.type
+                if type == "keyword", start + length <= chars.count,
+                   lspLiterals.contains(String(chars[start..<start + length])) {
+                    type = "number"
+                }
                 if type == "identifier", let prev = prevKeyword,
                    start >= prev.endCol, start - prev.endCol <= 1 {
                     if declTypeKeywords.contains(prev.text) { type = "class" }
@@ -526,14 +534,16 @@ class EditorWindow: Window {
     /// or local-copy patterns COW-copy the whole array per call, which made
     /// scrolling a large file copy the array every frame.
     private func ensureMLStringStates(through line: Int, buffer: PieceTable,
-                                      keywords: Set<String>, syntax: SyntaxTokenizer.LanguageSyntax) {
+                                      keywords: Set<String>, literals: Set<String>,
+                                      syntax: SyntaxTokenizer.LanguageSyntax) {
         let tab = tabs.active
         while tab.mlStringStates.count <= line {
             let idx = tab.mlStringStates.count
             let initial: SyntaxTokenizer.MultilineStringState = idx == 0 ? .none : tab.mlStringStates[idx - 1]
             let chars = buffer.getLineChars(idx)
             let endState = SyntaxTokenizer.tokenize(chars: chars, lineNum: idx, keywords: keywords,
-                                                    syntax: syntax, initialState: initial).endState
+                                                    syntax: syntax, initialState: initial,
+                                                    literals: literals).endState
             tab.mlStringStates.append(endState)
         }
     }
@@ -945,6 +955,9 @@ class EditorWindow: Window {
         let builtinKeywords = !isMD && !isJSON && buf.lineCount < 50000
             ? SyntaxTokenizer.keywords(for: fileExt)
             : nil
+        let builtinLiterals = !isMD && !isJSON && buf.lineCount < 50000
+            ? SyntaxTokenizer.valueLiterals(for: fileExt)
+            : nil
 
         // Language syntax profile (multi-line strings, line comments),
         // resolved once; string states built lazily up to the viewport.
@@ -954,6 +967,7 @@ class EditorWindow: Window {
         } else {
             ensureMLStringStates(through: min(scrollY + height, buf.lineCount),
                                  buffer: buf, keywords: builtinKeywords ?? [],
+                                 literals: builtinLiterals ?? [],
                                  syntax: langSyntax)
         }
 
@@ -984,7 +998,8 @@ class EditorWindow: Window {
                 let initial = lineNum < mlStringStates.count ? mlStringStates[lineNum] : .none
                 let builtin = SyntaxTokenizer.tokenize(chars: chars, lineNum: lineNum,
                                                        keywords: builtinKeywords ?? [],
-                                                       syntax: langSyntax, initialState: initial).tokens
+                                                       syntax: langSyntax, initialState: initial,
+                                                       literals: builtinLiterals ?? []).tokens
                 let merged = builtin.filter { b in
                     !lsp.contains { l in
                         b.startChar < l.startChar + l.length && l.startChar < b.startChar + b.length
@@ -1001,7 +1016,8 @@ class EditorWindow: Window {
                 let initial = lineNum < mlStringStates.count ? mlStringStates[lineNum] : .none
                 tokens = SyntaxTokenizer.tokenize(chars: chars, lineNum: lineNum,
                                                   keywords: builtinKeywords ?? [],
-                                                  syntax: langSyntax, initialState: initial).tokens
+                                                  syntax: langSyntax, initialState: initial,
+                                                  literals: builtinLiterals ?? []).tokens
             }
 
             var colOffset = displayColForChar(line: lineNum, charCol: visStart) - scrollX

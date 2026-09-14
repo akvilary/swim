@@ -535,7 +535,7 @@ class Application: WindowDelegate {
             }
         }
 
-        if case .char(":") = key, editor.visible {
+        if case .char(":") = key, editor.visible, case .normal = editor.mode {
             if spaces.current.focused !== editor {
                 spaces.current.focused = editor
                 spaces.current.updateFocusStates()

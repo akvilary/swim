@@ -143,8 +143,36 @@ struct SyntaxTokenizer {
 
     static let opChars: Set<Character> = ["+", "-", "*", "/", "=", "<", ">", "!", "&", "|", "^", "~", "%", "?", ":", "@", "#"]
 
-    static func tokenize(line: String, lineNum: Int, keywords: Set<String>) -> [SemanticToken] {
-        tokenize(lineChars: Array(line), lineNum: lineNum, keywords: keywords)
+    /// Boolean/null literals per language — values highlighted with the
+    /// number (value) color, distinct from keywords. Python has no `null`,
+    /// Swift/Rust have no `null`/`None`, etc.
+    static let swiftLiterals: Set<String> = ["true", "false", "nil"]
+    static let cLiterals: Set<String> = ["true", "false", "NULL"]
+    static let cppLiterals: Set<String> = ["true", "false", "nullptr", "NULL"]
+    static let csharpLiterals: Set<String> = ["true", "false", "null"]
+    static let pythonLiterals: Set<String> = ["True", "False", "None"]
+    static let rustLiterals: Set<String> = ["true", "false"]
+    static let goLiterals: Set<String> = ["true", "false", "nil"]
+    static let jsLiterals: Set<String> = ["true", "false", "null", "undefined"]
+    static let dartLiterals: Set<String> = ["true", "false", "null"]
+
+    static func valueLiterals(for ext: String) -> Set<String> {
+        switch ext {
+        case "swift": return swiftLiterals
+        case "c", "h": return cLiterals
+        case "cpp", "cxx", "cc", "hpp", "hxx": return cppLiterals
+        case "cs", "csx": return csharpLiterals
+        case "py": return pythonLiterals
+        case "rs": return rustLiterals
+        case "go": return goLiterals
+        case "js", "ts", "jsx", "tsx": return jsLiterals
+        case "dart": return dartLiterals
+        default: return []
+        }
+    }
+
+    static func tokenize(line: String, lineNum: Int, keywords: Set<String>, literals: Set<String> = []) -> [SemanticToken] {
+        tokenize(lineChars: Array(line), lineNum: lineNum, keywords: keywords, literals: literals)
     }
 
     /// Multi-line string syntax per language (keyed by file extension — works
@@ -221,13 +249,14 @@ struct SyntaxTokenizer {
         syntax(for: fileExt).mlRules
     }
 
-    static func tokenize(lineChars chars: [Character], lineNum: Int, keywords: Set<String>) -> [SemanticToken] {
-        tokenize(chars: chars, lineNum: lineNum, keywords: keywords).tokens
+    static func tokenize(lineChars chars: [Character], lineNum: Int, keywords: Set<String>, literals: Set<String> = []) -> [SemanticToken] {
+        tokenize(chars: chars, lineNum: lineNum, keywords: keywords, literals: literals).tokens
     }
 
     static func tokenize(chars: [Character], lineNum: Int, keywords: Set<String>,
-                         syntax: LanguageSyntax = .default,
-                         initialState: MultilineStringState = .none) -> (tokens: [SemanticToken], endState: MultilineStringState) {
+                          syntax: LanguageSyntax = .default,
+                          initialState: MultilineStringState = .none,
+                          literals: Set<String> = []) -> (tokens: [SemanticToken], endState: MultilineStringState) {
         var tokens = [SemanticToken]()
         let len = chars.count
         var i = 0
@@ -337,7 +366,9 @@ struct SyntaxTokenizer {
                 while end < len && ((chars[end] >= "a" && chars[end] <= "z") || (chars[end] >= "A" && chars[end] <= "Z") || (chars[end] >= "0" && chars[end] <= "9") || chars[end] == "_") { end += 1 }
                 let word = String(chars[i..<end])
                 let type: String
-                if keywords.contains(word) {
+                if literals.contains(word) {
+                    type = "number"
+                } else if keywords.contains(word) {
                     type = "keyword"
                 } else if chars[i] >= "A" && chars[i] <= "Z" && word.count >= 2 {
                     type = "type"
@@ -369,13 +400,14 @@ struct SyntaxTokenizer {
 
     static func tokenizeVisibleLines(buffer: PieceTable, scrollY: Int, height: Int, fileExt: String) -> [SemanticToken] {
         let kw = keywords(for: fileExt)
+        let literals = valueLiterals(for: fileExt)
         var allTokens = [SemanticToken]()
         allTokens.reserveCapacity(height * 4)
         for row in 0..<height {
             let lineNum = scrollY + row
             guard lineNum < buffer.lineCount else { break }
             let line = buffer.getLine(lineNum)
-            allTokens.append(contentsOf: tokenize(line: line, lineNum: lineNum, keywords: kw))
+            allTokens.append(contentsOf: tokenize(line: line, lineNum: lineNum, keywords: kw, literals: literals))
         }
         return allTokens
     }
