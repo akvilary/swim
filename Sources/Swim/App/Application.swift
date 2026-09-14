@@ -143,12 +143,38 @@ class Application: WindowDelegate {
     private func performDefinitionJump(_ definition: LSPDefinition) {
         let path = pathFromUri(definition.uri)
         guard !path.isEmpty else { return }
+        pushJumpHistory()
+        jump(to: path, line: definition.line, colUtf16: definition.charUtf16)
+    }
+
+    /// Jump locations (`gb` targets) of the last `gd` jumps, oldest first.
+    private var jumpStack: [(path: String, line: Int, colUtf16: Int)] = []
+    private let jumpStackLimit = 50
+
+    private func pushJumpHistory() {
+        guard let path = editor.filePath, let buf = editor.buffer else { return }
+        let col = buf.utf16ColForCharIndex(line: editor.cursorLine, charIndex: editor.cursorCol)
+        jumpStack.append((path: path, line: editor.cursorLine, colUtf16: col))
+        if jumpStack.count > jumpStackLimit {
+            jumpStack.removeFirst(jumpStack.count - jumpStackLimit)
+        }
+    }
+
+    func requestGoBack() {
+        guard let target = jumpStack.popLast() else {
+            editor.lastError = "No previous position"
+            return
+        }
+        jump(to: target.path, line: target.line, colUtf16: target.colUtf16)
+    }
+
+    /// Tab-aware jump: opens or switches to the target file's tab (no reload
+    /// of unsaved buffers) and positions the cursor.
+    private func jump(to path: String, line: Int, colUtf16: Int) {
         if path != editor.filePath {
-            // Tab-aware open: new tab, or switch to the existing one — no
-            // reload, so unsaved changes in any tab survive the jump.
             openFileInEditor(path)
         }
-        editor.goToPosition(line: definition.line, colUtf16: definition.charUtf16)
+        editor.goToPosition(line: line, colUtf16: colUtf16)
         if spaces.current.id != "editor" {
             switchToSpace("editor")
         }

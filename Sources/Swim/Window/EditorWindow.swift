@@ -167,6 +167,11 @@ class EditorWindow: Window {
         delegate?.requestGoToDefinition(line: cursorLine, charUtf16: charUtf16)
     }
 
+    /// `gb` — jump back to the position before the last `gd`.
+    private func goBack() {
+        delegate?.requestGoBack()
+    }
+
     private func yank(_ text: String) {
         yankBuffer = text
         Terminal.shared.osc52Copy(text)
@@ -272,7 +277,9 @@ class EditorWindow: Window {
         case .char("k"), .up: moveCursorUp()
         case .char("l"), .right: moveCursorRight()
         case .char("w"): moveWordForward()
-        case .char("b"): moveWordBackward()
+        case .char("b"):
+            if pendingG { pendingG = false; goBack() }
+            else { moveWordBackward() }
         case .char("0"), .home: cursorCol = 0; scrollX = 0
         case .char("$"), .end: moveToEndOfLine()
         case .char("g"):
