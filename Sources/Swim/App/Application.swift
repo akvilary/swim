@@ -342,20 +342,31 @@ class Application: WindowDelegate {
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
     }
 
-    /// Builds basedpyright initializationOptions with extraPaths taken from
-    /// pytest's `[tool.pytest.ini_options].pythonpath` (pyproject.toml).
+    /// Builds basedpyright initializationOptions:
+    /// - diagnosticMode openFilesOnly — basedpyright (unlike pyright) analyzes
+    ///   the whole workspace by default, burning a CPU core for the entire
+    ///   session on large monorepos; we don't display diagnostics yet and
+    ///   definitions work with open-files-only analysis.
+    /// - extraPaths from pytest's `[tool.pytest.ini_options].pythonpath`.
     /// Returns nil when the server has its own config ([tool.basedpyright],
     /// [tool.pyright] or pyrightconfig.json) — that config must win.
     private func pythonInitializationOptions(rootPath: String) -> [String: Any]? {
         let pyprojectPath = rootPath + "/pyproject.toml"
-        guard let text = try? String(contentsOfFile: pyprojectPath, encoding: .utf8) else { return nil }
+        guard let text = try? String(contentsOfFile: pyprojectPath, encoding: .utf8) else {
+            return ["settings": [["uri": "file://\(rootPath)",
+                                  "settings": ["diagnosticMode": "openFilesOnly"]]]]
+        }
         guard !Self.tomlHasSection(text, "tool.basedpyright"),
               !Self.tomlHasSection(text, "tool.pyright"),
               !FileManager.default.fileExists(atPath: rootPath + "/pyrightconfig.json") else { return nil }
+
+        var settings: [String: Any] = ["diagnosticMode": "openFilesOnly"]
         let extra = Self.tomlStringArray(in: text, section: "tool.pytest.ini_options", key: "pythonpath")
-        guard !extra.isEmpty else { return nil }
-        let absolute = extra.map { $0.hasPrefix("/") ? $0 : rootPath + "/" + $0 }
-        return ["settings": [["uri": "file://\(rootPath)", "settings": ["extraPaths": absolute]]]]
+        if !extra.isEmpty {
+            let absolute = extra.map { $0.hasPrefix("/") ? $0 : rootPath + "/" + $0 }
+            settings["extraPaths"] = absolute
+        }
+        return ["settings": [["uri": "file://\(rootPath)", "settings": settings]]]
     }
 
     /// True when the TOML text contains the `[section]` header.

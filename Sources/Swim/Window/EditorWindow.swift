@@ -521,27 +521,34 @@ class EditorWindow: Window {
     }
 
     /// Extends mlStringStates (state before each line) up to `line`.
+    /// Appends go directly into the tab's stored property — through-accessor
+    /// or local-copy patterns COW-copy the whole array per call, which made
+    /// scrolling a large file copy the array every frame.
     private func ensureMLStringStates(through line: Int, buffer: PieceTable,
                                       rules: [SyntaxTokenizer.MultilineStringRule],
                                       keywords: Set<String>) {
-        while mlStringStates.count <= line {
-            let idx = mlStringStates.count
-            let initial: SyntaxTokenizer.MultilineStringState = idx == 0 ? .none : mlStringStates[idx - 1]
+        let tab = tabs.active
+        while tab.mlStringStates.count <= line {
+            let idx = tab.mlStringStates.count
+            let initial: SyntaxTokenizer.MultilineStringState = idx == 0 ? .none : tab.mlStringStates[idx - 1]
             let chars = buffer.getLineChars(idx)
             let endState = SyntaxTokenizer.tokenize(chars: chars, lineNum: idx, keywords: keywords,
                                                     mlRules: rules, initialState: initial).endState
-            mlStringStates.append(endState)
+            tab.mlStringStates.append(endState)
         }
     }
 
     private func trackLSPChange(offset: Int, replaced: String, inserted: String) {
         guard let buf = buffer else { return }
         // The edit invalidates multi-line string state from its line on;
-        // states before the cursor line stay valid.
-        if !mlStringStates.isEmpty {
-            let keep = min(mlStringStates.count, cursorLine + 1)
-            if keep < mlStringStates.count {
-                mlStringStates.removeSubrange(keep...)
+        // states before the cursor line stay valid. removeSubrange goes to
+        // the stored property directly — through the computed accessor it
+        // would COW-copy the whole array per keystroke.
+        let activeTab = tabs.active
+        if !activeTab.mlStringStates.isEmpty {
+            let keep = min(activeTab.mlStringStates.count, cursorLine + 1)
+            if keep < activeTab.mlStringStates.count {
+                activeTab.mlStringStates.removeSubrange(keep...)
             }
         }
         let (line, byteCol) = buf.offsetToLineCol(offset)
@@ -934,7 +941,7 @@ class EditorWindow: Window {
         // Multi-line string state per language, lazily built up to the viewport
         let mlRules = SyntaxTokenizer.multilineStringRules(for: fileExt)
         if mlRules.isEmpty {
-            mlStringStates = []
+            if !mlStringStates.isEmpty { mlStringStates = [] }
         } else {
             ensureMLStringStates(through: min(scrollY + height, buf.lineCount),
                                  buffer: buf, rules: mlRules, keywords: builtinKeywords ?? [])
