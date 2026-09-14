@@ -115,16 +115,21 @@ class LSPClient {
     }
 
     private func sendInitialize(rootUri: String?) {
+        // LSP 3.16: client semanticTokens capabilities require the
+        // `requests` object; `full`/`delta` live inside it. Putting them at
+        // the top level (server-provider shape) makes sourcekit-lsp 6.2+
+        // reject initialize with "missing expected parameter: requests".
         let capabilities: [String: Any] = [
             "textDocument": [
                 "semanticTokens": [
-                    "full": true,
-                    "delta": true,
+                    "requests": [
+                        "full": ["delta": true]
+                    ] as [String: Any],
                     "tokenTypes": [] as [String],
                     "tokenModifiers": [] as [String],
                     "formats": ["relative"] as [String]
-                ]
-            ]
+                ] as [String: Any]
+            ] as [String: Any]
         ]
 
         var params: [String: Any] = [
