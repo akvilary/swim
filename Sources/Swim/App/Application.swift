@@ -403,6 +403,12 @@ class Application: WindowDelegate {
         case .ctrl("c"):
             running = false
             return
+        case .ctrl("x"):
+            closeCurrentTab(force: false)
+            return
+        case .ctrl("z"):
+            closeOtherTabs()
+            return
         default:
             break
         }
@@ -588,6 +594,19 @@ class Application: WindowDelegate {
         notifyLSPClose(closed.filePath)
         updateStatusBar()
         if wasLast { running = false }
+    }
+
+    private func closeOtherTabs() {
+        let (closed, keptModified) = editor.closeOtherTabs()
+        for buffer in closed {
+            notifyLSPClose(buffer.filePath)
+        }
+        if closed.isEmpty && keptModified == 0 {
+            editor.lastError = "No other tabs"
+        } else if keptModified > 0 {
+            editor.lastError = "Kept \(keptModified) tab(s) with unsaved changes"
+        }
+        updateStatusBar()
     }
 
     func bufferClosed(_ buffer: EditorBuffer) {

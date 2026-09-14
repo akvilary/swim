@@ -125,4 +125,28 @@ final class BufferManager {
         guard buffers.count > 1 else { return }
         activeIndex = ((activeIndex + delta) % buffers.count + buffers.count) % buffers.count
     }
+
+    /// Closes every tab except the active one. Modified tabs are kept (their
+    /// unsaved content would be discarded otherwise). Returns the closed
+    /// buffers (callers send LSP didClose) and how many were kept.
+    func closeOthers() -> (closed: [EditorBuffer], keptModified: Int) {
+        let keep = active
+        var closed = [EditorBuffer]()
+        var kept = 0
+        var remaining = [EditorBuffer]()
+        for buf in buffers {
+            if buf === keep {
+                remaining.append(buf)
+            } else if buf.modified {
+                kept += 1
+                remaining.append(buf)
+            } else {
+                closed.append(buf)
+            }
+        }
+        guard closed.count > 0 else { return (closed, kept) }
+        activeIndex = remaining.firstIndex { $0 === keep } ?? 0
+        buffers = remaining
+        return (closed, kept)
+    }
 }
