@@ -14,6 +14,8 @@ class FileExplorerWindow: Window {
     private var flatEntries: [(entry: FileEntry, depth: Int)] = []
     private(set) var selectedIndex: Int = 0
     private var scrollOffset: Int = 0
+    private var horizontalOffset: Int = 0
+    private let horizontalStep: Int = 4
     var currentDirectory: String = ""
 
     override func update() {
@@ -31,15 +33,6 @@ class FileExplorerWindow: Window {
             let fg: Color = isSelected ? Theme.fg : Theme.fgDark
             let nameFg: Color = entry.isDirectory ? Theme.blue : fg
 
-            var col = 0
-            let indent = depth * 2
-            for _ in 0..<indent {
-                if col < width {
-                    setCell(row + 1, col, Cell.colored(" ", fg: fg, bg: bg))
-                    col += 1
-                }
-            }
-
             let icon: String
             if entry.isDirectory {
                 icon = entry.isExpanded ? "📂" : "📁"
@@ -47,35 +40,34 @@ class FileExplorerWindow: Window {
                 icon = fileIcon(for: entry.name)
             }
 
-            if col < width {
-                setCell(row + 1, col, Cell.colored(" ", fg: nameFg, bg: bg))
-                col += 1
+            var content: [Cell] = []
+            for _ in 0..<(depth * 2) {
+                content.append(Cell.colored(" ", fg: fg, bg: bg))
             }
-
+            content.append(Cell.colored(" ", fg: nameFg, bg: bg))
             for c in icon {
                 let w = c.displayWidth
-                if col + w <= width {
-                    setCell(row + 1, col, Cell.colored(c, fg: nameFg, bg: bg, bold: entry.isDirectory))
-                    if w == 2 {
-                        var cont = Cell.colored(" ", fg: nameFg, bg: bg)
-                        cont.wideContinuation = true
-                        setCell(row + 1, col + 1, cont)
-                    }
-                    col += w
+                content.append(Cell.colored(c, fg: nameFg, bg: bg, bold: entry.isDirectory))
+                if w == 2 {
+                    var cont = Cell.colored(" ", fg: nameFg, bg: bg)
+                    cont.wideContinuation = true
+                    content.append(cont)
                 }
             }
-            if col < width {
-                setCell(row + 1, col, Cell.colored(" ", fg: nameFg, bg: bg))
-                col += 1
-            }
-
+            content.append(Cell.colored(" ", fg: nameFg, bg: bg))
             for c in entry.name {
-                if col < width {
-                    setCell(row + 1, col, Cell.colored(c, fg: nameFg, bg: bg, bold: entry.isDirectory))
-                    col += 1
-                }
+                content.append(Cell.colored(c, fg: nameFg, bg: bg, bold: entry.isDirectory))
             }
 
+            var col = 0
+            if horizontalOffset < content.count {
+                for i in horizontalOffset..<content.count {
+                    if col < width {
+                        setCell(row + 1, col, content[i])
+                        col += 1
+                    }
+                }
+            }
             while col < width {
                 setCell(row + 1, col, Cell.colored(" ", fg: fg, bg: bg))
                 col += 1
@@ -109,6 +101,7 @@ class FileExplorerWindow: Window {
     func loadDirectory(_ path: String) {
         currentDirectory = path
         rootEntries = loadEntries(at: path)
+        horizontalOffset = 0
         flattenEntries()
         dirty = true
     }
@@ -159,8 +152,10 @@ class FileExplorerWindow: Window {
             if selectedIndex < flatEntries.count - 1 { selectedIndex += 1; ensureVisible(); dirty = true }
         case .char("k"), .up:
             if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); dirty = true }
-        case .enter, .char("l"), .right: selectCurrent()
-        case .char("h"), .left: collapseCurrent()
+        case .right: shiftHorizontally(horizontalStep)
+        case .left: shiftHorizontally(-horizontalStep)
+        case .enter, .char("l"), .ctrlRight, .ctrl("l"): selectCurrent()
+        case .char("h"), .ctrlLeft, .ctrl("h"): collapseCurrent()
         case .char("G"): selectedIndex = max(0, flatEntries.count - 1); ensureVisible(); dirty = true
         case .char("g"): selectedIndex = 0; scrollOffset = 0; dirty = true
         default: return false
@@ -168,29 +163,69 @@ class FileExplorerWindow: Window {
         return true
     }
 
+    private func shiftHorizontally(_ delta: Int) {
+        let maxOffset = max(0, maxVisibleContentLength() - width + 1)
+        horizontalOffset = max(0, min(horizontalOffset + delta, maxOffset))
+        dirty = true
+    }
+
+    private func maxVisibleContentLength() -> Int {
+        var maxLen = 0
+        let visibleCount = height - 1
+        for row in 0..<visibleCount {
+            let idx = scrollOffset + row
+            guard idx < flatEntries.count else { break }
+            let (entry, depth) = flatEntries[idx]
+            let icon = entry.isDirectory ? "📂" : fileIcon(for: entry.name)
+            let iconWidth = icon.reduce(0) { $0 + $1.displayWidth }
+            let len = depth * 2 + 1 + iconWidth + 1 + entry.name.count
+            maxLen = max(maxLen, len)
+        }
+        return maxLen
+    }
+
     private func selectCurrent() {
         guard selectedIndex < flatEntries.count else { return }
-        let (entry, _) = flatEntries[selectedIndex]
-        if entry.isDirectory { toggleExpand(at: selectedIndex) }
-        else { delegate?.openFile(entry.path) }
+        let (entry, depth) = flatEntries[selectedIndex]
+        guard entry.isDirectory else {
+            delegate?.openFile(entry.path)
+            return
+        }
+        if !entry.isExpanded {
+            toggleExpand(at: selectedIndex)
+        }
+        let nextIdx = selectedIndex + 1
+        if nextIdx < flatEntries.count && flatEntries[nextIdx].depth == depth + 1 {
+            selectedIndex = nextIdx
+            ensureVisible()
+            dirty = true
+        }
     }
 
     private func collapseCurrent() {
         guard selectedIndex < flatEntries.count else { return }
-        let (entry, _) = flatEntries[selectedIndex]
-        if entry.isDirectory && entry.isExpanded {
-            toggleExpand(at: selectedIndex)
-        } else {
-            var parentIdx = selectedIndex - 1
-            while parentIdx >= 0 {
-                if flatEntries[parentIdx].entry.isDirectory {
-                    selectedIndex = parentIdx
-                    toggleExpand(at: parentIdx)
+        let (_, depth) = flatEntries[selectedIndex]
+
+        var targetIdx = selectedIndex
+        if depth > 0 {
+            var idx = selectedIndex - 1
+            while idx >= 0 {
+                let (e, d) = flatEntries[idx]
+                if d == depth - 1 && e.isDirectory {
+                    targetIdx = idx
                     break
                 }
-                parentIdx -= 1
+                idx -= 1
             }
         }
+
+        selectedIndex = targetIdx
+        let (entry, _) = flatEntries[targetIdx]
+        if entry.isDirectory && entry.isExpanded {
+            toggleExpand(at: targetIdx)
+        }
+        ensureVisible()
+        dirty = true
     }
 
     private func toggleExpand(at index: Int) {

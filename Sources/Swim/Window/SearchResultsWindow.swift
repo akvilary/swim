@@ -15,6 +15,8 @@ class SearchResultsWindow: Window {
     private(set) var expandedDirs: Set<String> = []
     private(set) var expandedFiles: Set<String> = []
     private var scrollOffset: Int = 0
+    private var horizontalOffset: Int = 0
+    private let horizontalStep: Int = 4
     private var flatItems: [SearchItem] = []
     private var flatItemsDirty: Bool = false
     private let searchTask = BackgroundTask<[SearchResult]>()
@@ -94,26 +96,42 @@ class SearchResultsWindow: Window {
                 let icon = expanded ? "▾ " : "▸ "
                 let dirName = URL(fileURLWithPath: dir).lastPathComponent
                 let text = "\(icon)\(dirName) (\(count))"
-                drawLine(text, row: y, col: 0, fg: Theme.blue, bg: bg, bold: true)
+                drawShifted([(text: text, fg: Theme.blue, bold: true)], row: y, bg: bg)
             case .file(let dir, let name, let count):
                 let expanded = expandedFiles.contains(dir + "/" + name)
                 let icon = expanded ? "▾ " : "▸ "
                 let text = "  \(icon)\(name) (\(count))"
-                drawLine(text, row: y, col: 0, fg: Theme.fgDark, bg: bg)
+                drawShifted([(text: text, fg: Theme.fgDark, bold: false)], row: y, bg: bg)
             case .result(let result):
                 let indent = "      "
                 let linePrefix = "\(indent)\(result.lineNumber): "
-                drawLine(linePrefix, row: y, col: 0, fg: Theme.comment, bg: bg)
-                let prefixCol = linePrefix.count
-                let availW = width - prefixCol - result.matchLength
+                let availW = width - linePrefix.count - result.matchLength
                 let beforeEnd = min(result.matchStart, availW)
                 let beforeMatch = String(result.lineContent.prefix(beforeEnd).trimmingCharacters(in: .whitespaces).prefix(availW))
-                drawLine(beforeMatch, row: y, col: prefixCol, fg: isSelected ? Theme.fg : Theme.fgDark, bg: bg)
-                let matchStart = prefixCol + beforeMatch.count
                 let startIndex = result.lineContent.index(result.lineContent.startIndex, offsetBy: result.matchStart)
                 let endIndex = result.lineContent.index(startIndex, offsetBy: result.matchLength)
                 let matchText = String(result.lineContent[startIndex..<endIndex])
-                drawLine(matchText, row: y, col: matchStart, fg: Theme.orange, bg: bg, bold: true)
+                drawShifted([
+                    (text: linePrefix, fg: Theme.comment, bold: false),
+                    (text: beforeMatch, fg: isSelected ? Theme.fg : Theme.fgDark, bold: false),
+                    (text: matchText, fg: Theme.orange, bold: true)
+                ], row: y, bg: bg)
+            }
+        }
+    }
+
+    private func drawShifted(_ parts: [(text: String, fg: Color, bold: Bool)], row: Int, bg: Color) {
+        var col = 0
+        var skip = horizontalOffset
+        outer: for part in parts {
+            for ch in part.text {
+                if skip > 0 {
+                    skip -= 1
+                    continue
+                }
+                if col >= width { break outer }
+                setCell(row, col, Cell.colored(ch, fg: part.fg, bg: bg, bold: part.bold))
+                col += 1
             }
         }
     }
@@ -145,6 +163,7 @@ class SearchResultsWindow: Window {
         groupedResults = []
         selectedIndex = 0
         scrollOffset = 0
+        horizontalOffset = 0
         isSearching = true
         dirty = true
         flatItemsDirty = true
@@ -234,8 +253,10 @@ class SearchResultsWindow: Window {
             if selectedIndex < flatItems.count - 1 { selectedIndex += 1; ensureVisible(); notifyPreviewUpdate(); dirty = true }
         case .char("k"), .up:
             if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); notifyPreviewUpdate(); dirty = true }
-        case .enter, .char("l"), .right: handleEnter()
-        case .char("h"), .left: handleCollapse()
+        case .right: shiftHorizontally(horizontalStep)
+        case .left: shiftHorizontally(-horizontalStep)
+        case .enter, .char("l"), .ctrlRight, .ctrl("l"): handleEnter()
+        case .char("h"), .ctrlLeft, .ctrl("h"): handleCollapse()
         case .escape:
             inputMode = true
             inputBuffer = ""
@@ -314,6 +335,35 @@ class SearchResultsWindow: Window {
         case .result: break
         }
         dirty = true
+    }
+
+    private func shiftHorizontally(_ delta: Int) {
+        if flatItemsDirty {
+            buildFlatItems()
+            flatItemsDirty = false
+        }
+        let maxOffset = max(0, maxVisibleContentLength() - width + 1)
+        horizontalOffset = max(0, min(horizontalOffset + delta, maxOffset))
+        dirty = true
+    }
+
+    private func maxVisibleContentLength() -> Int {
+        var maxLen = 0
+        let visibleH = height - 1
+        for row in 0..<visibleH {
+            let itemIdx = scrollOffset + row
+            guard itemIdx < flatItems.count else { break }
+            switch flatItems[itemIdx] {
+            case .directory(let dir, let count):
+                let dirName = URL(fileURLWithPath: dir).lastPathComponent
+                maxLen = max(maxLen, 2 + dirName.count + 3 + String(count).count)
+            case .file(_, let name, let count):
+                maxLen = max(maxLen, 4 + name.count + 3 + String(count).count)
+            case .result(let r):
+                maxLen = max(maxLen, 6 + String(r.lineNumber).count + 2 + r.lineContent.count)
+            }
+        }
+        return maxLen
     }
 
     private func notifyPreviewUpdate() {
