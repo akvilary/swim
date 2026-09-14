@@ -50,7 +50,9 @@ class Application: WindowDelegate {
 
         var startDir = FileManager.default.currentDirectoryPath
         if let path = filePath, isDirectory(path) {
-            startDir = path
+            // The CLI argument may be relative (`swim .`); the LSP root and
+            // explorer paths must be absolute.
+            startDir = BufferManager.normalize(path)
         }
 
         var fileToOpen: String?
