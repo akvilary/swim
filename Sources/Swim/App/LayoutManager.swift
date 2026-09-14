@@ -7,6 +7,15 @@ struct WindowLayout {
     let height: Int
 }
 
+enum HalfScreenWindow {
+    case none
+    case explorer
+    case git
+    case command
+    case searchResults
+    case preview
+}
+
 struct LayoutManager {
     static func calculate(
         terminalWidth: Int,
@@ -15,7 +24,8 @@ struct LayoutManager {
         showExplorer: Bool,
         showGit: Bool,
         showCommand: Bool,
-        showTabBar: Bool = false
+        showTabBar: Bool = false,
+        halfScreen: HalfScreenWindow = .none
     ) -> (explorer: WindowLayout, editor: WindowLayout, tabbar: WindowLayout, git: WindowLayout, searchResults: WindowLayout, preview: WindowLayout, command: WindowLayout, status: WindowLayout) {
         let w = max(10, terminalWidth)
         let h = max(5, terminalHeight)
@@ -23,7 +33,9 @@ struct LayoutManager {
         let zero = WindowLayout(x: 0, y: 0, width: 0, height: 0)
 
         if space == "search" {
-            let resultsW = max(30, min(w / 3, w - 30))
+            var resultsW = max(30, min(w / 3, w - 30))
+            if halfScreen == .searchResults { resultsW = max(20, w / 2) }
+            if halfScreen == .preview { resultsW = min(w - 20, w / 2) }
             let searchResults = WindowLayout(x: 0, y: 0, width: resultsW, height: h - statusH)
             let preview = WindowLayout(x: resultsW, y: 0, width: w - resultsW, height: h - statusH)
             let status = WindowLayout(x: 0, y: h - statusH, width: w, height: statusH)
@@ -35,15 +47,15 @@ struct LayoutManager {
         var explorerW = 0
 
         if showExplorer {
-            explorerW = min(28, w / 4)
+            explorerW = halfScreen == .explorer ? max(10, w / 2) : min(28, w / 4)
             editorX = explorerW
             editorW = w - explorerW
         }
 
         var gitH = 0
         var cmdH = 0
-        if showGit { gitH = min(25, h / 2) }
-        if showCommand { cmdH = min(25, h / 2) }
+        if showGit { gitH = halfScreen == .git ? h / 2 : min(25, h / 2) }
+        if showCommand { cmdH = halfScreen == .command ? h / 2 : min(25, h / 2) }
 
         let tabH = showTabBar ? 1 : 0
         let editorH = max(1, h - statusH - gitH - cmdH - tabH)

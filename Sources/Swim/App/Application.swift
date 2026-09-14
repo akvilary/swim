@@ -15,6 +15,10 @@ class Application: WindowDelegate {
     private var pendingTokenRefresh: (path: String, earliest: TimeInterval)?
     private lazy var renderer = Renderer(terminal: terminal)
 
+    private var halfScreenWindow: Window?
+    private var maximized: Window?
+    private var maximizeHidden: [Window] = []
+
     private let editor = EditorWindow()
     private let statusBar = StatusBarWindow()
     private let tabBar = TabBarWindow()
@@ -496,6 +500,16 @@ class Application: WindowDelegate {
         case .ctrl("z"):
             closeOtherTabs()
             return
+        case .ctrl("s"):
+            if spaces.current.focused !== editor {
+                toggleHalfScreen()
+                return
+            }
+        case .ctrl("w"):
+            if maximized != nil || spaces.current.focused !== editor {
+                toggleMaximize()
+                return
+            }
         default:
             break
         }
@@ -527,6 +541,7 @@ class Application: WindowDelegate {
                 notifyLSPChange()
             }
         } else if case .escape = key, focused !== editor {
+            if maximized != nil { restoreMaximized() }
             if spaces.current.id != "editor" {
                 switchToSpace("editor")
                 spaces.current.focused = editor
@@ -545,6 +560,7 @@ class Application: WindowDelegate {
     }
 
     private func toggleFileExplorer() {
+        if maximized != nil { restoreMaximized() }
         fileExplorer.visible = !fileExplorer.visible
         if fileExplorer.visible {
             spaces.current.focused = fileExplorer
@@ -554,6 +570,7 @@ class Application: WindowDelegate {
     }
 
     private func toggleGitPanel() {
+        if maximized != nil { restoreMaximized() }
         gitPanel.visible = !gitPanel.visible
         if gitPanel.visible {
             gitPanel.refresh()
@@ -564,6 +581,7 @@ class Application: WindowDelegate {
     }
 
     private func toggleSearch() {
+        if maximized != nil { restoreMaximized() }
         if spaces.current.id == "search" {
             switchToSpace("editor")
         } else {
@@ -597,6 +615,50 @@ class Application: WindowDelegate {
         spaces.markAllDirty()
     }
 
+    private func toggleHalfScreen() {
+        if maximized != nil { restoreMaximized() }
+        guard let target = spaces.current.focused,
+              target !== statusBar, target !== tabBar else { return }
+        halfScreenWindow = halfScreenWindow === target ? nil : target
+        recalculateLayout()
+        spaces.markAllDirty()
+    }
+
+    private func halfScreenRole() -> HalfScreenWindow {
+        guard let window = halfScreenWindow else { return .none }
+        if window === fileExplorer { return .explorer }
+        if window === gitPanel { return .git }
+        if window === command { return .command }
+        if window === searchResults { return .searchResults }
+        if window === preview { return .preview }
+        return .none
+    }
+
+    private func toggleMaximize() {
+        if maximized != nil {
+            restoreMaximized()
+            recalculateLayout()
+            spaces.markAllDirty()
+            return
+        }
+        guard let target = spaces.current.focused, target !== statusBar else { return }
+        maximized = target
+        maximizeHidden = spaces.current.visibleWindows.filter { $0 !== target && $0 !== statusBar }
+        for window in maximizeHidden {
+            window.visible = false
+        }
+        recalculateLayout()
+        spaces.markAllDirty()
+    }
+
+    private func restoreMaximized() {
+        for window in maximizeHidden {
+            window.visible = true
+        }
+        maximizeHidden = []
+        maximized = nil
+    }
+
     private func recalculateLayout() {
         let layout = LayoutManager.calculate(
             terminalWidth: terminal.width,
@@ -605,7 +667,8 @@ class Application: WindowDelegate {
             showExplorer: fileExplorer.visible,
             showGit: gitPanel.visible,
             showCommand: command.visible,
-            showTabBar: true
+            showTabBar: true,
+            halfScreen: halfScreenRole()
         )
 
         fileExplorer.resize(x: layout.explorer.x, y: layout.explorer.y, width: layout.explorer.width, height: layout.explorer.height)
@@ -616,6 +679,10 @@ class Application: WindowDelegate {
         preview.resize(x: layout.preview.x, y: layout.preview.y, width: layout.preview.width, height: layout.preview.height)
         command.resize(x: layout.command.x, y: layout.command.y, width: layout.command.width, height: layout.command.height)
         statusBar.resize(x: layout.status.x, y: layout.status.y, width: layout.status.width, height: layout.status.height)
+
+        if let maximized {
+            maximized.resize(x: 0, y: 0, width: terminal.width, height: max(1, terminal.height - 1))
+        }
     }
 
     private func render() {
@@ -740,6 +807,7 @@ class Application: WindowDelegate {
     }
 
     func runGitCommand(label: String, args: [String]) {
+        if maximized != nil { restoreMaximized() }
         command.workingDirectory = gitPanel.workingDirectory
         command.runCommand(label, args: args)
         recalculateLayout()
