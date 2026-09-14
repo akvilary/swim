@@ -14,6 +14,10 @@ enum Key: Equatable {
     case pageUp
     case pageDown
     case ctrl(Character)
+    case ctrlUp
+    case ctrlDown
+    case ctrlLeft
+    case ctrlRight
     case f(Int)
     case shiftTab
     case insert
@@ -38,7 +42,17 @@ enum Key: Equatable {
                 case 72: return .home
                 case 70: return .end
                 case 53:
-                    if let b4 = terminal.readByte(), b4 == 126 { return .pageUp }
+                    if let b4 = terminal.readByte() {
+                        if b4 == 126 { return .pageUp }
+                        // rxvt-style Ctrl+arrows: ESC [ 5A..5D
+                        switch b4 {
+                        case 65: return .ctrlUp
+                        case 66: return .ctrlDown
+                        case 67: return .ctrlRight
+                        case 68: return .ctrlLeft
+                        default: break
+                        }
+                    }
                     return .unknown("\u{1b}[5")
                 case 54:
                     if let b4 = terminal.readByte(), b4 == 126 { return .pageDown }
@@ -46,28 +60,30 @@ enum Key: Equatable {
                 case 49:
                     if let b4 = terminal.readByte() {
                         if b4 == 126 { return .home }
-                        if b4 == 59, let b5 = terminal.readByte(), b5 == 50 {
-                            if let b6 = terminal.readByte() {
-                                switch b6 {
-                                case 65: return .up
-                                case 66: return .down
-                                case 67: return .right
-                                case 68: return .left
-                                case 72: return .home
-                                case 70: return .end
-                                default: return .unknown("\u{1b}[1;2\(String(UnicodeScalar(b6)))")
+                        if b4 == 59, let b5 = terminal.readByte() {
+                            if b5 == 50 {
+                                // shift+arrow: ESC [ 1;2X -> plain arrows
+                                if let b6 = terminal.readByte() {
+                                    switch b6 {
+                                    case 65: return .up
+                                    case 66: return .down
+                                    case 67: return .right
+                                    case 68: return .left
+                                    case 72: return .home
+                                    case 70: return .end
+                                    default: return .unknown("\u{1b}[1;2\(String(UnicodeScalar(b6)))")
+                                    }
                                 }
-                            }
-                        }
-                        if b4 == 59, let b5 = terminal.readByte(), b5 == 53 {
-                            if let b6 = terminal.readByte() {
-                                switch b6 {
-                                case 65: return .f(1)
-                                case 66: return .f(2)
-                                case 67: return .f(3)
-                                case 68: return .f(4)
-                                case 69: return .f(5)
-                                default: return .unknown("\u{1b}[1;5\(String(UnicodeScalar(b6)))")
+                            } else if b5 == 53 {
+                                // ctrl+arrow: ESC [ 1;5X
+                                if let b6 = terminal.readByte() {
+                                    switch b6 {
+                                    case 65: return .ctrlUp
+                                    case 66: return .ctrlDown
+                                    case 67: return .ctrlRight
+                                    case 68: return .ctrlLeft
+                                    default: return .unknown("\u{1b}[1;5\(String(UnicodeScalar(b6)))")
+                                    }
                                 }
                             }
                         }
@@ -93,12 +109,10 @@ enum Key: Equatable {
                     if let b4 = terminal.readByte(), b4 == 53 {
                         if let b5 = terminal.readByte() {
                             switch b5 {
-                            case 65: return .ctrl("p")
-                            case 66: return .ctrl("n")
-                            case 67: return .ctrl("f")
-                            case 68: return .ctrl("b")
-                            case 72: return .home
-                            case 70: return .end
+                            case 65: return .ctrlUp
+                            case 66: return .ctrlDown
+                            case 67: return .ctrlRight
+                            case 68: return .ctrlLeft
                             default: return .unknown("\u{1b}[;5\(String(UnicodeScalar(b5)))")
                             }
                         }
