@@ -286,6 +286,18 @@ final class PieceTable {
         return chars.count
     }
 
+    func utf16Col(line: Int, byteCol: Int) -> Int {
+        let chars = getLineChars(line)
+        var bytePos = 0
+        var units = 0
+        for char in chars {
+            if bytePos >= byteCol { break }
+            bytePos += char.isASCII ? 1 : char.utf8.count
+            units += char.isASCII ? 1 : char.utf16.count
+        }
+        return units
+    }
+
     func search(_ query: String, from offset: Int = 0) -> Int? {
         guard !query.isEmpty else { return nil }
         let queryBytes = [UInt8](query.utf8)

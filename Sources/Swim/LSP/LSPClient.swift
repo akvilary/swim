@@ -17,8 +17,26 @@ class LSPClient {
     var onSemanticTokens: (([SemanticToken]) -> Void)?
     var onDiagnostics: ((String, [Any]) -> Void)?
 
-    var pendingTokens: [SemanticToken]?
+    private let tokensLock = NSLock()
+    private var _pendingTokens: [SemanticToken]?
+    var pendingTokens: [SemanticToken]? {
+        get {
+            tokensLock.lock()
+            defer { tokensLock.unlock() }
+            return _pendingTokens
+        }
+        set {
+            tokensLock.lock()
+            _pendingTokens = newValue
+            tokensLock.unlock()
+        }
+    }
     var hasPendingTokens: Bool { pendingTokens != nil }
+
+    var isReady: Bool { initialized && alive }
+    var isAlive: Bool { alive }
+
+    private var pendingDidOpen: (uri: String, languageId: String, text: String)?
 
     func start(executable: String, arguments: [String] = [], rootUri: String?) {
         guard FileManager.default.fileExists(atPath: executable) else { return }
@@ -103,10 +121,18 @@ class LSPClient {
         initialized = true
 
         sendNotification(method: "initialized", params: ["capabilities": [:] as [String: Any]])
+
+        if let pending = pendingDidOpen {
+            pendingDidOpen = nil
+            openDocument(uri: pending.uri, languageId: pending.languageId, text: pending.text)
+        }
     }
 
     func openDocument(uri: String, languageId: String, text: String) {
-        guard initialized else { return }
+        guard initialized else {
+            pendingDidOpen = (uri: uri, languageId: languageId, text: text)
+            return
+        }
         let params: [String: Any] = [
             "textDocument": [
                 "uri": uri,
@@ -119,16 +145,23 @@ class LSPClient {
         requestSemanticTokens(uri: uri)
     }
 
-    func changeDocument(uri: String, version: Int, text: String) {
+    func changeDocument(uri: String, version: Int, changes: [LSPTextChange]) {
         guard initialized else { return }
+        let contentChanges: [[String: Any]] = changes.map { change in
+            [
+                "range": [
+                    "start": ["line": change.startLine, "character": change.startChar] as [String: Any],
+                    "end": ["line": change.endLine, "character": change.endChar]
+                ] as [String: Any],
+                "text": change.text
+            ] as [String: Any]
+        }
         let params: [String: Any] = [
             "textDocument": [
                 "uri": uri,
                 "version": version
             ] as [String: Any],
-            "contentChanges": [
-                ["text": text]
-            ] as [[String: Any]]
+            "contentChanges": contentChanges
         ]
         sendNotification(method: "textDocument/didChange", params: params)
     }

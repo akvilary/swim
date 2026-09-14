@@ -352,14 +352,19 @@ Diff подсвечивается: зелёный для добавлений, �
 **Жизненный цикл:**
 1. `start()` — запускает sourcekit-lsp как подпроцесс через `Process`
 2. `sendInitialize()` — отправляет `initialize` с capabilities (semantic tokens full/delta)
-3. `handleInitializeResponse()` — извлекает token legend, отправляет `initialized`
+3. `handleInitializeResponse()` — извлекает token legend, отправляет `initialized`, сбрасывает отложенный `didOpen` (если документ открыли до завершения инициализации)
 4. `openDocument()` — отправляет `textDocument/didOpen` + запрашивает semantic tokens
-5. `handleSemanticTokensResponse()` — парсит LSP semtok protocol (кортежи по 5 int: deltaLine, deltaStart, length, tokenType, tokenModifiers) → `[SemanticToken]`
-6. `Application.pollLSP()` — периодически проверяет `pendingTokens` и переносит в `EditorWindow`
+5. `changeDocument(changes:)` — инкрементальный `textDocument/didChange`: список range-based изменений вместо полного текста
+6. `handleSemanticTokensResponse()` — парсит LSP semtok protocol (кортежи по 5 int: deltaLine, deltaStart, length, tokenType, tokenModifiers) → `[SemanticToken]`
+7. `Application.pollLSP()` — периодически проверяет `pendingTokens` (чтение под NSLock) и переносит в `EditorWindow`
 
-**Асинхронность:** Чтение из stdout LSP-сервера через `DispatchSourceRead` на отдельной очереди. Запись в stdin — через `queue.async`.
+**Асинхронность:** Чтение из stdout LSP-сервера через `DispatchSourceRead` на отдельной очереди. Запись в stdin — через `queue.async`. `pendingTokens` защищён `NSLock` (запись из очереди клиента, чтение из main).
 
-**Ограничение:** Для файлов >5MB LSP не используется (отправка полного текста через `getAllText()` слишком медленная).
+**Инкрементальная синхронизация:** Каждая правка буфера записывается как `(offset, replaced, inserted)` (хуки в `recordAction`/`applyInverse`/`applyForward` — покрывают правки, `:%s` и undo/redo). `EditorWindow.trackLSPChange()` конвертирует byte-offset в LSP-позиции `(line, character)` в UTF-16 code units (`PieceTable.utf16Col()` — проход по кешированным `[Character]` строки). `Application.notifyLSPChange()` отправляет накопленные изменения одним `didChange`; для файлов без LSP-сервера очередь сбрасывается.
+
+**Кодировки:** Внутренне буфер хранится в UTF-8 байтах + кеш графем `[Character]` на строку. LSP работает в UTF-16 (протокольный дефолт): исходящие позиции конвертируются при записи изменения, входящие позиции токенов конвертируются UTF-16 → графемы через префикс-суммы при построении `tokenIndex` (корректно для emoji/CJK).
+
+**Ограничение:** Для файлов >5MB `didOpen` не отправляется (полный текст при открытии слишком велик), последующий инкрементальный `didChange` к ним также не применяется.
 
 ---
 
@@ -476,7 +481,7 @@ while running:
 
 5. **Отслеживание атрибутов** — ANSI-escape для изменения цвета/стиля отправляется только если атрибут действительно изменился
 
-6. **Пропуск LSP для больших файлов** — файлы >5MB не отправляются в sourcekit-lsp (иначе `getAllText()` создаёт гигантскую строку)
+6. **Инкрементальный LSP sync** — вместо полного текста на каждое нажатие отправляются только range-based изменения (O(длина строки) на конверсию позиций вместо O(размер файла)); `didOpen` для файлов >5MB по-прежнему пропускается
 
 7. **Пропуск подсветки для больших файлов** — встроенный токенизатор отключается для файлов >50K строк
 

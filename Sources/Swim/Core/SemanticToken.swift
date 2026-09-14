@@ -5,3 +5,11 @@ struct SemanticToken: Equatable {
     let type: String
     let modifiers: Int
 }
+
+struct LSPTextChange {
+    let startLine: Int
+    let startChar: Int
+    let endLine: Int
+    let endChar: Int
+    let text: String
+}

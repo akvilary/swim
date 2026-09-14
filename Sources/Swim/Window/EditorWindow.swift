@@ -29,6 +29,7 @@ class EditorWindow: Window {
     var undoStack: [(offset: Int, deleted: String, inserted: String)] = []
     var redoStack: [(offset: Int, deleted: String, inserted: String)] = []
     private var isUndoRedoing = false
+    private var lspPendingChanges: [LSPTextChange] = []
 
     var semanticTokens: [SemanticToken] = [] {
         didSet { rebuildTokenIndex() }
@@ -40,8 +41,51 @@ class EditorWindow: Window {
 
     private func rebuildTokenIndex() {
         tokenIndex.removeAll(keepingCapacity: true)
+        guard let buf = buffer else { return }
+
+        var byLine = [Int: [SemanticToken]]()
         for token in semanticTokens {
-            tokenIndex[token.line, default: []].append(token)
+            byLine[token.line, default: []].append(token)
+        }
+
+        for (line, tokens) in byLine {
+            guard line >= 0, line < buf.lineCount else { continue }
+
+            // LSP positions are UTF-16 code units; convert to grapheme indices
+            // via per-line prefix sums (binary search per token boundary).
+            let chars = buf.getLineChars(line)
+            var prefix = [Int](repeating: 0, count: chars.count + 1)
+            var units = 0
+            for (i, c) in chars.enumerated() {
+                units += c.isASCII ? 1 : c.utf16.count
+                prefix[i + 1] = units
+            }
+
+            func graphemeIndex(ofUtf16 target: Int) -> Int {
+                var lo = 0
+                var hi = chars.count
+                while lo < hi {
+                    let mid = (lo + hi) / 2
+                    if prefix[mid] <= target { lo = mid + 1 } else { hi = mid }
+                }
+                return max(0, lo - 1)
+            }
+
+            var converted = [SemanticToken]()
+            converted.reserveCapacity(tokens.count)
+            for t in tokens {
+                let start = graphemeIndex(ofUtf16: t.startChar)
+                let end = graphemeIndex(ofUtf16: t.startChar + t.length)
+                let length = max(1, end - start)
+                converted.append(SemanticToken(
+                    line: t.line,
+                    startChar: start,
+                    length: length,
+                    type: t.type,
+                    modifiers: t.modifiers
+                ))
+            }
+            tokenIndex[line] = converted
         }
     }
 
@@ -74,6 +118,7 @@ class EditorWindow: Window {
         modified = false
         undoStack = []
         redoStack = []
+        lspPendingChanges = []
         dirty = true
     }
 
@@ -298,6 +343,34 @@ class EditorWindow: Window {
         undoStack.append((offset: offset, deleted: deleted, inserted: inserted))
         redoStack.removeAll()
         modified = true
+        trackLSPChange(offset: offset, replaced: deleted, inserted: inserted)
+    }
+
+    func takeLSPPendingChanges() -> [LSPTextChange] {
+        let changes = lspPendingChanges
+        lspPendingChanges = []
+        return changes
+    }
+
+    private func trackLSPChange(offset: Int, replaced: String, inserted: String) {
+        guard let buf = buffer else { return }
+        let (line, byteCol) = buf.offsetToLineCol(offset)
+        let startChar = buf.utf16Col(line: line, byteCol: byteCol)
+        var endLine = line
+        var endChar: Int
+        if let lastNL = replaced.lastIndex(of: "\n") {
+            endLine = line + replaced.filter { $0 == "\n" }.count
+            endChar = replaced[replaced.index(after: lastNL)...].utf16.count
+        } else {
+            endChar = startChar + replaced.utf16.count
+        }
+        lspPendingChanges.append(LSPTextChange(
+            startLine: line,
+            startChar: startChar,
+            endLine: endLine,
+            endChar: endChar,
+            text: inserted
+        ))
     }
 
     private func insertText(_ text: String) {
@@ -543,6 +616,7 @@ class EditorWindow: Window {
 
     private func applyInverse(_ action: (offset: Int, deleted: String, inserted: String)) {
         guard let buf = buffer else { return }
+        trackLSPChange(offset: action.offset, replaced: action.inserted, inserted: action.deleted)
         if !action.inserted.isEmpty {
             buf.delete(at: action.offset, length: action.inserted.utf8.count)
         }
@@ -553,6 +627,7 @@ class EditorWindow: Window {
 
     private func applyForward(_ action: (offset: Int, deleted: String, inserted: String)) {
         guard let buf = buffer else { return }
+        trackLSPChange(offset: action.offset, replaced: action.deleted, inserted: action.inserted)
         if !action.deleted.isEmpty {
             buf.delete(at: action.offset, length: action.deleted.utf8.count)
         }

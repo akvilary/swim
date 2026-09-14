@@ -254,6 +254,7 @@ class Application: WindowDelegate {
         if editor.mode == .command {
             if editor.handleKey(key) {
                 updateStatusBar()
+                notifyLSPChange()
             }
             return
         }
@@ -485,11 +486,20 @@ class Application: WindowDelegate {
     private func notifyLSPChange() {
         guard let path = editor.filePath,
               let key = lspClientKey(for: path),
-              let client = lspClients[key],
-              let buf = editor.buffer, buf.totalLength < 5_000_000 else { return }
+              let client = lspClients[key] else {
+            _ = editor.takeLSPPendingChanges()
+            return
+        }
+        guard client.isReady else {
+            if !client.isAlive {
+                lspClients.removeValue(forKey: key)
+                _ = editor.takeLSPPendingChanges()
+            }
+            return
+        }
+        let changes = editor.takeLSPPendingChanges()
+        guard !changes.isEmpty else { return }
         lspVersion += 1
-        let uri = "file://\(path)"
-        let text = buf.getAllText()
-        client.changeDocument(uri: uri, version: lspVersion, text: text)
+        client.changeDocument(uri: "file://\(path)", version: lspVersion, changes: changes)
     }
 }
