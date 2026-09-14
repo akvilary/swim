@@ -223,8 +223,8 @@ class EditorWindow: Window {
         }
     }
 
-    /// `Ctrl+Z` — closes all other tabs. Returns closed buffers (for LSP
-    /// didClose) and the count of modified tabs that were kept.
+    /// `Ctrl+Z` — closes all other tabs except those with unsaved changes.
+    /// Returns closed buffers (for LSP didClose) and the kept-modified count.
     func closeOtherTabs() -> (closed: [EditorBuffer], keptModified: Int) {
         tabs.closeOthers()
     }
