@@ -12,6 +12,7 @@ class Application: WindowDelegate {
     private var running = true
     private var lspClients: [String: LSPClient] = [:]
     private var lspVersion: Int = 0
+    private var pendingTokenRefresh: (path: String, earliest: TimeInterval)?
     private lazy var renderer = Renderer(terminal: terminal)
 
     private let editor = EditorWindow()
@@ -107,6 +108,15 @@ class Application: WindowDelegate {
     }
 
     private func pollLSP() {
+        // Debounced semantic tokens refresh after edits
+        if let refresh = pendingTokenRefresh, Date().timeIntervalSince1970 >= refresh.earliest {
+            pendingTokenRefresh = nil
+            if let key = lspClientKey(for: refresh.path),
+               let client = lspClients[key], client.isReady {
+                client.requestSemanticTokens(uri: "file://\(refresh.path)")
+            }
+        }
+
         for (_, client) in lspClients {
             if let pending = client.takePendingTokens() {
                 let path = pathFromUri(pending.uri)
@@ -624,6 +634,10 @@ class Application: WindowDelegate {
         let changes = editor.takeLSPPendingChanges()
         guard !changes.isEmpty else { return }
         lspVersion += 1
-        client.changeDocument(uri: "file://\(path)", version: lspVersion, changes: changes)
+        let uri = "file://\(path)"
+        client.changeDocument(uri: uri, version: lspVersion, changes: changes)
+        // Positions in the cached semantic tokens are now stale — schedule a
+        // debounced semanticTokens/full re-request for this document.
+        pendingTokenRefresh = (path: path, earliest: Date().timeIntervalSince1970 + 0.3)
     }
 }

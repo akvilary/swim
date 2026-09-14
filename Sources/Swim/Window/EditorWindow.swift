@@ -1039,7 +1039,7 @@ class EditorWindow: Window {
         case "number": return Theme.orange
         case "comment": return Theme.comment
         case "type", "class", "struct", "enum", "interface": return Theme.blue1
-        case "function", "method": return Theme.blue
+        case "function", "method": return Theme.blue1
         case "variable", "property": return Theme.fg
         case "parameter": return Theme.orange
         case "operator": return Theme.blue5
