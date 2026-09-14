@@ -13,7 +13,7 @@ enum Theme {
     static let blue5 = Color.rgb(r: 0x89, g: 0xdd, b: 0xff)
     static let cyan = Color.rgb(r: 0x7d, g: 0xcf, b: 0xff)
     static let green = Color.rgb(r: 0x9e, g: 0xce, b: 0x6a)
-    static let greenDark = Color.rgb(r: 0x76, g: 0x9a, b: 0x50)
+    static let greenDark = Color.rgb(r: 0x7e, g: 0xa5, b: 0x55)
     static let green1 = Color.rgb(r: 0x73, g: 0xda, b: 0xca)
     static let magenta = Color.rgb(r: 0xbb, g: 0x9a, b: 0xf7)
     static let orange = Color.rgb(r: 0xff, g: 0x9e, b: 0x64)
