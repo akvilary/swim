@@ -901,7 +901,9 @@ class EditorWindow: Window {
         let fileExt = (filePath as NSString?)?.pathExtension ?? ""
         let isJSON = fileExt == "json"
         let isMD = SyntaxTokenizer.isMarkdown(fileExt)
-        let builtinKeywords = useBuiltinTokens && !isMD && !isJSON ? SyntaxTokenizer.keywords(for: fileExt) : nil
+        let builtinKeywords = !isMD && !isJSON && buf.lineCount < 50000
+            ? SyntaxTokenizer.keywords(for: fileExt)
+            : nil
 
         var mdTokenIndex: [Int: [SemanticToken]]?
         if useBuiltinTokens && isMD {
@@ -921,7 +923,20 @@ class EditorWindow: Window {
             let visStart = charIndexAtDisplayCol(line: lineNum, target: scrollX)
 
             let tokens: [SemanticToken]
-            if !useBuiltinTokens {
+            if !useBuiltinTokens && !isMD && !isJSON {
+                // LSP semantic tokens cover only semantic entities — keywords,
+                // strings and numbers are left untokenized (basedpyright) or
+                // untyped (sourcekit-lsp). Layer the syntactic tokenizer
+                // underneath: builtin tokens fill the gaps between LSP ones.
+                let lsp = semanticTokensFor(line: lineNum)
+                let builtin = SyntaxTokenizer.tokenize(lineChars: chars, lineNum: lineNum, keywords: builtinKeywords ?? [])
+                let merged = builtin.filter { b in
+                    !lsp.contains { l in
+                        b.startChar < l.startChar + l.length && l.startChar < b.startChar + b.length
+                    }
+                } + lsp
+                tokens = merged.sorted { $0.startChar < $1.startChar }
+            } else if !useBuiltinTokens {
                 tokens = semanticTokensFor(line: lineNum)
             } else if let md = mdTokenIndex {
                 tokens = md[lineNum] ?? []
