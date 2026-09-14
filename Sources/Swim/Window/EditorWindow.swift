@@ -526,15 +526,14 @@ class EditorWindow: Window {
     /// or local-copy patterns COW-copy the whole array per call, which made
     /// scrolling a large file copy the array every frame.
     private func ensureMLStringStates(through line: Int, buffer: PieceTable,
-                                      rules: [SyntaxTokenizer.MultilineStringRule],
-                                      keywords: Set<String>) {
+                                      keywords: Set<String>, syntax: SyntaxTokenizer.LanguageSyntax) {
         let tab = tabs.active
         while tab.mlStringStates.count <= line {
             let idx = tab.mlStringStates.count
             let initial: SyntaxTokenizer.MultilineStringState = idx == 0 ? .none : tab.mlStringStates[idx - 1]
             let chars = buffer.getLineChars(idx)
             let endState = SyntaxTokenizer.tokenize(chars: chars, lineNum: idx, keywords: keywords,
-                                                    mlRules: rules, initialState: initial).endState
+                                                    syntax: syntax, initialState: initial).endState
             tab.mlStringStates.append(endState)
         }
     }
@@ -947,13 +946,15 @@ class EditorWindow: Window {
             ? SyntaxTokenizer.keywords(for: fileExt)
             : nil
 
-        // Multi-line string state per language, lazily built up to the viewport
-        let mlRules = SyntaxTokenizer.multilineStringRules(for: fileExt)
-        if mlRules.isEmpty {
+        // Language syntax profile (multi-line strings, line comments),
+        // resolved once; string states built lazily up to the viewport.
+        let langSyntax = SyntaxTokenizer.syntax(for: fileExt)
+        if langSyntax.mlRules.isEmpty {
             if !mlStringStates.isEmpty { mlStringStates = [] }
         } else {
             ensureMLStringStates(through: min(scrollY + height, buf.lineCount),
-                                 buffer: buf, rules: mlRules, keywords: builtinKeywords ?? [])
+                                 buffer: buf, keywords: builtinKeywords ?? [],
+                                 syntax: langSyntax)
         }
 
         var mdTokenIndex: [Int: [SemanticToken]]?
@@ -983,7 +984,7 @@ class EditorWindow: Window {
                 let initial = lineNum < mlStringStates.count ? mlStringStates[lineNum] : .none
                 let builtin = SyntaxTokenizer.tokenize(chars: chars, lineNum: lineNum,
                                                        keywords: builtinKeywords ?? [],
-                                                       mlRules: mlRules, initialState: initial).tokens
+                                                       syntax: langSyntax, initialState: initial).tokens
                 let merged = builtin.filter { b in
                     !lsp.contains { l in
                         b.startChar < l.startChar + l.length && l.startChar < b.startChar + b.length
@@ -1000,7 +1001,7 @@ class EditorWindow: Window {
                 let initial = lineNum < mlStringStates.count ? mlStringStates[lineNum] : .none
                 tokens = SyntaxTokenizer.tokenize(chars: chars, lineNum: lineNum,
                                                   keywords: builtinKeywords ?? [],
-                                                  mlRules: mlRules, initialState: initial).tokens
+                                                  syntax: langSyntax, initialState: initial).tokens
             }
 
             var colOffset = displayColForChar(line: lineNum, charCol: visStart) - scrollX
@@ -1137,10 +1138,10 @@ class EditorWindow: Window {
         case "type", "class", "struct", "enum", "interface": return Theme.blue1
         case "function", "method": return Theme.blue
         case "variable", "property": return Theme.fg
-        case "parameter": return Theme.yellow
+        case "parameter", "selfParameter", "clsParameter": return Theme.yellow
         case "operator": return Theme.blue5
         case "punctuation": return Theme.fg
-        case "namespace", "module": return Theme.greenDark
+        case "namespace", "module": return Theme.module
         case "decorator", "attribute": return Theme.yellow
         case "regexp": return Theme.red
         case "macro": return Theme.red1

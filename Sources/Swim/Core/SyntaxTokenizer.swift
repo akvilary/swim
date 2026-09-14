@@ -160,31 +160,65 @@ struct SyntaxTokenizer {
         case active(ruleIndex: Int)
     }
 
-    static func multilineStringRules(for fileExt: String) -> [MultilineStringRule] {
-        let rules: [MultilineStringRule]
+    /// Per-language syntax profile: multi-line string rules plus the
+    /// single-line comment syntax, resolved in one place per file extension.
+    struct LanguageSyntax {
+        let mlRules: [MultilineStringRule]
+        let lineComment: String
+        /// POSIX shell: "#" comments only where a word begins — `${#arr}`,
+        /// `$#`, `x=1#c` are not comments. Python hashes comment anywhere.
+        let lineCommentAtWordStartOnly: Bool
+
+        static let `default` = LanguageSyntax(mlRules: [], lineComment: "//", lineCommentAtWordStartOnly: false)
+    }
+
+    static func syntax(for fileExt: String) -> LanguageSyntax {
+        let syntax: LanguageSyntax
         switch fileExt {
         case "py", "pyw", "pyi":
-            rules = [
-                MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true),
-                MultilineStringRule(open: "'''", close: "'''", escapes: true),
-            ]
+            syntax = LanguageSyntax(
+                mlRules: [
+                    MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true),
+                    MultilineStringRule(open: "'''", close: "'''", escapes: true),
+                ],
+                lineComment: "#", lineCommentAtWordStartOnly: false)
         case "swift":
-            rules = [MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true)]
+            syntax = LanguageSyntax(
+                mlRules: [MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true)],
+                lineComment: "//", lineCommentAtWordStartOnly: false)
         case "go":
-            rules = [MultilineStringRule(open: "`", close: "`", escapes: false)]
+            syntax = LanguageSyntax(
+                mlRules: [MultilineStringRule(open: "`", close: "`", escapes: false)],
+                lineComment: "//", lineCommentAtWordStartOnly: false)
         case "rs":
             // Rust "..." literals may legally span lines
-            rules = [MultilineStringRule(open: "\"", close: "\"", escapes: true)]
+            syntax = LanguageSyntax(
+                mlRules: [MultilineStringRule(open: "\"", close: "\"", escapes: true)],
+                lineComment: "//", lineCommentAtWordStartOnly: false)
         case "cs", "csx":
-            rules = [
-                MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true),
-                MultilineStringRule(open: "@\"", close: "\"", escapes: true),
-            ]
+            syntax = LanguageSyntax(
+                mlRules: [
+                    MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true),
+                    MultilineStringRule(open: "@\"", close: "\"", escapes: true),
+                ],
+                lineComment: "//", lineCommentAtWordStartOnly: false)
+        case "sh", "bash":
+            syntax = LanguageSyntax(mlRules: [], lineComment: "#", lineCommentAtWordStartOnly: true)
+        case "yaml", "yml", "toml", "rb":
+            syntax = LanguageSyntax(mlRules: [], lineComment: "#", lineCommentAtWordStartOnly: false)
         default:
-            rules = []
+            syntax = .default
         }
         // Longest opener first so """ wins over " and @" at the same position
-        return rules.sorted { $0.open.count > $1.open.count }
+        let sorted = LanguageSyntax(
+            mlRules: syntax.mlRules.sorted { $0.open.count > $1.open.count },
+            lineComment: syntax.lineComment,
+            lineCommentAtWordStartOnly: syntax.lineCommentAtWordStartOnly)
+        return sorted
+    }
+
+    static func multilineStringRules(for fileExt: String) -> [MultilineStringRule] {
+        syntax(for: fileExt).mlRules
     }
 
     static func tokenize(lineChars chars: [Character], lineNum: Int, keywords: Set<String>) -> [SemanticToken] {
@@ -192,7 +226,7 @@ struct SyntaxTokenizer {
     }
 
     static func tokenize(chars: [Character], lineNum: Int, keywords: Set<String>,
-                         mlRules: [MultilineStringRule] = [],
+                         syntax: LanguageSyntax = .default,
                          initialState: MultilineStringState = .none) -> (tokens: [SemanticToken], endState: MultilineStringState) {
         var tokens = [SemanticToken]()
         let len = chars.count
@@ -218,7 +252,7 @@ struct SyntaxTokenizer {
 
         // Continuation of a multi-line string opened on a previous line
         if case .active(let ruleIndex) = state {
-            let rule = mlRules[ruleIndex]
+            let rule = syntax.mlRules[ruleIndex]
             if let (_, after) = scanClose(rule, from: 0) {
                 // The closing delimiter is part of the string token,
                 // matching the single-line string convention.
@@ -232,7 +266,11 @@ struct SyntaxTokenizer {
         }
 
         while i < len {
-            if chars[i] == "/" && i + 1 < len && chars[i + 1] == "/" {
+            // Line comment (per language: "//" or "#") wins over everything,
+            // including multi-line string openers inside the comment text.
+            if !syntax.lineComment.isEmpty, chars[i] == syntax.lineComment.first!,
+               matches(syntax.lineComment, at: i),
+               !syntax.lineCommentAtWordStartOnly || i == 0 || chars[i - 1] == " " || chars[i - 1] == "\t" {
                 tokens.append(SemanticToken(line: lineNum, startChar: i, length: len - i, type: "comment", modifiers: 0))
                 return (tokens, .none)
             }
@@ -252,7 +290,7 @@ struct SyntaxTokenizer {
             // The first-character pre-check keeps per-char cost at a compare.
             var matchedRule: (index: Int, rule: MultilineStringRule)?
             let c = chars[i]
-            for (idx, rule) in mlRules.enumerated()
+            for (idx, rule) in syntax.mlRules.enumerated()
             where rule.open.first == c && matches(rule.open, at: i) {
                 matchedRule = (idx, rule)
                 break
