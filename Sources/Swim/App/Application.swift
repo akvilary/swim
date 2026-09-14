@@ -628,7 +628,16 @@ class Application: WindowDelegate {
                 cursorInfo = CursorRenderInfo(row: editor.y + screenRow, col: editor.x + lnW + screenCol, shape: 5, visible: true)
             }
         }
-        renderer.render(windows: spaces.current.visibleWindows, cursorInfo: cursorInfo)
+        if editor.visible {
+            renderer.render(
+                windows: spaces.current.visibleWindows,
+                cursorInfo: cursorInfo,
+                editorScrollY: editor.scrollY,
+                editorRect: (editor.x, editor.y, editor.width, editor.height)
+            )
+        } else {
+            renderer.render(windows: spaces.current.visibleWindows, cursorInfo: cursorInfo)
+        }
     }
 
     private func updateStatusBar() {
