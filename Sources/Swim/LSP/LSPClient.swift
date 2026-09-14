@@ -138,6 +138,10 @@ class LSPClient {
         ]
         if let uri = rootUri {
             params["rootUri"] = uri
+            // pyright ignores rootUri and requires workspaceFolders; without
+            // them it assumes "/" as the workspace root and analyzes nothing.
+            let name = (uri as NSString).lastPathComponent
+            params["workspaceFolders"] = [["uri": uri, "name": name.isEmpty ? "workspace" : name]]
         }
 
         sendRequest(method: "initialize", params: params) { [weak self] data in

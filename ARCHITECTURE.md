@@ -364,7 +364,7 @@ Diff подсвечивается: зелёный для добавлений, �
 - **Go** — gopls
 - **Rust** — rust-analyzer
 - **Bash** — bash-language-server (`start`)
-- **Python** — basedpyright-langserver / pyright-langserver (`--stdio`), общий движок — пробаются по очереди
+- **Python** — basedpyright-langserver / pyright-langserver (`--stdio`), общий движок — пробуются по очереди. Нюанс: pyright не реализует semantic tokens (подсветка откатывается на встроенный tokenizer, `gd` работает); basedpyright поддерживает и то, и другое
 
 **Протокол:** JSON-RPC 2.0 поверх stdin/stdout с framing `Content-Length: N\r\n\r\n`.
 
