@@ -44,9 +44,11 @@ class Application: WindowDelegate {
         tabBar.tabsSource = editor
         tabBar.visible = true
 
-        if let path = filePath {
+        if let path = filePath, !isDirectory(path) {
             editor.openFile(path)
         } else {
+            // No file argument (or a directory like `swim .`): start with a
+            // pristine [No Name] tab; the first opened file replaces it.
             editor.newFile()
         }
         updateStatusBar()
@@ -228,6 +230,11 @@ class Application: WindowDelegate {
         if let filePath = editor.filePath {
             notifyLSPFileOpen(filePath)
         }
+    }
+
+    private func isDirectory(_ path: String) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
     }
 
     private func findExecutable(paths: [String], command: String) -> String? {
