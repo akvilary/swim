@@ -125,6 +125,14 @@ class EditorWindow: Window {
                     if declTypeKeywords.contains(prev.text) { type = "class" }
                     else if prev.text == "func" { type = "function" }
                 }
+                // sourcekit-lsp types signature parameters and call-site
+                // argument labels as function/method; they are exactly the
+                // ones immediately followed by ':' — recolor as parameter.
+                if (type == "function" || type == "method"),
+                   start + length < chars.count,
+                   chars[start + length] == ":" {
+                    type = "parameter"
+                }
                 if t.type == "keyword", start + length <= chars.count {
                     prevKeyword = (String(chars[start..<start + length]), start + length)
                 } else {
@@ -1044,7 +1052,7 @@ class EditorWindow: Window {
         case "type", "class", "struct", "enum", "interface": return Theme.blue1
         case "function", "method": return Theme.blue1
         case "variable", "property": return Theme.fg
-        case "parameter": return Theme.orange
+        case "parameter": return Theme.yellow
         case "operator": return Theme.blue5
         case "punctuation": return Theme.fg
         case "namespace", "module": return Theme.magenta
