@@ -126,7 +126,9 @@ enum Key: Equatable {
         }
 
         if b == 13 { return .enter }
-        if b == 127 || b == 8 { return .backspace }
+        if b == 127 { return .backspace }
+        // 0x08 is Ctrl+H in modern terminals (Backspace sends 127);
+        // it falls through to the C0 branch below and becomes .ctrl("h")
         if b == 9 { return .tab }
         if b == 4 { return .ctrl("d") }
 

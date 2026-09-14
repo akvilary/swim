@@ -74,13 +74,13 @@ class PreviewWindow: Window {
 
     override func handleKey(_ key: Key) -> Bool {
         switch key {
-        case .ctrl("f"):
+        case .ctrl("j"):
             let visibleH = height - 1
             if scrollY + visibleH < lines.count {
                 scrollY += visibleH
                 dirty = true
             }
-        case .ctrl("b"):
+        case .ctrl("k"):
             let visibleH = height - 1
             scrollY = max(0, scrollY - visibleH)
             dirty = true

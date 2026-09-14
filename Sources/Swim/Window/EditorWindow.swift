@@ -266,8 +266,10 @@ class EditorWindow: Window {
         case .char("/"): mode = .command; commandBuffer = "/"
         case .char("n"): searchNext()
         case .char("N"): searchPrev()
-        case .ctrl("f"): pageDown()
-        case .ctrl("b"): pageUp()
+        case .ctrl("j"): pageDown()
+        case .ctrl("k"): pageUp()
+        case .ctrl("h"): cycleTab(-1)
+        case .ctrl("l"): cycleTab(1)
         default: pendingG = false; pendingD = false; pendingY = false; return false
         }
         dirty = true
