@@ -53,15 +53,13 @@ class Renderer {
             if delta != 0 && abs(delta) < rect.h {
                 let top = rect.y
                 let bottom = rect.y + rect.h - 1
-                // DECSTBM scroll region limited to the editor rows
-                terminal.writeBuffer(Array("\u{1b}[\(top + 1);\(bottom + 1)r".utf8))
-                terminal.moveCursor(row: top, col: 0)
-                if delta > 0 {
-                    terminal.writeBuffer(Array("\u{1b}[\(delta)S".utf8))
-                } else {
-                    terminal.writeBuffer(Array("\u{1b}[\(-delta)T".utf8))
-                }
-                terminal.writeBuffer(Array("\u{1b}[r".utf8))
+                // DECSTBM scroll region limited to the editor rows. All three
+                // sequences are queued (not written) so the whole frame —
+                // scroll + repaint of whatever the band shifted — reaches the
+                // terminal in one write() and paints atomically.
+                terminal.queueEscape("\u{1b}[\(top + 1);\(bottom + 1)r")
+                terminal.queueEscape("\u{1b}[\(delta > 0 ? "\(delta)S" : "\(-delta)T")")
+                terminal.queueEscape("\u{1b}[r")
                 // Mirror the shift in the previous-frame buffer so the diff
                 // below only redraws the rows that actually appeared.
                 shiftPrevCells(regionTop: top, regionBottom: bottom, delta: delta, width: screenW)

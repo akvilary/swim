@@ -115,6 +115,16 @@ final class Terminal {
         }
     }
 
+    /// Queues an escape sequence into the frame buffer — everything queued
+    /// here and via moveCursor/set*/writeChar is delivered by a single
+    /// write() in flush(), so the terminal paints the frame atomically.
+    /// Writing control sequences directly (writeBuffer) would let the
+    /// terminal render an intermediate state (e.g. side windows shifted by
+    /// a scroll region but not yet repainted).
+    func queueEscape(_ s: String) {
+        outputBuffer.append(contentsOf: s.utf8)
+    }
+
     func moveCursor(row: Int, col: Int) {
         outputBuffer.append(contentsOf: "\u{1b}[\(row + 1);\(col + 1)H".utf8)
     }
