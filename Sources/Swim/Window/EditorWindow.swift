@@ -551,6 +551,16 @@ class EditorWindow: Window {
         }
     }
 
+    private func applyForward(_ action: (offset: Int, deleted: String, inserted: String)) {
+        guard let buf = buffer else { return }
+        if !action.deleted.isEmpty {
+            buf.delete(at: action.offset, length: action.deleted.utf8.count)
+        }
+        if !action.inserted.isEmpty {
+            buf.insert(action.inserted, at: action.offset)
+        }
+    }
+
     private func undo() {
         guard let buf = buffer, !undoStack.isEmpty else { return }
         let action = undoStack.removeLast()
@@ -570,12 +580,12 @@ class EditorWindow: Window {
         guard let buf = buffer, !redoStack.isEmpty else { return }
         let action = redoStack.removeLast()
         isUndoRedoing = true
-        applyInverse(action)
+        applyForward(action)
         undoStack.append(action)
         isUndoRedoing = false
         modified = true
 
-        let endOffset = action.offset + action.deleted.utf8.count
+        let endOffset = action.offset + action.inserted.utf8.count
         let (line, byteCol) = buf.offsetToLineCol(min(endOffset, buf.totalLength))
         cursorLine = line
         cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol)
