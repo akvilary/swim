@@ -121,6 +121,7 @@ struct SyntaxTokenizer {
         case "ts": return "typescript"
         case "js": return "javascript"
         case "dart": return "dart"
+        case "sh", "bash": return "shellscript"
         default: return "plaintext"
         }
     }

@@ -196,6 +196,21 @@ class Application: WindowDelegate {
             lspClients["rust"] = client
         }
 
+        let bashPaths = [
+            "/usr/bin/bash-language-server",
+            "/usr/local/bin/bash-language-server",
+            "/home/linuxbrew/.linuxbrew/bin/bash-language-server",
+            "/opt/homebrew/bin/bash-language-server",
+            "\(NSHomeDirectory())/.npm-global/bin/bash-language-server",
+            "\(NSHomeDirectory())/.local/bin/bash-language-server",
+        ]
+
+        if let path = findExecutable(paths: bashPaths, command: "bash-language-server") {
+            let client = LSPClient()
+            client.start(executable: path, arguments: ["start"], rootUri: "file://\(rootPath)")
+            lspClients["bash"] = client
+        }
+
         if let filePath = editor.filePath {
             notifyLSPFileOpen(filePath)
         }
@@ -219,6 +234,7 @@ class Application: WindowDelegate {
         case "cs", "csx": return "csharp"
         case "go": return "go"
         case "rs": return "rust"
+        case "sh", "bash": return "bash"
         default: return nil
         }
     }
