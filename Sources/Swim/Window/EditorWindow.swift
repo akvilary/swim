@@ -181,6 +181,7 @@ class EditorWindow: Window {
         Terminal.shared.osc52Copy(text)
     }
 
+
     override init(x: Int = 0, y: Int = 0, width: Int = 0, height: Int = 0) {
         super.init(x: x, y: y, width: width, height: height)
     }
@@ -865,6 +866,14 @@ class EditorWindow: Window {
     }
 
     func ensureCursorVisible() {
+        // Before the first layout the window is 0x0; the scroll math below
+        // would degenerate (scrollY = 1, scrollX = lnWidth + 2) and corrupt
+        // the initial view of every file opened at startup.
+        guard width > 1, height > 0 else {
+            scrollX = 0
+            scrollY = 0
+            return
+        }
         if cursorLine < scrollY { scrollY = cursorLine }
         else if cursorLine >= scrollY + height { scrollY = cursorLine - height + 1 }
         let dispCol = displayColForChar(line: cursorLine, charCol: cursorCol)
