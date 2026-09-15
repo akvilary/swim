@@ -79,8 +79,10 @@ class TerminalWindow: Window {
         }
         clampScroll()
 
-        for row in 0..<height {
-            let lineIdx = scrollOffset + row
+        drawPlate()
+
+        for row in 1..<max(1, height) {
+            let lineIdx = scrollOffset + (row - 1)
             if lineIdx < flatLines.count {
                 let line = flatLines[lineIdx]
                 let fg: Color
@@ -189,16 +191,19 @@ class TerminalWindow: Window {
         return true
     }
 
-    /// The live prompt — the last line of the scrollable buffer, styled like
-    /// the old fixed input line.
+    /// Fixed one-line plate at the top: `Terminal@folder_name`,
+    /// spanning the full window width.
+    private func drawPlate() {
+        guard height >= 2 else { return }
+        drawHeader(" Terminal @ \(dirName()) ", fg: Theme.fg)
+    }
+
+    /// The live prompt — the last line of the scrollable buffer.
     private func drawPromptLine(row: Int) {
-        let dirName = workingDirectory.isEmpty
-            ? "/"
-            : URL(fileURLWithPath: workingDirectory).lastPathComponent
-        var prompt = " \(dirName)> "
+        var prompt = " > "
         if isRunning {
             let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
-            prompt = " \(spinner) \(dirName)> "
+            prompt = " \(spinner) > "
         }
 
         drawLine(prompt, row: row, col: 0, fg: Theme.blue, bg: Theme.terminalBg, bold: true)
@@ -207,7 +212,11 @@ class TerminalWindow: Window {
         drawLine(displayText, row: row, col: prompt.count, fg: Theme.fg, bg: Theme.terminalBg)
         let cursorCol = prompt.count + min(inputCursorPos, maxInput)
         if cursorCol < width {
-            setCell(row, cursorCol, Cell.colored(" ", fg: Theme.fg, bg: Theme.fgGutter))
+            // Same as the editor: invert the existing cell — the character
+            // keeps its text color and stays visible under the cursor.
+            var cell = getCell(row, cursorCol)
+            cell.reverse = true
+            setCell(row, cursorCol, cell)
         }
     }
 
@@ -228,10 +237,17 @@ class TerminalWindow: Window {
         }
     }
 
-    /// +1 — the prompt line lives at the end of the scrollable content.
+    private func dirName() -> String {
+        workingDirectory.isEmpty
+            ? "/"
+            : URL(fileURLWithPath: workingDirectory).lastPathComponent
+    }
+
+    /// +1 — the prompt line lives at the end of the scrollable content;
+    /// the plate row at the top is not scrollable.
     private func maxScroll() -> Int {
         ensureFlat()
-        return max(0, flatLines.count + 1 - height)
+        return max(0, flatLines.count + 1 - max(0, height - 1))
     }
 
     private var atBottom: Bool {
