@@ -1116,6 +1116,8 @@ class Application: WindowDelegate {
             switchToSpace("editor")
         }
         openFileInEditor(path)
+        // Show where we are: the explorer expands to and highlights the file.
+        fileExplorer.reveal(path: BufferManager.normalize(path))
         // goToPosition clamps the line to the buffer (a search index may be
         // stale after edits) and resets the column — a cursorCol carried
         // over from the previous buffer would shift scrollX.

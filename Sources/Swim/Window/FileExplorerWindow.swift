@@ -106,6 +106,48 @@ class FileExplorerWindow: Window {
         dirty = true
     }
 
+    /// Reveals a file opened from outside the explorer (search result,
+    /// jump): expands its ancestor directories and selects the node, so the
+    /// tree shows where we are. Does nothing for paths outside the root or
+    /// inside hidden directories (never listed).
+    func reveal(path: String) {
+        guard !currentDirectory.isEmpty, path.hasPrefix(currentDirectory + "/") else { return }
+        var changed = revealAncestors(&rootEntries, target: path)
+        flattenEntries()
+        if let idx = flatEntries.firstIndex(where: { $0.entry.path == path && !$0.entry.isDirectory }) {
+            if selectedIndex != idx {
+                selectedIndex = idx
+                changed = true
+            }
+            ensureVisible()
+        }
+        if changed {
+            dirty = true
+        }
+    }
+
+    /// Expands every directory along the ancestor chain of `target`.
+    @discardableResult
+    private func revealAncestors(_ entries: inout [FileEntry], target: String) -> Bool {
+        var changed = false
+        for i in 0..<entries.count {
+            guard entries[i].isDirectory, target.hasPrefix(entries[i].path + "/") else { continue }
+            if !entries[i].isLoaded {
+                entries[i].children = loadEntries(at: entries[i].path)
+                entries[i].isLoaded = true
+                changed = true
+            }
+            if !entries[i].isExpanded {
+                entries[i].isExpanded = true
+                changed = true
+            }
+            if revealAncestors(&entries[i].children, target: target) {
+                changed = true
+            }
+        }
+        return changed
+    }
+
     private func loadEntries(at path: String) -> [FileEntry] {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(atPath: path) else { return [] }
