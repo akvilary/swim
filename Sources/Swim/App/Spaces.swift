@@ -4,7 +4,6 @@ class Space {
     let id: String
     private(set) var windows: [String: Window] = [:]
     var focused: Window!
-    var prevFocused: Window!
     weak var delegate: WindowDelegate?
 
     init(id: String, delegate: WindowDelegate? = nil) {

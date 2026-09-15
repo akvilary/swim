@@ -413,7 +413,7 @@ class EditorWindow: Window {
         let cmd = commandBuffer
         if cmd == "w" { saveFile() }
         else if cmd == "q" || cmd == "bd" { delegate?.handleEditorCommand(cmd) }
-        else if cmd == "wq" || cmd == "x" { saveFile(); delegate?.handleEditorCommand("quit") }
+        else if cmd == "wq" || cmd == "x" { saveFile(); delegate?.handleEditorCommand("wquit") }
         else if cmd == "q!" || cmd == "forcequit" { delegate?.handleEditorCommand("forcequit") }
         else if cmd == "bd!" { delegate?.handleEditorCommand("bd!") }
         else if cmd.hasPrefix("e! ") {

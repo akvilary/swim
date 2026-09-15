@@ -19,6 +19,11 @@ class Application: WindowDelegate {
     private var maximized: Window?
     private var maximizeHidden: [Window] = []
 
+    /// Z-order stack of open windows; the last element is the top (most
+    /// recently opened). Closing a window pops it and reveals the window
+    /// beneath; when the stack empties the app quits.
+    private var windowStack: [Window] = []
+
     private let editor = EditorWindow()
     private let statusBar = StatusBarWindow()
     private let tabBar = TabBarWindow()
@@ -75,9 +80,15 @@ class Application: WindowDelegate {
         fileExplorer.loadDirectory(startDir)
         gitPanel.workingDirectory = startDir
 
+        // Initial window stack: explorer at the bottom, editor on top of it
+        // when a file was opened from the command line.
+        windowStack = [fileExplorer]
+        if fileToOpen != nil { windowStack.append(editor) }
+
         setupLSP(rootPath: startDir)
 
         spaces.current.focused = fileToOpen != nil ? editor : fileExplorer
+        spaces.current.updateFocusStates()
     }
 
     func run() {
@@ -484,7 +495,18 @@ class Application: WindowDelegate {
     private func handleGlobalKey(_ key: Key) {
         if editor.lastError != nil { editor.lastError = nil }
         if editor.mode == .command {
+            var isEnter = false
+            if case .enter = key { isEnter = true }
+            let pathBefore = editor.filePath
             if editor.handleKey(key) {
+                // A command like `:e` may have opened a file while the editor
+                // was hidden or another space was active — reveal it now.
+                if isEnter, case .normal = editor.mode,
+                   editor.filePath != nil, editor.filePath != pathBefore {
+                    if !editor.visible { ensureEditorVisible() }
+                    if spaces.current.id != "editor" { switchToSpace("editor") }
+                    focus(editor)
+                }
                 updateStatusBar()
                 notifyLSPChange()
             }
@@ -505,7 +527,10 @@ class Application: WindowDelegate {
             running = false
             return
         case .ctrl("x"):
-            if editor.visible {
+            if let focused = spaces.current.focused, focused !== editor,
+               focused !== statusBar, focused !== tabBar {
+                closeWindow(focused)
+            } else if editor.visible {
                 closeCurrentTab(force: false)
             }
             return
@@ -535,16 +560,8 @@ class Application: WindowDelegate {
             }
         }
 
-        if case .char(":") = key, editor.visible, case .normal = editor.mode {
-            if spaces.current.focused !== editor {
-                spaces.current.focused = editor
-                spaces.current.updateFocusStates()
-                spaces.markAllDirty()
-            }
-            editor.mode = .command
-            editor.commandBuffer = ""
-            editor.dirty = true
-            updateStatusBar()
+        if case .char(":") = key, canOpenCommandLine() {
+            openCommandLine()
             return
         }
 
@@ -555,34 +572,106 @@ class Application: WindowDelegate {
                 notifyLSPChange()
             }
         } else if case .escape = key, focused !== editor {
-            if maximized != nil { restoreMaximized() }
-            if spaces.current.id != "editor" {
-                switchToSpace("editor")
-                spaces.current.focused = editor.visible ? editor : fileExplorer
-                spaces.current.updateFocusStates()
-            } else {
-                let hasOtherVisible = spaces.current.visibleWindows.contains {
-                    $0 !== focused && $0 !== statusBar && $0 !== tabBar
-                }
-                guard hasOtherVisible else { return }
-                focused.visible = false
-                refocus(from: focused)
-                recalculateLayout()
-                spaces.markAllDirty()
-            }
+            closeWindow(focused)
         }
     }
 
-    /// Moves focus off a window that is being hidden: to the previously
-    /// focused window if still visible, else to the first visible one.
-    private func refocus(from window: Window) {
-        if let prev = spaces.current.prevFocused, prev !== window, prev.visible {
-            spaces.current.focused = prev
-        } else {
-            spaces.current.focused = spaces.current.visibleWindows.first {
-                $0 !== statusBar && $0 !== tabBar
-            } ?? editor
+    /// `:` opens the command line from any window. Blocked only while the
+    /// editor itself is taking text (insert mode) or the focused search
+    /// window is accepting a query — there `:` must be typed literally.
+    private func canOpenCommandLine() -> Bool {
+        switch editor.mode {
+        case .normal, .visual, .visualLine: break
+        default: return false
         }
+        if let focused = spaces.current.focused,
+           focused === searchResults, searchResults.inputMode {
+            return false
+        }
+        return true
+    }
+
+    /// Enters command mode no matter which window has focus. The focused
+    /// window keeps focus (and its place on top of the stack); the command
+    /// is typed through the status bar, and `:q` closes the focused window.
+    private func openCommandLine() {
+        editor.mode = .command
+        editor.commandBuffer = ""
+        editor.dirty = true
+        updateStatusBar()
+    }
+
+    /// Closes a window (`:q`, Ctrl+X, Esc): pops it from the window stack
+    /// and reveals the window beneath. The editor closes tab by tab and only
+    /// leaves the stack when its last tab is closed. Popping the last window
+    /// quits the app.
+    private func closeWindow(_ window: Window, force: Bool = false) {
+        guard window !== statusBar, window !== tabBar else { return }
+        if maximized != nil { restoreMaximized() }
+
+        var target = window
+        if spaces.current.id != "editor" {
+            // The search space closes as one unit — back to the editor-space
+            // window stack, where the search window sits on top.
+            switchToSpace("editor")
+            target = searchResults
+        }
+
+        if target === editor {
+            if editor.visible { closeCurrentTab(force: force) }
+            return
+        }
+        popWindow(target)
+    }
+
+    /// `:q` / `:bd` close the focused window — always the stack top.
+    private func closeFocusedWindow(force: Bool) {
+        guard let focused = spaces.current.focused,
+              focused !== statusBar, focused !== tabBar else { return }
+        closeWindow(focused, force: force)
+    }
+
+    /// Pops a window off the stack, hides it, and hands focus to the window
+    /// beneath (the new stack top). An empty stack exits the app.
+    private func popWindow(_ window: Window) {
+        removeFromStack(window)
+        window.visible = false
+        if window === editor { tabBar.visible = false }
+        if halfScreenWindow === window { halfScreenWindow = nil }
+        guard focusStackTop() else {
+            running = false
+            return
+        }
+        spaces.current.updateFocusStates()
+        recalculateLayout()
+        spaces.markAllDirty()
+        updateStatusBar()
+    }
+
+    /// Raises a window to the top of the stack (opening or re-opening it).
+    private func pushWindow(_ window: Window) {
+        removeFromStack(window)
+        windowStack.append(window)
+    }
+
+    private func removeFromStack(_ window: Window) {
+        windowStack.removeAll { $0 === window }
+    }
+
+    /// Focuses the stack top. Returns false when the stack is empty.
+    @discardableResult
+    private func focusStackTop() -> Bool {
+        guard let top = windowStack.last else { return false }
+        spaces.current.focused = top
+        return true
+    }
+
+    /// Focusing a window raises it to the top of the window stack, so the
+    /// focused window is always the stack top and closing pops exactly it.
+    private func focus(_ window: Window) {
+        pushWindow(window)
+        spaces.current.focused = window
+        spaces.current.updateFocusStates()
     }
 
     private func toggleFileExplorer() {
@@ -595,9 +684,10 @@ class Application: WindowDelegate {
         guard editor.visible || !fileExplorer.visible else { return }
         fileExplorer.visible = !fileExplorer.visible
         if fileExplorer.visible {
-            spaces.current.focused = fileExplorer
-        } else if spaces.current.focused === fileExplorer {
-            refocus(from: fileExplorer)
+            focus(fileExplorer)
+        } else {
+            popWindow(fileExplorer)
+            return
         }
         recalculateLayout()
         spaces.markAllDirty()
@@ -608,9 +698,10 @@ class Application: WindowDelegate {
         gitPanel.visible = !gitPanel.visible
         if gitPanel.visible {
             gitPanel.refresh()
-            spaces.current.focused = gitPanel
-        } else if spaces.current.focused === gitPanel {
-            refocus(from: gitPanel)
+            focus(gitPanel)
+        } else {
+            popWindow(gitPanel)
+            return
         }
         recalculateLayout()
         spaces.markAllDirty()
@@ -620,6 +711,8 @@ class Application: WindowDelegate {
         if maximized != nil { restoreMaximized() }
         if spaces.current.id == "search" {
             switchToSpace("editor")
+            focusStackTop()
+            spaces.current.updateFocusStates()
         } else {
             searchResults.visible = true
             preview.visible = true
@@ -632,23 +725,42 @@ class Application: WindowDelegate {
             if !searchQuery.isEmpty {
                 searchResults.search(query: searchQuery, in: cwd)
             }
-            spaces.current.focused = searchResults
+            focus(searchResults)
         }
     }
 
     private func switchToSpace(_ spaceId: String) {
+        if spaceId == "editor" {
+            // Search windows only exist inside the search space — they never
+            // belong to the editor-space window stack.
+            removeFromStack(searchResults)
+            removeFromStack(preview)
+        }
         spaces.switchTo(spaceId)
         recalculateLayout()
         spaces.markAllDirty()
     }
 
     private func cycleFocus() {
-        let focusable = spaces.current.focusable()
+        let focusable = stackOrdered(spaces.current.focusable())
         guard focusable.count > 1 else { return }
         guard let currentIdx = focusable.firstIndex(where: { $0 === spaces.current.focused }) else { return }
-        spaces.current.prevFocused = spaces.current.focused
-        spaces.current.focused = focusable[(currentIdx + 1) % focusable.count]
+        focus(focusable[(currentIdx + 1) % focusable.count])
         spaces.markAllDirty()
+    }
+
+    /// Deterministic focus order: windows bottom-to-top of the stack, then
+    /// anything not tracked by the stack (none in practice).
+    private func stackOrdered(_ windows: [Window]) -> [Window] {
+        var rank: [ObjectIdentifier: Int] = [:]
+        for (idx, window) in windowStack.enumerated() {
+            rank[ObjectIdentifier(window)] = idx
+        }
+        return windows.sorted {
+            let a = rank[ObjectIdentifier($0)] ?? .max
+            let b = rank[ObjectIdentifier($1)] ?? .max
+            return a < b
+        }
     }
 
     private func toggleHalfScreen() {
@@ -728,6 +840,7 @@ class Application: WindowDelegate {
         guard !editor.visible else { return }
         editor.visible = true
         tabBar.visible = true
+        pushWindow(editor)
         recalculateLayout()
     }
 
@@ -783,9 +896,11 @@ class Application: WindowDelegate {
     func handleEditorCommand(_ cmd: String) {
         switch cmd {
         case "quit", "q", "bd":
+            closeFocusedWindow(force: false)
+        case "forcequit", "bd!", "q!":
+            closeFocusedWindow(force: true)
+        case "wquit":
             closeCurrentTab(force: false)
-        case "forcequit", "bd!":
-            closeCurrentTab(force: true)
         case "qa":
             running = false
         default:
@@ -801,8 +916,13 @@ class Application: WindowDelegate {
             return
         }
         notifyLSPClose(closed.filePath)
+        if wasLast {
+            // The last tab closed — the editor window pops off the stack and
+            // the window beneath is revealed (or the app quits).
+            popWindow(editor)
+            return
+        }
         updateStatusBar()
-        if wasLast { running = false }
     }
 
     private func closeOtherTabs() {
@@ -849,8 +969,8 @@ class Application: WindowDelegate {
         editor.dirty = true
         updateStatusBar()
         if isNew { notifyLSPFileOpen(path) }
-        spaces.current.focused = editor
-        spaces.current.updateFocusStates()
+        // Opening a file raises the editor to the top of the stack.
+        focus(editor)
     }
 
     func runGitCommand(label: String, args: [String]) {
@@ -858,8 +978,7 @@ class Application: WindowDelegate {
         command.workingDirectory = gitPanel.workingDirectory
         command.runCommand(label, args: args)
         recalculateLayout()
-        spaces.current.prevFocused = spaces.current.focused
-        spaces.current.focused = command
+        focus(command)
         spaces.markAllDirty()
     }
 
