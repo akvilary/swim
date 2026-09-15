@@ -248,12 +248,18 @@ final class PieceTable {
         let start = lineStarts[lineNum]
         let end = lineEnd(line: lineNum)
         let text = getText(range: start..<end)
-        var slice = text[...]
-        if slice.hasSuffix("\r\n") { slice = slice.dropLast(2) }
-        else if slice.hasSuffix("\n") { slice = slice.dropLast() }
-        else if slice.hasSuffix("\r") { slice = slice.dropLast() }
+        // Strip the terminator at BYTE level: "\r\n" is a single grapheme
+        // cluster in Swift, so dropLast(2) on the substring would also eat
+        // the last visible character of every CRLF line.
+        let utf8 = Array(text.utf8)
+        var dropCount = 0
+        if utf8.last == 10 {
+            dropCount = (utf8.count >= 2 && utf8[utf8.count - 2] == 13) ? 2 : 1
+        } else if utf8.last == 13 {
+            dropCount = 1
+        }
         cachedLineNum = lineNum
-        cachedLineStr = String(slice)
+        cachedLineStr = String(bytes: utf8.dropLast(dropCount), encoding: .utf8) ?? ""
         return cachedLineStr
     }
 

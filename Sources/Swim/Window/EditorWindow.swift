@@ -389,6 +389,8 @@ class EditorWindow: Window {
         case .char("k"), .up: moveCursorUp()
         case .char("y"): yankVisualLineSelection(); mode = .normal
         case .char("d"): deleteVisualLineSelection(); mode = .normal
+        case .char("H"), .ctrl("h"), .ctrlLeft: shiftVisualLines(by: -indentSize())
+        case .char("L"), .ctrl("l"), .ctrlRight: shiftVisualLines(by: indentSize())
         default: return false
         }
         dirty = true
@@ -788,6 +790,75 @@ class EditorWindow: Window {
         recordAction(offset: start, deleted: deletedText, inserted: "")
         cursorLine = min(startLine, max(0, buf.lineCount - 1))
         cursorCol = 0
+    }
+
+    /// Shifts the visual-line selection by the per-language indent width:
+    /// positive indents, negative outdents (removes at most |delta| leading
+    /// spaces per line). Applied as a single undo action; the selection and
+    /// mode are kept so the shift can be repeated.
+    private func shiftVisualLines(by delta: Int) {
+        guard let buf = buffer else { return }
+        let (startLine, rawEndLine) = visualLineRange()
+        // The phantom empty line after a trailing newline (its start sits
+        // at totalLength) is a buffer artifact, not content — vim's visual
+        // line selection never includes it; shifting it would rewrite the
+        // file's trailing-newline structure. A selection consisting of the
+        // phantom alone (cursor on the last empty line) shifts nothing.
+        var endLine = rawEndLine
+        if buf.lineStart(line: endLine) == buf.totalLength {
+            if endLine == startLine { return }
+            endLine -= 1
+        }
+        var newLines = [String]()
+        var changed = false
+        var cursorDelta = 0
+        for line in startLine...endLine {
+            let content = buf.getLine(line)
+            if delta > 0 {
+                newLines.append(String(repeating: " ", count: delta) + content)
+                changed = true
+                if line == cursorLine { cursorDelta = delta }
+            } else {
+                var spaces = 0
+                for c in content { if c == " " { spaces += 1 } else { break } }
+                let remove = min(spaces, -delta)
+                newLines.append(String(content.dropFirst(remove)))
+                if remove > 0 {
+                    changed = true
+                    if line == cursorLine { cursorDelta = -remove }
+                }
+            }
+        }
+        guard changed else { return }
+        let start = buf.lineStart(line: startLine)
+        let end = buf.lineEnd(line: endLine)
+        let deletedText = buf.getText(range: start..<min(end, buf.totalLength))
+        // Each line is rebuilt with its own terminator — "\n" or "\r\n",
+        // detected from the byte gap between content end and the next line
+        // start (checked against the ORIGINAL line length; suffix sniffing
+        // on deletedText would double-add the newline when the last
+        // selected line is the phantom empty line after a trailing one).
+        var terminators = [String]()
+        for line in startLine...endLine {
+            let content = buf.getLine(line)
+            let contentEnd = buf.lineStart(line: line) + content.utf8.count
+            let nextStart = line < endLine ? buf.lineStart(line: line + 1) : end
+            if contentEnd < nextStart {
+                terminators.append(nextStart - contentEnd == 2 ? "\r\n" : "\n")
+            } else {
+                terminators.append("")
+            }
+        }
+        var insertedText = ""
+        for (i, content) in newLines.enumerated() {
+            insertedText += content + terminators[i]
+        }
+        buf.delete(at: start, length: end - start)
+        buf.insert(insertedText, at: start)
+        recordAction(offset: start, deleted: deletedText, inserted: insertedText)
+        cursorCol = max(0, cursorCol + cursorDelta)
+        clampCol()
+        ensureCursorVisible()
     }
 
     private func searchNext() {
