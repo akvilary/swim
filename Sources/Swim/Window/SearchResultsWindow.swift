@@ -57,12 +57,19 @@ class SearchResultsWindow: Window {
             let maxInput = width - prompt.count - 2
             let displayText = String(inputBuffer.suffix(max(0, maxInput)))
             drawLine(displayText, row: 0, col: prompt.count, fg: Theme.fg, bg: Theme.bgHighlight)
+            // Fill the whole tail — starting one past the text would leave a
+            // stray dark cell right after the last character once the
+            // cursor moves away from it.
+            for i in min(width, max(0, prompt.count + displayText.count))..<width {
+                setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
+            }
             let cursorCol = prompt.count + min(inputCursorPos, maxInput)
             if cursorCol < width {
-                setCell(0, cursorCol, Cell.colored(" ", fg: Theme.fg, bg: Theme.fgGutter))
-            }
-            for i in (prompt.count + displayText.count + 1)..<width {
-                setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
+                // Same as the editor/terminal: invert the existing cell —
+                // the character keeps its text color and stays visible.
+                var cell = getCell(0, cursorCol)
+                cell.reverse = true
+                setCell(0, cursorCol, cell)
             }
         } else {
             let headerText: String

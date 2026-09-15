@@ -305,13 +305,13 @@ class Application: WindowDelegate {
     /// Tab-aware jump: opens or switches to the target file's tab (no reload
     /// of unsaved buffers) and positions the cursor.
     private func jump(to path: String, line: Int, colUtf16: Int) {
+        if spaces.current.id != "editor" {
+            switchToSpace("editor")
+        }
         if path != editor.filePath {
             openFileInEditor(path)
         }
         editor.goToPosition(line: line, colUtf16: colUtf16)
-        if spaces.current.id != "editor" {
-            switchToSpace("editor")
-        }
         updateStatusBar()
         spaces.current.update()
         render()
@@ -1109,12 +1109,18 @@ class Application: WindowDelegate {
     }
 
     func openFileAtLine(_ path: String, line: Int) {
-        openFileInEditor(path)
-        editor.cursorLine = max(0, line - 1)
-        editor.ensureCursorVisible()
+        // Switch first: openFileInEditor focuses the editor, and focus must
+        // land in the editor space — focusing while the search space is
+        // current would leave the editor space's stale focus (explorer).
         if spaces.current.id != "editor" {
             switchToSpace("editor")
         }
+        openFileInEditor(path)
+        // goToPosition clamps the line to the buffer (a search index may be
+        // stale after edits) and resets the column — a cursorCol carried
+        // over from the previous buffer would shift scrollX.
+        editor.goToPosition(line: line - 1, colUtf16: 0)
+        updateStatusBar()
     }
 
     private func openFileInEditor(_ path: String) {
