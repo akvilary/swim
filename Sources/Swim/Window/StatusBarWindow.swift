@@ -45,6 +45,14 @@ class StatusBarWindow: Window {
             }
         }
 
+        let rightParts: [String] = [
+            fileType.isEmpty ? "" : " \(fileType) ",
+            " utf-8 ",
+            " \(cursorLine + 1):\(cursorCol + 1) ",
+            " \(Int(Double(cursorLine + 1) / Double(max(totalLines, 1)) * 100))% ",
+        ]
+        let rightText = rightParts.joined()
+
         let centerText: String
         let centerFg: Color
         if let err = errorMessage {
@@ -55,7 +63,18 @@ class StatusBarWindow: Window {
             centerText = " \(prefix)\(commandText)"
             centerFg = Theme.fg
         } else {
-            centerText = " \(modified ? "+ " : "")\(fileName) "
+            let modifiedPrefix = modified ? "+ " : ""
+            // A path that doesn't fit is truncated from the left — the tail
+            // (deepest directories, file name) stays visible.
+            var name = fileName
+            let avail = width - modeLabel.count - rightText.count - 2
+            if modifiedPrefix.count + name.count > avail {
+                let keep = max(1, avail - modifiedPrefix.count - 1)
+                if keep < name.count {
+                    name = "…" + name.suffix(keep)
+                }
+            }
+            centerText = " \(modifiedPrefix)\(name) "
             centerFg = Theme.fgDark
         }
         let centerStart = modeLabel.count
@@ -66,13 +85,6 @@ class StatusBarWindow: Window {
             }
         }
 
-        let rightParts: [String] = [
-            fileType.isEmpty ? "" : " \(fileType) ",
-            " utf-8 ",
-            " \(cursorLine + 1):\(cursorCol + 1) ",
-            " \(Int(Double(cursorLine + 1) / Double(max(totalLines, 1)) * 100))% ",
-        ]
-        let rightText = rightParts.joined()
         let rightStart = max(0, width - rightText.count)
         var rc = rightStart
         for part in rightParts {

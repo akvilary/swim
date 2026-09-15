@@ -15,6 +15,10 @@ class Application: WindowDelegate {
     private var pendingTokenRefresh: (path: String, earliest: TimeInterval)?
     private lazy var renderer = Renderer(terminal: terminal)
 
+    /// Directory the app was opened with (`swim .`) or the CWD — the root of
+    /// the explorer/LSP and the base for relative paths in the status bar.
+    private var rootDirectory = ""
+
     private var halfScreenWindow: Window?
     private var maximized: Window?
     private var maximizeHidden: [Window] = []
@@ -61,6 +65,7 @@ class Application: WindowDelegate {
             // explorer paths must be absolute.
             startDir = BufferManager.normalize(path)
         }
+        rootDirectory = startDir
 
         var fileToOpen: String?
         if let path = filePath, !isDirectory(path) {
@@ -906,7 +911,7 @@ class Application: WindowDelegate {
 
     private func updateStatusBar() {
         statusBar.modeText = modeString(editor.mode)
-        statusBar.fileName = editor.filePath ?? "[No Name]"
+        statusBar.fileName = editor.filePath.map(displayPath) ?? "[No Name]"
         statusBar.cursorLine = editor.cursorLine
         statusBar.cursorCol = editor.cursorCol
         statusBar.totalLines = editor.buffer?.lineCount ?? 0
@@ -919,6 +924,18 @@ class Application: WindowDelegate {
             statusBar.fileType = ext.isEmpty ? "" : "[\(ext)]"
         }
         statusBar.dirty = true
+    }
+
+    /// Status bar shows the parent directory of the open file: split by "/",
+    /// drop the file name, make relative to the opened directory.
+    private func displayPath(_ path: String) -> String {
+        guard let slash = path.lastIndex(of: "/") else { return path }
+        let dir = String(path[..<slash])
+        if dir == rootDirectory { return "./" }
+        if dir.hasPrefix(rootDirectory + "/") {
+            return "./" + dir.dropFirst(rootDirectory.count + 1)
+        }
+        return dir
     }
 
     private func modeString(_ mode: EditorMode) -> String {
