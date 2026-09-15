@@ -41,10 +41,6 @@ class TerminalWindow: Window {
         guard let result = runTask.consume() else { return }
         isRunning = false
 
-        // Keep the view pinned to the bottom only if the user is already
-        // there; a scrolled-up view must not jump on new output.
-        let wasBottom = atBottom
-
         var lines: [(text: String, kind: LineKind)] = []
         if !result.stdout.isEmpty {
             lines += result.stdout.split(separator: "\n", omittingEmptySubsequences: false)
@@ -62,11 +58,11 @@ class TerminalWindow: Window {
         if !lines.isEmpty, !entries.isEmpty {
             entries[entries.count - 1].lines = lines
         }
-        trim()
+        let dropped = trim()
         flatDirty = true
-        if wasBottom {
-            scrollToBottom()
-        }
+        // New output never repositions the view; trim must not shift what
+        // is currently on screen.
+        scrollOffset = max(0, scrollOffset - dropped)
         dirty = true
         delegate?.requestRender()
     }
@@ -243,16 +239,23 @@ class TerminalWindow: Window {
             : URL(fileURLWithPath: workingDirectory).lastPathComponent
     }
 
+    /// Offset at which the prompt line is the last visible row.
+    private func standardCeiling() -> Int {
+        max(0, flatLines.count + 1 - max(0, height - 1))
+    }
+
     /// +1 — the prompt line lives at the end of the scrollable content;
-    /// the plate row at the top is not scrollable.
+    /// the plate row at the top is not scrollable. The ceiling allows
+    /// scrolling until the prompt becomes the top row, so a freshly
+    /// submitted command can sit at the top with its result below.
     private func maxScroll() -> Int {
         ensureFlat()
-        return max(0, flatLines.count + 1 - max(0, height - 1))
+        return flatLines.count
     }
 
     private var atBottom: Bool {
         ensureFlat()
-        return scrollOffset >= maxScroll()
+        return scrollOffset >= standardCeiling()
     }
 
     private func clampScroll() {
@@ -260,7 +263,9 @@ class TerminalWindow: Window {
     }
 
     private func scrollToBottom() {
-        scrollOffset = Int.max
+        ensureFlat()
+        scrollOffset = standardCeiling()
+        dirty = true
     }
 
     private func scrollBy(_ delta: Int) {
@@ -325,7 +330,11 @@ class TerminalWindow: Window {
         entries.append(Entry(command: trimmed, lines: []))
         isRunning = true
         flatDirty = true
-        scrollToBottom()
+        ensureFlat()
+        // The submitted command becomes the top visible row — its result
+        // is read top-to-bottom. The view returns to the live prompt on
+        // the next typed character or a history recall.
+        scrollOffset = flatLines.count - 1
         dirty = true
 
         let workDir = workingDirectory
@@ -363,22 +372,30 @@ class TerminalWindow: Window {
             entries.append(Entry(command: command, lines: [("cd: not a directory: \(arg)", .stderr)]))
         }
         flatDirty = true
-        scrollToBottom()
+        ensureFlat()
+        scrollOffset = flatLines.count - 1
         dirty = true
     }
 
-    private func trim() {
+    /// Evicts the oldest output beyond the cap. Returns how many leading
+    /// flat lines were dropped, so the caller can keep the view steady.
+    @discardableResult
+    private func trim() -> Int {
         var total = entries.reduce(0) { $0 + $1.lines.count }
+        var dropped = 0
         while total > Self.maxOutputLines && entries.count > 1 {
             let drop = min(total - Self.maxOutputLines, entries[0].lines.count)
             if drop >= entries[0].lines.count {
                 total -= entries[0].lines.count
+                dropped += entries[0].lines.count + 1
                 entries.removeFirst()
             } else {
                 entries[0].lines.removeFirst(drop)
                 total -= drop
+                dropped += drop
             }
         }
+        return dropped
     }
 
     /// Completes the last token of the input line against directory entries
