@@ -34,6 +34,10 @@ struct SyntaxTokenizer {
         "while", "with", "yield",
     ]
 
+    /// Python 3.10 soft keywords — valid identifiers that act as keywords
+    /// only in statement-initial position (`match x:`, `case _:`).
+    static let pythonSoftKeywords: Set<String> = ["match", "case"]
+
     static let rustKeywords: Set<String> = [
         "as", "async", "await", "break", "const", "continue", "crate", "dyn",
         "else", "enum", "extern", "fn", "for", "if", "impl", "in", "let",
@@ -132,7 +136,7 @@ struct SyntaxTokenizer {
         case "c", "h": return cKeywords
         case "cpp", "cxx", "cc", "hpp", "hxx": return cppKeywords
         case "cs", "csx": return csharpKeywords
-        case "py": return pythonKeywords
+        case "py", "pyw", "pyi": return pythonKeywords
         case "rs": return rustKeywords
         case "go": return goKeywords
         case "js", "ts", "jsx", "tsx": return jsKeywords
@@ -162,7 +166,7 @@ struct SyntaxTokenizer {
         case "c", "h": return cLiterals
         case "cpp", "cxx", "cc", "hpp", "hxx": return cppLiterals
         case "cs", "csx": return csharpLiterals
-        case "py": return pythonLiterals
+        case "py", "pyw", "pyi": return pythonLiterals
         case "rs": return rustLiterals
         case "go": return goLiterals
         case "js", "ts", "jsx", "tsx": return jsLiterals
@@ -188,14 +192,17 @@ struct SyntaxTokenizer {
         case active(ruleIndex: Int)
     }
 
-    /// Per-language syntax profile: multi-line string rules plus the
-    /// single-line comment syntax, resolved in one place per file extension.
+    /// Per-language syntax profile: multi-line string rules, the
+    /// single-line comment syntax and soft keywords, resolved in one
+    /// place per file extension. Languages without soft keywords keep
+    /// the empty default — the tokenizer skips the check entirely.
     struct LanguageSyntax {
         let mlRules: [MultilineStringRule]
         let lineComment: String
         /// POSIX shell: "#" comments only where a word begins — `${#arr}`,
         /// `$#`, `x=1#c` are not comments. Python hashes comment anywhere.
         let lineCommentAtWordStartOnly: Bool
+        var softKeywords: Set<String> = []
 
         static let `default` = LanguageSyntax(mlRules: [], lineComment: "//", lineCommentAtWordStartOnly: false)
     }
@@ -209,7 +216,8 @@ struct SyntaxTokenizer {
                     MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true),
                     MultilineStringRule(open: "'''", close: "'''", escapes: true),
                 ],
-                lineComment: "#", lineCommentAtWordStartOnly: false)
+                lineComment: "#", lineCommentAtWordStartOnly: false,
+                softKeywords: pythonSoftKeywords)
         case "swift":
             syntax = LanguageSyntax(
                 mlRules: [MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true)],
@@ -241,7 +249,8 @@ struct SyntaxTokenizer {
         let sorted = LanguageSyntax(
             mlRules: syntax.mlRules.sorted { $0.open.count > $1.open.count },
             lineComment: syntax.lineComment,
-            lineCommentAtWordStartOnly: syntax.lineCommentAtWordStartOnly)
+            lineCommentAtWordStartOnly: syntax.lineCommentAtWordStartOnly,
+            softKeywords: syntax.softKeywords)
         return sorted
     }
 
@@ -251,6 +260,32 @@ struct SyntaxTokenizer {
 
     static func tokenize(lineChars chars: [Character], lineNum: Int, keywords: Set<String>, literals: Set<String> = []) -> [SemanticToken] {
         tokenize(chars: chars, lineNum: lineNum, keywords: keywords, literals: literals).tokens
+    }
+
+    /// Soft keywords are keywords only in statement-initial position: the
+    /// first word on the line, not used as an identifier (`match = 1`,
+    /// `match(x)`, `match.attr`, `match, x = ...`), and followed by the
+    /// start of a subject/pattern: a name, literal, opening bracket or a
+    /// unary/star prefix (augmented assignments rejected by the `=` check).
+    /// Only reached for languages whose profile carries soft keywords;
+    /// check order is cheapest-most-selective first: the statement-start
+    /// scan skips ~all non-line-initial words in a few char compares.
+    private static func isSoftKeyword(_ word: String, _ soft: Set<String>,
+                                      _ chars: [Character], start: Int, end: Int) -> Bool {
+        var j = 0
+        while j < start, chars[j] == " " || chars[j] == "\t" { j += 1 }
+        guard j == start, soft.contains(word) else { return false }
+        if end < chars.count, chars[end] == "(" || chars[end] == "." { return false }
+        var k = end
+        while k < chars.count, chars[k] == " " || chars[k] == "\t" { k += 1 }
+        guard k < chars.count else { return false }
+        let c = chars[k]
+        if c == "-" || c == "+" || c == "*" || c == "~" {
+            return k + 1 < chars.count && chars[k + 1] != "="
+        }
+        return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z")
+            || (c >= "0" && c <= "9") || c == "_"
+            || c == "(" || c == "[" || c == "{" || c == "\"" || c == "'"
     }
 
     static func tokenize(chars: [Character], lineNum: Int, keywords: Set<String>,
@@ -368,7 +403,9 @@ struct SyntaxTokenizer {
                 let type: String
                 if literals.contains(word) {
                     type = "number"
-                } else if keywords.contains(word) {
+                } else if keywords.contains(word)
+                    || (!syntax.softKeywords.isEmpty
+                        && isSoftKeyword(word, syntax.softKeywords, chars, start: i, end: end)) {
                     type = "keyword"
                 } else if chars[i] >= "A" && chars[i] <= "Z" && word.count >= 2 {
                     type = "type"

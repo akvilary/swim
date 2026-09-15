@@ -997,9 +997,9 @@ class EditorWindow: Window {
                 let lsp = semanticTokensFor(line: lineNum)
                 let initial = lineNum < mlStringStates.count ? mlStringStates[lineNum] : .none
                 let builtin = SyntaxTokenizer.tokenize(chars: chars, lineNum: lineNum,
-                                                       keywords: builtinKeywords ?? [],
-                                                       syntax: langSyntax, initialState: initial,
-                                                       literals: builtinLiterals ?? []).tokens
+                                                        keywords: builtinKeywords ?? [],
+                                                        syntax: langSyntax, initialState: initial,
+                                                        literals: builtinLiterals ?? []).tokens
                 let merged = builtin.filter { b in
                     !lsp.contains { l in
                         b.startChar < l.startChar + l.length && l.startChar < b.startChar + b.length
@@ -1015,9 +1015,9 @@ class EditorWindow: Window {
             } else {
                 let initial = lineNum < mlStringStates.count ? mlStringStates[lineNum] : .none
                 tokens = SyntaxTokenizer.tokenize(chars: chars, lineNum: lineNum,
-                                                  keywords: builtinKeywords ?? [],
-                                                  syntax: langSyntax, initialState: initial,
-                                                  literals: builtinLiterals ?? []).tokens
+                                                   keywords: builtinKeywords ?? [],
+                                                   syntax: langSyntax, initialState: initial,
+                                                   literals: builtinLiterals ?? []).tokens
             }
 
             var colOffset = displayColForChar(line: lineNum, charCol: visStart) - scrollX
