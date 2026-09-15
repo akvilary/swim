@@ -154,7 +154,8 @@ class FileExplorerWindow: Window {
             if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); dirty = true }
         case .right: shiftHorizontally(horizontalStep)
         case .left: shiftHorizontally(-horizontalStep)
-        case .enter, .char("l"), .ctrlRight, .ctrl("l"): selectCurrent()
+        case .enter: activateCurrent()
+        case .char("l"), .ctrlRight, .ctrl("l"): selectCurrent()
         case .char("h"), .ctrlLeft, .ctrl("h"): collapseCurrent()
         case .char("G"): selectedIndex = max(0, flatEntries.count - 1); ensureVisible(); dirty = true
         case .char("g"): selectedIndex = 0; scrollOffset = 0; dirty = true
@@ -184,6 +185,21 @@ class FileExplorerWindow: Window {
         return maxLen
     }
 
+    /// Enter: opens a file; toggles a directory — collapsed expands and
+    /// selection descends, expanded collapses and selection stays.
+    private func activateCurrent() {
+        guard selectedIndex < flatEntries.count else { return }
+        let (entry, depth) = flatEntries[selectedIndex]
+        guard entry.isDirectory else {
+            delegate?.openFile(entry.path)
+            return
+        }
+        toggleExpand(at: selectedIndex)
+        descendToFirstChild(depth: depth)
+    }
+
+    /// `l` / Ctrl+Right: opens a file; expands a collapsed directory or
+    /// descends into an already expanded one — never collapses.
     private func selectCurrent() {
         guard selectedIndex < flatEntries.count else { return }
         let (entry, depth) = flatEntries[selectedIndex]
@@ -194,6 +210,10 @@ class FileExplorerWindow: Window {
         if !entry.isExpanded {
             toggleExpand(at: selectedIndex)
         }
+        descendToFirstChild(depth: depth)
+    }
+
+    private func descendToFirstChild(depth: Int) {
         let nextIdx = selectedIndex + 1
         if nextIdx < flatEntries.count && flatEntries[nextIdx].depth == depth + 1 {
             selectedIndex = nextIdx
