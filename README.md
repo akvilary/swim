@@ -16,6 +16,7 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
 - **File explorer** (`Ctrl+E`) — sidebar with directory tree
 - **Git panel** (`Ctrl+G`) — staged/unstaged files, commits, diff with color highlighting
 - **Project search** (`Ctrl+F`) — recursive file search with grouped results
+- **Built-in terminal** (`Ctrl+T`) — run shell commands inside the editor: the prompt is the last line of the scrollback, arrows scroll the output, `Ctrl+Left/Right` recalls commands, `Tab` completes paths; `cd` and `clear` are handled by the window itself
 - **Full UTF-8 support** — Cyrillic, CJK, emoji
 - **Tokyo Night Storm theme**
 - **Status bar** — mode, filename, file type, encoding, cursor position
@@ -78,6 +79,7 @@ swim <file>       # Open file
 | `Ctrl+E` | Any | File explorer |
 | `Ctrl+G` | Any | Git panel |
 | `Ctrl+F` | Any | Project search |
+| `Ctrl+T` | Any | Built-in terminal |
 | `Ctrl+X` | Any | Close focused window (last window exits) |
 | `Tab` | Normal | Cycle focus (in window-stack order) |
 
@@ -89,6 +91,7 @@ swim <file>       # Open file
 - `:q!` — force close
 - `:qa` — quit the app
 - `:e <path>` — open file (reveals a hidden editor)
+- `:terminal` / `:term` / `:sh` — open the built-in terminal
 - `:%s/old/new/g` — substitute
 
 ## Project structure
@@ -120,6 +123,7 @@ Sources/Swim/
 │   ├── SearchResultsWindow.swift # Project search
 │   ├── PreviewWindow.swift      # File preview (search space)
 │   ├── CommandWindow.swift      # Long git command output (pull/push)
+│   ├── TerminalWindow.swift     # Built-in terminal
 │   └── StatusBarWindow.swift    # Status bar
 └── LSP/
     ├── LSPClient.swift      # sourcekit-lsp client

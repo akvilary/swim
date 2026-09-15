@@ -32,6 +32,7 @@ class Application: WindowDelegate {
     private let searchResults = SearchResultsWindow()
     private let preview = PreviewWindow()
     private let command = CommandWindow()
+    private let terminalWindow = TerminalWindow()
 
     init(filePath: String? = nil) {
         let editorSpace = Space(id: "editor", delegate: self)
@@ -40,6 +41,7 @@ class Application: WindowDelegate {
         editorSpace.addWindow("editor", editor)
         editorSpace.addWindow("gitPanel", gitPanel)
         editorSpace.addWindow("command", command)
+        editorSpace.addWindow("terminal", terminalWindow)
         editorSpace.addWindow("statusBar", statusBar)
 
         let searchSpace = Space(id: "search", delegate: self)
@@ -254,6 +256,11 @@ class Application: WindowDelegate {
         if gitPanel.visible && gitPanel.isDiffLoading {
             gitPanel.diffSpinnerFrame &+= 1
             gitPanel.dirty = true
+            anyDirty = true
+        }
+        if terminalWindow.visible && terminalWindow.isRunning {
+            terminalWindow.spinnerFrame &+= 1
+            terminalWindow.dirty = true
             anyDirty = true
         }
         if anyDirty {
@@ -523,6 +530,9 @@ class Application: WindowDelegate {
         case .ctrl("f"):
             toggleSearch()
             return
+        case .ctrl("t"):
+            toggleTerminal()
+            return
         case .ctrl("c"):
             running = false
             return
@@ -553,11 +563,10 @@ class Application: WindowDelegate {
             break
         }
 
-        if case .tab = key {
-            if case .normal = editor.mode {
-                cycleFocus()
-                return
-            }
+        if case .tab = key, spaces.current.focused !== terminalWindow,
+           case .normal = editor.mode {
+            cycleFocus()
+            return
         }
 
         if case .char(":") = key, canOpenCommandLine() {
@@ -586,6 +595,11 @@ class Application: WindowDelegate {
         }
         if let focused = spaces.current.focused,
            focused === searchResults, searchResults.inputMode {
+            return false
+        }
+        // The terminal panel always takes literal text — `:` and Tab belong
+        // to the command being typed, not to the app.
+        if let focused = spaces.current.focused, focused === terminalWindow {
             return false
         }
         return true
@@ -729,6 +743,27 @@ class Application: WindowDelegate {
         }
     }
 
+    private func toggleTerminal() {
+        if terminalWindow.visible {
+            popWindow(terminalWindow)
+            return
+        }
+        openTerminal()
+    }
+
+    private func openTerminal() {
+        if maximized != nil { restoreMaximized() }
+        if spaces.current.id != "editor" { switchToSpace("editor") }
+        let cwd = gitPanel.workingDirectory.isEmpty
+            ? FileManager.default.currentDirectoryPath
+            : gitPanel.workingDirectory
+        terminalWindow.prepare(workingDirectory: cwd)
+        terminalWindow.visible = true
+        focus(terminalWindow)
+        recalculateLayout()
+        spaces.markAllDirty()
+    }
+
     private func switchToSpace(_ spaceId: String) {
         if spaceId == "editor" {
             // Search windows only exist inside the search space — they never
@@ -777,6 +812,7 @@ class Application: WindowDelegate {
         if window === fileExplorer { return .explorer }
         if window === gitPanel { return .git }
         if window === command { return .command }
+        if window === terminalWindow { return .terminal }
         if window === searchResults { return .searchResults }
         if window === preview { return .preview }
         return .none
@@ -816,6 +852,7 @@ class Application: WindowDelegate {
             showEditor: editor.visible,
             showGit: gitPanel.visible,
             showCommand: command.visible,
+            showTerminal: terminalWindow.visible,
             showTabBar: editor.visible && tabBar.visible,
             halfScreen: halfScreenRole()
         )
@@ -827,6 +864,7 @@ class Application: WindowDelegate {
         searchResults.resize(x: layout.searchResults.x, y: layout.searchResults.y, width: layout.searchResults.width, height: layout.searchResults.height)
         preview.resize(x: layout.preview.x, y: layout.preview.y, width: layout.preview.width, height: layout.preview.height)
         command.resize(x: layout.command.x, y: layout.command.y, width: layout.command.width, height: layout.command.height)
+        terminalWindow.resize(x: layout.terminal.x, y: layout.terminal.y, width: layout.terminal.width, height: layout.terminal.height)
         statusBar.resize(x: layout.status.x, y: layout.status.y, width: layout.status.width, height: layout.status.height)
 
         if let maximized {
@@ -901,6 +939,8 @@ class Application: WindowDelegate {
             closeFocusedWindow(force: true)
         case "wquit":
             closeCurrentTab(force: false)
+        case "terminal", "term", "sh":
+            openTerminal()
         case "qa":
             // vim semantics: refuse to quit all while any tab has unsaved
             // changes; `qa!` discards them.

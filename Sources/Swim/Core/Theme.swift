@@ -25,6 +25,7 @@ enum Theme {
     static let dark3 = Color.rgb(r: 0x54, g: 0x5c, b: 0x7e)
     static let dark5 = Color.rgb(r: 0x73, g: 0x7a, b: 0xa2)
     static let terminalBlack = Color.rgb(r: 0x41, g: 0x48, b: 0x68)
+    static let terminalBg = Color.rgb(r: 0x17, g: 0x17, b: 0x1d)
     static let gitAdd = Color.rgb(r: 0x44, g: 0x9d, b: 0xab)
     static let gitChange = Color.rgb(r: 0x61, g: 0x83, b: 0xbb)
     static let gitDelete = Color.rgb(r: 0x91, g: 0x4c, b: 0x54)

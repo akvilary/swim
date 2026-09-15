@@ -4,6 +4,7 @@ struct Shell {
     struct Result {
         let stdout: String
         let stderr: String
+        let exitCode: Int32
         var combined: String { stdout + stderr }
     }
 
@@ -30,10 +31,11 @@ struct Shell {
             process.waitUntilExit()
             return Result(
                 stdout: String(data: outData, encoding: .utf8) ?? "",
-                stderr: String(data: errData, encoding: .utf8) ?? ""
+                stderr: String(data: errData, encoding: .utf8) ?? "",
+                exitCode: process.terminationStatus
             )
         } catch {
-            return Result(stdout: "", stderr: "")
+            return Result(stdout: "", stderr: "", exitCode: -1)
         }
     }
 

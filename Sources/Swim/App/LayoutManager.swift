@@ -12,6 +12,7 @@ enum HalfScreenWindow {
     case explorer
     case git
     case command
+    case terminal
     case searchResults
     case preview
 }
@@ -25,9 +26,10 @@ struct LayoutManager {
         showEditor: Bool,
         showGit: Bool,
         showCommand: Bool,
+        showTerminal: Bool,
         showTabBar: Bool = false,
         halfScreen: HalfScreenWindow = .none
-    ) -> (explorer: WindowLayout, editor: WindowLayout, tabbar: WindowLayout, git: WindowLayout, searchResults: WindowLayout, preview: WindowLayout, command: WindowLayout, status: WindowLayout) {
+    ) -> (explorer: WindowLayout, editor: WindowLayout, tabbar: WindowLayout, git: WindowLayout, searchResults: WindowLayout, preview: WindowLayout, command: WindowLayout, terminal: WindowLayout, status: WindowLayout) {
         let w = max(10, terminalWidth)
         let h = max(5, terminalHeight)
         let statusH = 1
@@ -40,7 +42,7 @@ struct LayoutManager {
             let searchResults = WindowLayout(x: 0, y: 0, width: resultsW, height: h - statusH)
             let preview = WindowLayout(x: resultsW, y: 0, width: w - resultsW, height: h - statusH)
             let status = WindowLayout(x: 0, y: h - statusH, width: w, height: statusH)
-            return (zero, zero, zero, zero, searchResults, preview, zero, status)
+            return (zero, zero, zero, zero, searchResults, preview, zero, zero, status)
         }
 
         var editorX = 0
@@ -59,12 +61,14 @@ struct LayoutManager {
 
         var gitH = 0
         var cmdH = 0
+        var termH = 0
         if showGit { gitH = halfScreen == .git ? h / 2 : min(25, h / 2) }
         if showCommand { cmdH = halfScreen == .command ? h / 2 : min(25, h / 2) }
+        if showTerminal { termH = halfScreen == .terminal ? h / 2 : min(25, h / 2) }
 
         let tabH = showTabBar ? 1 : 0
-        let editorH = max(1, h - statusH - gitH - cmdH - tabH)
-        let explorerH = max(1, h - statusH - gitH - cmdH)
+        let editorH = max(1, h - statusH - gitH - cmdH - termH - tabH)
+        let explorerH = max(1, h - statusH - gitH - cmdH - termH)
 
         let explorer = WindowLayout(x: 0, y: 0, width: explorerW, height: explorerH)
         let tabbar = showTabBar ? WindowLayout(x: editorX, y: 0, width: editorW, height: 1) : zero
@@ -74,9 +78,11 @@ struct LayoutManager {
         let git = WindowLayout(x: 0, y: bottomY, width: w, height: gitH)
         if showGit { bottomY += gitH }
         let command = WindowLayout(x: 0, y: bottomY, width: w, height: cmdH)
+        if showCommand { bottomY += cmdH }
+        let terminal = WindowLayout(x: 0, y: bottomY, width: w, height: termH)
 
         let status = WindowLayout(x: 0, y: h - statusH, width: w, height: statusH)
 
-        return (explorer, editor, tabbar, git, zero, zero, command, status)
+        return (explorer, editor, tabbar, git, zero, zero, command, terminal, status)
     }
 }
