@@ -269,6 +269,8 @@ class EditorWindow: Window {
         }
     }
 
+    private var lastActiveFilePath: String?
+
     private func activateCurrentTab() {
         rebuildTokenIndex()
         guard let buf = buffer else { return }
@@ -276,6 +278,10 @@ class EditorWindow: Window {
         clampCol()
         ensureCursorVisible()
         dirty = true
+        if filePath != lastActiveFilePath {
+            lastActiveFilePath = filePath
+            delegate?.activeFileChanged()
+        }
     }
 
     override func handleKey(_ key: Key) -> Bool {
@@ -464,6 +470,7 @@ class EditorWindow: Window {
             try text.write(toFile: path, atomically: true, encoding: .utf8)
             modified = false
             lastError = nil
+            delegate?.fileSaved()
         } catch {
             lastError = "Error saving: \(error.localizedDescription)"
         }

@@ -15,9 +15,27 @@ class Application: WindowDelegate {
     private var pendingTokenRefresh: (path: String, earliest: TimeInterval)?
     private lazy var renderer = Renderer(terminal: terminal)
 
-    /// Directory the app was opened with (`swim .`) or the CWD — the root of
-    /// the explorer/LSP and the base for relative paths in the status bar.
-    private var rootDirectory = ""
+    /// Git info for the status bar: branch + added/deleted lines of the
+    /// working tree (git diff HEAD --numstat) and of the open file —
+    /// fetched in the background on file save / open / tab switch.
+    private struct GitStats {
+        var branch: String?
+        var added = 0
+        var deleted = 0
+        var fileAdded = 0
+        var fileDeleted = 0
+    }
+    private let gitStatsTask = BackgroundTask<GitStats>()
+    /// Fetches are serialized through a single state: a request arriving
+    /// while a fetch is running is coalesced into one refetch afterwards
+    /// (BackgroundTask has a single result slot — overlapping threads would
+    /// clobber each other's results before the main loop consumes them).
+    private enum GitStatsState {
+        case idle
+        case running
+        case runningQueued
+    }
+    private var gitStatsState: GitStatsState = .idle
 
     private var halfScreenWindow: Window?
     private var maximized: Window?
@@ -65,7 +83,6 @@ class Application: WindowDelegate {
             // explorer paths must be absolute.
             startDir = BufferManager.normalize(path)
         }
-        rootDirectory = startDir
 
         var fileToOpen: String?
         if let path = filePath, !isDirectory(path) {
@@ -93,6 +110,7 @@ class Application: WindowDelegate {
         if fileToOpen != nil { windowStack.append(editor) }
 
         setupLSP(rootPath: startDir)
+        fetchGitStats()
 
         spaces.current.focused = fileToOpen != nil ? editor : fileExplorer
         spaces.current.updateFocusStates()
@@ -117,6 +135,7 @@ class Application: WindowDelegate {
 
         while running {
             pollLSP()
+            pollGitStats()
             tickSpinners()
             if terminal.hasResizeEvent {
                 terminal.consumeResizeEvent()
@@ -137,6 +156,89 @@ class Application: WindowDelegate {
 
         for (_, client) in lspClients { client.stop() }
         terminal.restore()
+    }
+
+    private func fetchGitStats() {
+        switch gitStatsState {
+        case .idle:
+            gitStatsState = .running
+            startGitStatsFetch()
+        case .running:
+            gitStatsState = .runningQueued
+        case .runningQueued:
+            break
+        }
+    }
+
+    private func startGitStatsFetch() {
+        let dir = gitPanel.workingDirectory.isEmpty
+            ? FileManager.default.currentDirectoryPath
+            : gitPanel.workingDirectory
+        let filePath = editor.filePath
+        gitStatsTask.start {
+            let branchResult = Shell.git(["rev-parse", "--abbrev-ref", "HEAD"], workDir: dir)
+            guard branchResult.exitCode == 0 else {
+                return GitStats(branch: nil)
+            }
+            let name = branchResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            var stats = GitStats(branch: name.isEmpty ? nil : name)
+
+            let rootResult = Shell.git(["rev-parse", "--show-toplevel"], workDir: dir)
+            let root = rootResult.exitCode == 0
+                ? rootResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                : dir
+
+            let numstat = Shell.git(["diff", "HEAD", "--numstat"], workDir: dir)
+            for line in numstat.stdout.split(separator: "\n") {
+                let cols = line.split(separator: "\t")
+                guard cols.count >= 3 else { continue }
+                let a = Int(cols[0]) ?? 0
+                let d = Int(cols[1]) ?? 0
+                stats.added += a
+                stats.deleted += d
+                if let filePath, BufferManager.normalize(root + "/" + cols[2]) == filePath {
+                    stats.fileAdded = a
+                    stats.fileDeleted = d
+                }
+            }
+
+            // Untracked files never appear in `git diff HEAD` — for the open
+            // file show its whole content as additions.
+            if let filePath, stats.fileAdded == 0, stats.fileDeleted == 0 {
+                let status = Shell.git(["status", "--porcelain", "--", filePath], workDir: dir)
+                if status.stdout.hasPrefix("??"),
+                   let text = try? String(contentsOfFile: filePath, encoding: .utf8),
+                   !text.isEmpty {
+                    stats.fileAdded = text.split(separator: "\n", omittingEmptySubsequences: false).count
+                }
+            }
+            return stats
+        }
+    }
+
+    private func pollGitStats() {
+        guard let stats = gitStatsTask.consume() else { return }
+        let refetchQueued = gitStatsState == .runningQueued
+        gitStatsState = .idle
+
+        if statusBar.branch != stats.branch
+            || statusBar.branchAdded != stats.added
+            || statusBar.branchDeleted != stats.deleted
+            || statusBar.fileAdded != stats.fileAdded
+            || statusBar.fileDeleted != stats.fileDeleted {
+            statusBar.branch = stats.branch
+            statusBar.branchAdded = stats.added
+            statusBar.branchDeleted = stats.deleted
+            statusBar.fileAdded = stats.fileAdded
+            statusBar.fileDeleted = stats.fileDeleted
+            statusBar.dirty = true
+            spaces.current.update()
+            render()
+        }
+
+        if refetchQueued {
+            fetchGitStats()
+        }
     }
 
     private func pollLSP() {
@@ -911,11 +1013,9 @@ class Application: WindowDelegate {
 
     private func updateStatusBar() {
         statusBar.modeText = modeString(editor.mode)
-        statusBar.fileName = editor.filePath.map(displayPath) ?? "[No Name]"
         statusBar.cursorLine = editor.cursorLine
         statusBar.cursorCol = editor.cursorCol
         statusBar.totalLines = editor.buffer?.lineCount ?? 0
-        statusBar.modified = editor.modified
         statusBar.commandText = editor.commandBuffer
         statusBar.errorMessage = editor.lastError
         tabBar.dirty = true
@@ -924,19 +1024,6 @@ class Application: WindowDelegate {
             statusBar.fileType = ext.isEmpty ? "" : "[\(ext)]"
         }
         statusBar.dirty = true
-    }
-
-    /// Status bar shows the parent directory of the open file: split by "/",
-    /// drop the file name, make relative to the opened directory. Trailing
-    /// "/" marks it as a directory.
-    private func displayPath(_ path: String) -> String {
-        guard let slash = path.lastIndex(of: "/") else { return path + "/" }
-        let dir = String(path[..<slash])
-        if dir == rootDirectory { return "./" }
-        if dir.hasPrefix(rootDirectory + "/") {
-            return "./" + dir.dropFirst(rootDirectory.count + 1) + "/"
-        }
-        return dir + "/"
     }
 
     private func modeString(_ mode: EditorMode) -> String {
@@ -1038,6 +1125,14 @@ class Application: WindowDelegate {
         if isNew { notifyLSPFileOpen(path) }
         // Opening a file raises the editor to the top of the stack.
         focus(editor)
+    }
+
+    func fileSaved() {
+        fetchGitStats()
+    }
+
+    func activeFileChanged() {
+        fetchGitStats()
     }
 
     func runGitCommand(label: String, args: [String]) {

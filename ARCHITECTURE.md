@@ -40,7 +40,7 @@ main.swift
 
 **Подсветка синтаксиса:** `LSPClient` получает токены от sourcekit-lsp ИЛИ `SyntaxTokenizer` генерирует их → `EditorWindow.semanticTokens` → маппинг на цвета через `Theme`
 
-**Межоконная коммуникация:** окна отправляют события в `Application` через протокол `WindowDelegate` (`openFile`, `openFileAtLine`, `handleEditorCommand`, `runGitCommand`, `requestRender`, `updatePreview`, `bufferClosed`, `requestGoToDefinition`, `requestGoBack`)
+**Межоконная коммуникация:** окна отправляют события в `Application` через протокол `WindowDelegate` (`openFile`, `openFileAtLine`, `handleEditorCommand`, `runGitCommand`, `requestRender`, `updatePreview`, `bufferClosed`, `fileSaved`, `activeFileChanged`, `requestGoToDefinition`, `requestGoBack`)
 
 ---
 
@@ -396,9 +396,9 @@ Diff подсвачивается: зелёный — добавления, кр
 
 **Левая часть:** Цветной бейдж режима (NORMAL=синий, INSERT=зелёный, VISUAL=фиолетовый, COMMAND=оранжевый)
 
-**Центр:** В режиме COMMAND — `:<команда>`. Иначе — `[+] filename` (+ если есть несохранённые изменения)
+**Центр:** В режиме COMMAND — `:<команда>`, при ошибке — текст ошибки. Иначе — git-ветка и суммарные `+N -M` добавленных/удалённых строк рабочего дерева (`git diff HEAD --numstat`, фоновая задача с дебаунсом после правок; зелёный/красный). Вне git-репозитория центр пуст.
 
-**Правая часть:** Тип файла, кодировка, `строка:столбец`, процент позиции в файле
+**Правая часть:** Тип файла, `+N -M` по текущему файлу (из того же numstat, обновляется после сохранения), кодировка, `строка:столбец`, процент позиции в файле
 
 ---
 
