@@ -103,11 +103,11 @@ class GitPanelWindow: Window {
     }
 
     private func drawStatus() {
-        let branchLabel = isRefreshing ? "loading..." : currentBranch
+        let branchLabel = isRefreshing ? "Git @ loading..." : "Git @ \(currentBranch)"
         if mode == .visual {
             drawHeader(" [ VISUAL ] \(branchLabel) ", fg: Theme.purple)
         } else {
-            drawHeader("  \(branchLabel) ", fg: Theme.orange)
+            drawHeader(" \(branchLabel) ", fg: Theme.orange)
         }
 
         let totalContentRows = totalContentRowCount()

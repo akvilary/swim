@@ -322,6 +322,15 @@ class TerminalWindow: Window {
             clearOutput()
             return
         }
+        if trimmed == "exit" || trimmed == "logout" {
+            // Echo it so the scrollback shows why the window went away; the
+            // window itself is hidden, not destroyed — history survives.
+            entries.append(Entry(command: trimmed, lines: []))
+            flatDirty = true
+            dirty = true
+            delegate?.requestClose(self)
+            return
+        }
         if trimmed == "cd" || trimmed.hasPrefix("cd ") {
             runCd(trimmed)
             return

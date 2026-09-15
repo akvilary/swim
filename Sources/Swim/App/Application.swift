@@ -1135,6 +1135,10 @@ class Application: WindowDelegate {
         fetchGitStats()
     }
 
+    func requestClose(_ window: Window) {
+        closeWindow(window)
+    }
+
     func runGitCommand(label: String, args: [String]) {
         if maximized != nil { restoreMaximized() }
         command.workingDirectory = gitPanel.workingDirectory
