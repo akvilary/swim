@@ -132,7 +132,7 @@ class GitPanelWindow: Window {
             for commit in recentCommits.prefix(5) {
                 if row >= 1 && row < height {
                     let bg = bgForStatusRow(globalIdx)
-                    let commitText = " \(commit.hash.prefix(7)) \(commit.message.prefix(width - 14))"
+                    let commitText = " \(commit.hash.prefix(7)) \(commit.message.prefix(max(0, width - 14)))"
                     drawLine(commitText, row: row, fg: Theme.cyan, bg: bg)
                 }
                 globalIdx += 1
@@ -165,7 +165,7 @@ class GitPanelWindow: Window {
         let statusText = " \(file.status) "
         drawLine(statusText, row: row, col: 0, fg: statusColor, bg: bg, bold: true)
         let nameStart = statusText.count
-        let name = file.filePath.prefix(width - nameStart)
+        let name = file.filePath.prefix(max(0, width - nameStart))
         drawLine(String(name), row: row, col: nameStart, fg: isSelected ? Theme.fg : Theme.fgDark, bg: bg)
     }
 
@@ -587,7 +587,9 @@ class GitPanelWindow: Window {
         gitTask.start { [workDir] in
             GitRefreshResult(
                 branch: Shell.git(["rev-parse", "--abbrev-ref", "HEAD"], workDir: workDir).stdout.trimmingCharacters(in: .whitespacesAndNewlines),
-                statusOutput: Shell.git(["status", "--porcelain"], workDir: workDir).stdout,
+                // -z: NUL-separated entries with raw (unquoted, unescaped)
+                // paths — Cyrillic and other non-ASCII paths stay intact.
+                statusOutput: Shell.git(["status", "--porcelain", "-z"], workDir: workDir).stdout,
                 logOutput: Shell.git(["log", "--oneline", "-10", "--format=%h|%an|%cr|%s"], workDir: workDir).stdout
             )
         }
@@ -618,13 +620,20 @@ class GitPanelWindow: Window {
         }
     }
 
+    /// Parses `git status --porcelain -z`: NUL-terminated `XY <path>` entries
+    /// with raw (unescaped) paths; rename/copy entries carry the original
+    /// path as an extra NUL field right after.
     private func parseStatus(_ output: String) {
         stagedFiles = []; unstagedFiles = []; untrackedFiles = []
-        for line in output.components(separatedBy: "\n") {
-            guard line.count >= 3 else { continue }
-            let indexStatus = line[line.index(line.startIndex, offsetBy: 0)]
-            let workStatus = line[line.index(line.startIndex, offsetBy: 1)]
-            let filePath = String(line[line.index(line.startIndex, offsetBy: 3)...])
+        var fields = output.split(separator: "\0", omittingEmptySubsequences: true).makeIterator()
+        while let entry = fields.next() {
+            guard entry.count >= 3 else { continue }
+            let indexStatus = entry[entry.index(entry.startIndex, offsetBy: 0)]
+            let workStatus = entry[entry.index(entry.startIndex, offsetBy: 1)]
+            let filePath = String(entry.dropFirst(3))
+            if indexStatus == "R" || indexStatus == "C" || workStatus == "R" {
+                _ = fields.next()
+            }
             if indexStatus != " " && indexStatus != "?" { stagedFiles.append(GitFileStatus(status: String(indexStatus), filePath: filePath, staged: true)) }
             if workStatus != " " && workStatus != "?" { unstagedFiles.append(GitFileStatus(status: String(workStatus), filePath: filePath, staged: false)) }
             if indexStatus == "?" && workStatus == "?" { untrackedFiles.append(GitFileStatus(status: "?", filePath: filePath, staged: false)) }

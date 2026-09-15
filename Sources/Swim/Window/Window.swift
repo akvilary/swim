@@ -87,10 +87,13 @@ class Window {
     }
 
     func drawHeader(_ text: String, fg: Color, bg: Color = Theme.bgHighlight, bold: Bool = true) {
-        for (i, c) in text.enumerated() {
-            if i < width { setCell(0, i, Cell.colored(c, fg: fg, bg: bg, bold: bold)) }
+        // The header may be longer than the window (e.g. a long diff path) —
+        // truncate instead of building an inverted range.
+        let visible = text.prefix(width)
+        for (i, c) in visible.enumerated() {
+            setCell(0, i, Cell.colored(c, fg: fg, bg: bg, bold: bold))
         }
-        for i in text.count..<width {
+        for i in visible.count..<width {
             setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: bg))
         }
     }
