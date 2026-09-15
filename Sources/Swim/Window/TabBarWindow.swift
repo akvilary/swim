@@ -8,7 +8,7 @@ class TabBarWindow: Window {
 
         clear(bg: Theme.bgDark)
 
-        let labels = infos.map { " \($0.name)\($0.modified ? "+" : "") " }
+        let labels = infos.map { " \($0.modified ? "+" : "")\($0.name) " }
         let activeIdx = infos.firstIndex { $0.active } ?? 0
 
         // Window of tabs so that the active one is always visible.
@@ -35,11 +35,16 @@ class TabBarWindow: Window {
             col = 1
         }
         for idx in start..<end {
-            let fg = idx == activeIdx ? Theme.fg : Theme.comment
-            let bg = idx == activeIdx ? Theme.bgHighlight : Theme.bgDark
+            let modified = infos[idx].modified
+            let active = idx == activeIdx
+            let fg = modified ? Theme.yellow : (active ? Theme.fg : Theme.comment)
+            let bg = active ? Theme.bgHighlight : Theme.bgDark
+            // Modified but inactive: dimmed yellow, so the marker doesn't
+            // compete with the active tab.
+            let dim = modified && !active
             for c in labels[idx] {
                 guard col < width else { break }
-                setCell(0, col, Cell.colored(c, fg: fg, bg: bg, bold: idx == activeIdx))
+                setCell(0, col, Cell.colored(c, fg: fg, bg: bg, bold: active, dim: dim))
                 col += 1
             }
         }

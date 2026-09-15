@@ -927,15 +927,16 @@ class Application: WindowDelegate {
     }
 
     /// Status bar shows the parent directory of the open file: split by "/",
-    /// drop the file name, make relative to the opened directory.
+    /// drop the file name, make relative to the opened directory. Trailing
+    /// "/" marks it as a directory.
     private func displayPath(_ path: String) -> String {
-        guard let slash = path.lastIndex(of: "/") else { return path }
+        guard let slash = path.lastIndex(of: "/") else { return path + "/" }
         let dir = String(path[..<slash])
         if dir == rootDirectory { return "./" }
         if dir.hasPrefix(rootDirectory + "/") {
-            return "./" + dir.dropFirst(rootDirectory.count + 1)
+            return "./" + dir.dropFirst(rootDirectory.count + 1) + "/"
         }
-        return dir
+        return dir + "/"
     }
 
     private func modeString(_ mode: EditorMode) -> String {
