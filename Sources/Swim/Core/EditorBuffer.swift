@@ -46,6 +46,8 @@ final class BufferManager {
 
     var active: EditorBuffer { buffers[activeIndex] }
     var count: Int { buffers.count }
+    /// `:qa` guard — true when any tab has unsaved changes.
+    var anyModified: Bool { buffers.contains { $0.modified } }
 
     init() {
         buffers.append(EditorBuffer(buffer: PieceTable(text: "")))

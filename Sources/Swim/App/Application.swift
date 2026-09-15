@@ -902,6 +902,15 @@ class Application: WindowDelegate {
         case "wquit":
             closeCurrentTab(force: false)
         case "qa":
+            // vim semantics: refuse to quit all while any tab has unsaved
+            // changes; `qa!` discards them.
+            if editor.tabs.anyModified {
+                editor.lastError = "No write since last change (add ! to force)"
+                updateStatusBar()
+            } else {
+                running = false
+            }
+        case "qa!":
             running = false
         default:
             break

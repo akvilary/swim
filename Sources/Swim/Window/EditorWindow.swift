@@ -418,6 +418,7 @@ class EditorWindow: Window {
         else if cmd == "wq" || cmd == "x" { saveFile(); delegate?.handleEditorCommand("wquit") }
         else if cmd == "q!" || cmd == "forcequit" { delegate?.handleEditorCommand("forcequit") }
         else if cmd == "bd!" { delegate?.handleEditorCommand("bd!") }
+        else if cmd == "qa" || cmd == "qa!" { delegate?.handleEditorCommand(cmd) }
         else if cmd.hasPrefix("e! ") {
             editFile(String(cmd.dropFirst(3)).trimmingCharacters(in: .whitespaces))
         }
