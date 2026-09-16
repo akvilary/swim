@@ -34,8 +34,8 @@ private enum StatusSection: Int {
 
     var title: String {
         switch self {
-        case .staged: return "Staged changes"
-        case .unstaged: return "Changes"
+        case .staged: return "Staged"
+        case .unstaged: return "Unstaged"
         case .untracked: return "Untracked"
         case .commits: return "Recent commits"
         }
