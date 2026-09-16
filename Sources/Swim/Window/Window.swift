@@ -56,6 +56,9 @@ class Window {
 
     /// The command-line buffer while this window owns the command line.
     var commandBuffer: String = ""
+    /// Caret position (in Characters) inside `commandBuffer` — rendered
+    /// inverted in the status bar; arrows/Home/End/Delete edit around it.
+    var commandCursorPos: Int = 0
 
     /// Optional one-line plate at the top of the window. Windows that
     /// show it draw their content starting at `contentTop`.
@@ -77,6 +80,7 @@ class Window {
 
     func enterCommandMode(prefill: String = "") {
         commandBuffer = prefill
+        commandCursorPos = prefill.count
         mode = .command
         dirty = true
     }
@@ -85,12 +89,14 @@ class Window {
         guard mode == .command else { return }
         mode = availableModes.contains(.menu) ? .menu : .normal
         commandBuffer = ""
+        commandCursorPos = 0
         dirty = true
     }
 
     /// Command-mode key handling shared by every mode-capable window:
-    /// the buffer is typed through the status bar, Enter executes the
-    /// command against this window, Esc cancels.
+    /// the buffer is typed through the status bar with a visible caret
+    /// (arrows/Home/End move it, Delete removes forward), Enter executes
+    /// the command against this window, Esc cancels.
     func handleCommandModeKey(_ key: Key) -> Bool {
         switch key {
         case .escape:
@@ -101,11 +107,31 @@ class Window {
             // window and must not leave it in command mode.
             exitCommandMode()
             executeCommand(cmd)
+        case .left:
+            if commandCursorPos > 0 { commandCursorPos -= 1 }
+        case .right:
+            if commandCursorPos < commandBuffer.count { commandCursorPos += 1 }
+        case .home:
+            commandCursorPos = 0
+        case .end:
+            commandCursorPos = commandBuffer.count
         case .backspace:
-            if commandBuffer.isEmpty { exitCommandMode() }
-            else { commandBuffer.removeLast() }
+            if commandCursorPos > 0 {
+                let idx = commandBuffer.index(commandBuffer.startIndex, offsetBy: commandCursorPos - 1)
+                commandBuffer.remove(at: idx)
+                commandCursorPos -= 1
+            } else if commandBuffer.isEmpty {
+                exitCommandMode()
+            }
+        case .delete:
+            if commandCursorPos < commandBuffer.count {
+                let idx = commandBuffer.index(commandBuffer.startIndex, offsetBy: commandCursorPos)
+                commandBuffer.remove(at: idx)
+            }
         case .char(let c):
-            commandBuffer.append(c)
+            let idx = commandBuffer.index(commandBuffer.startIndex, offsetBy: commandCursorPos)
+            commandBuffer.insert(c, at: idx)
+            commandCursorPos += 1
         default:
             return false
         }

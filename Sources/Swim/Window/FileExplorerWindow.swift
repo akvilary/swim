@@ -17,6 +17,9 @@ class FileExplorerWindow: Window {
     private var scrollOffset: Int = 0
     private var horizontalOffset: Int = 0
     private let horizontalStep: Int = 4
+    /// The entry `r` captured for the pending `rename old -> new` command —
+    /// disambiguates the bare old name when the tree has duplicates.
+    private var pendingRenamePath: String?
     var currentDirectory: String = ""
 
     override func update() {
@@ -367,10 +370,18 @@ class FileExplorerWindow: Window {
         enterCommandMode(prefill: "delete ./\(rel)\(entry.isDirectory ? "/" : "")")
     }
 
-    /// `r` — opens the command line pre-filled with `rename ./<selected> `:
-    /// the second argument is a bare name (rename next to the old entry) or
-    /// a `./`-path from the tree root (move + rename). The visible buffer
-    /// is the confirmation.
+    override func enterCommandMode(prefill: String = "") {
+        // A stale rename capture must not leak into a command typed later
+        // by hand — beginRename re-arms it after this call.
+        pendingRenamePath = nil
+        super.enterCommandMode(prefill: prefill)
+    }
+
+    /// `r` — opens the command line pre-filled with `rename ./<path>` of
+    /// the selected entry, the caret right after its name (before the
+    /// trailing `/` of a directory): edit the path in place — backspace
+    /// over the name to rename, rewrite the directories to move. Enter
+    /// renames the captured entry to the edited path.
     private func beginRename() {
         guard selectedIndex < flatEntries.count else {
             delegate?.reportError("rename: nothing selected")
@@ -378,7 +389,9 @@ class FileExplorerWindow: Window {
         }
         let (entry, _) = flatEntries[selectedIndex]
         guard let rel = relativePath(of: entry.path) else { return }
-        enterCommandMode(prefill: "rename ./\(rel)\(entry.isDirectory ? "/" : "") ")
+        enterCommandMode(prefill: "rename ./\(rel)\(entry.isDirectory ? "/" : "")")
+        pendingRenamePath = entry.path
+        commandCursorPos = "rename ./".count + rel.count
     }
 
     /// FS command dispatch by first word — O(1) key lookup. Computed (not
@@ -470,22 +483,21 @@ class FileExplorerWindow: Window {
         ensureVisible()
     }
 
-    /// `rename ./old new`: the first path is `./`-relative to the tree root
-    /// (prefilled from the selection); the second is a bare name (renames
-    /// inside the old entry's directory) or a `./`-path from the root (move
-    /// + rename). `moveItem` handles files and directories alike. On
-    /// success the tree rescans keeping expansion and reveals the new path.
+    /// `rename <new-path>` renames the entry captured by `r` — its
+    /// `./`-path is pre-filled with the caret after the name; the command
+    /// line is edited in place. The new side: bare name — rename next to
+    /// the captured entry; `./`-path — move from the tree root. `moveItem`
+    /// handles files and directories alike. On success the tree rescans
+    /// keeping expansion and reveals the new path.
     private func renameEntry(_ rawArg: String) {
-        let arg = rawArg.trimmingCharacters(in: .whitespaces)
-        guard let spaceIdx = arg.firstIndex(of: " ") else {
-            delegate?.reportError("rename: new name missing")
+        defer { pendingRenamePath = nil }
+        guard let old = pendingRenamePath else {
+            delegate?.reportError("rename: nothing selected — press r")
             return
         }
-        let oldArg = String(arg[..<spaceIdx])
-        var newArg = String(arg[arg.index(after: spaceIdx)...]).trimmingCharacters(in: .whitespaces)
-        guard let oldParts = relativeParts(oldArg), !oldParts.contains("."),
-              !newArg.isEmpty, !newArg.hasPrefix("/") else {
-            delegate?.reportError("rename: invalid arguments")
+        var newArg = rawArg.trimmingCharacters(in: .whitespaces)
+        guard !newArg.isEmpty, !newArg.hasPrefix("/") else {
+            delegate?.reportError("rename: invalid path")
             return
         }
         while newArg.hasSuffix("/") { newArg.removeLast() }
@@ -497,7 +509,6 @@ class FileExplorerWindow: Window {
             return
         }
         let fm = FileManager.default
-        let old = (currentDirectory as NSString).appendingPathComponent(oldParts.joined(separator: "/"))
         guard fm.fileExists(atPath: old) else {
             delegate?.reportError("rename: not found")
             return

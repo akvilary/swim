@@ -1,5 +1,11 @@
 class StatusBarWindow: Window {
-    var modeText: String = "NORMAL"
+    /// The window whose mode and command line are presented — the command
+    /// owner while a command is being typed, else the focused window.
+    /// Command-mode presentation (buffer + visible caret) is standard for
+    /// every window that enters command mode: the status bar pulls it from
+    /// the source, no per-window wiring.
+    weak var commandSource: Window?
+
     var branch: String?
     var branchAdded = 0
     var branchDeleted = 0
@@ -9,11 +15,14 @@ class StatusBarWindow: Window {
     var cursorCol: Int = 0
     var totalLines: Int = 0
     var fileType: String = ""
-    var commandText: String = ""
     var errorMessage: String?
 
     override func update() {
         guard height > 0 else { return }
+
+        let source = commandSource
+        let modeText = source.map { Self.modeText($0.mode) } ?? "NORMAL"
+        let inCommand = source?.mode == .command
 
         let bgColor = Theme.bgDark
 
@@ -53,7 +62,8 @@ class StatusBarWindow: Window {
         if let err = errorMessage {
             centerParts = [(" \(err) ", fg: Theme.red)]
             centerBold = true
-        } else if modeText == "COMMAND" {
+        } else if inCommand, let source = source {
+            let commandText = source.commandBuffer
             let prefix = commandText.hasPrefix("/") ? "" : ":"
             centerParts = [(" \(prefix)\(commandText)", fg: Theme.fg)]
             centerBold = false
@@ -74,6 +84,16 @@ class StatusBarWindow: Window {
                 guard ccol < width else { break centerLoop }
                 setCell(0, ccol, Cell.colored(c, fg: part.fg, bg: bgColor, bold: centerBold))
                 ccol += 1
+            }
+        }
+        if inCommand, errorMessage == nil, let source = source {
+            let commandText = source.commandBuffer
+            let prefixLen = commandText.hasPrefix("/") ? 0 : 1
+            let cursorCol = modeLabel.count + 1 + prefixLen + source.commandCursorPos
+            if cursorCol < width {
+                var cell = getCell(0, cursorCol)
+                cell.reverse = !cell.reverse
+                setCell(0, cursorCol, cell)
             }
         }
 
@@ -106,6 +126,17 @@ class StatusBarWindow: Window {
                 setCell(0, col, Cell.colored(c, fg: part.fg, bg: bgColor))
                 col += 1
             }
+        }
+    }
+
+    private static func modeText(_ mode: WindowMode) -> String {
+        switch mode {
+        case .menu: return "MENU"
+        case .normal: return "NORMAL"
+        case .insert: return "INSERT"
+        case .visual: return "VISUAL"
+        case .visualLine: return "VISUAL LINE"
+        case .command: return "COMMAND"
         }
     }
 }

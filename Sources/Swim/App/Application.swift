@@ -1039,8 +1039,7 @@ class Application: WindowDelegate {
         let focused = spaces.current.focused
         let modeSource = commandModeWindow ?? focused ?? editor
         let statsSource = (focused is EditorWindow) ? (focused as! EditorWindow) : editor
-        statusBar.modeText = modeString(modeSource.mode)
-        statusBar.commandText = modeSource.commandBuffer
+        statusBar.commandSource = modeSource
         statusBar.cursorLine = statsSource.cursorLine
         statusBar.cursorCol = statsSource.cursorCol
         statusBar.totalLines = statsSource.buffer?.lineCount ?? 0
@@ -1053,17 +1052,6 @@ class Application: WindowDelegate {
         statusBar.errorMessage = editor.lastError
         tabBar.dirty = true
         statusBar.dirty = true
-    }
-
-    private func modeString(_ mode: WindowMode) -> String {
-        switch mode {
-        case .menu: return "MENU"
-        case .normal: return "NORMAL"
-        case .insert: return "INSERT"
-        case .visual: return "VISUAL"
-        case .visualLine: return "VISUAL LINE"
-        case .command: return "COMMAND"
-        }
     }
 
     func handleEditorCommand(_ cmd: String) {
