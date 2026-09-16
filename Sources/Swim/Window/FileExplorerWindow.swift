@@ -7,6 +7,11 @@ struct FileEntry {
     var isExpanded: Bool = false
     var children: [FileEntry] = []
     var isLoaded: Bool = false
+    /// Listing flags, taken when the parent directory is loaded and cached
+    /// until it is rescanned (`:fe reset`, create/delete/rename). Filtering
+    /// happens at flatten time, so `H` re-filters in memory — no rescan.
+    var isIgnored: Bool = false
+    var isHidden: Bool = false
 }
 
 class FileExplorerWindow: Window {
@@ -21,6 +26,11 @@ class FileExplorerWindow: Window {
     /// disambiguates the bare old name when the tree has duplicates.
     private var pendingRenamePath: String?
     var currentDirectory: String = ""
+    /// `H` — the listing filter state: off (default) hides both
+    /// dot-prefixed and git-ignored entries; on shows everything. The
+    /// toggle re-flattens in memory — the model always carries all
+    /// entries with their flags.
+    private var showAllEntries = false
 
     override func update() {
         clear()
@@ -113,7 +123,11 @@ class FileExplorerWindow: Window {
     /// Reveals a file opened from outside the explorer (search result,
     /// jump): expands its ancestor directories and selects the node, so the
     /// tree shows where we are. Does nothing for paths outside the root or
-    /// inside hidden directories (never listed).
+    /// inside hidden directories — those are unreachable while the listing
+    /// filter is on (`H` reveals them). When the target exists on disk but
+    /// is filtered out of the listing (renamed/created into a dot-name or a
+    /// fresh gitignore match), the flat list may have shrunk — the stale
+    /// selection clamps onto a real row.
     func reveal(path: String) {
         guard !currentDirectory.isEmpty, path.hasPrefix(currentDirectory + "/") else { return }
         var changed = revealAncestors(&rootEntries, target: path)
@@ -124,6 +138,10 @@ class FileExplorerWindow: Window {
                 changed = true
             }
             ensureVisible()
+        } else if selectedIndex >= flatEntries.count {
+            selectedIndex = max(0, flatEntries.count - 1)
+            ensureVisible()
+            changed = true
         }
         if changed {
             dirty = true
@@ -137,7 +155,7 @@ class FileExplorerWindow: Window {
         for i in 0..<entries.count {
             guard entries[i].isDirectory, target.hasPrefix(entries[i].path + "/") else { continue }
             if !entries[i].isLoaded {
-                entries[i].children = loadEntries(at: entries[i].path)
+                entries[i].children = loadEntries(at: entries[i].path, parentIgnored: entries[i].isIgnored)
                 entries[i].isLoaded = true
                 changed = true
             }
@@ -152,26 +170,56 @@ class FileExplorerWindow: Window {
         return changed
     }
 
-    private func loadEntries(at path: String) -> [FileEntry] {
+    private func loadEntries(at path: String, parentIgnored: Bool = false) -> [FileEntry] {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(atPath: path) else { return [] }
+        let sorted = contents.sorted()
+        // Everything under an ignored directory is ignored — git never
+        // re-includes inside an excluded subtree — so children of one are
+        // flagged for free, without a check-ignore subprocess. Only a
+        // directory that is not ignored itself pays the batched git call.
+        let ignored: Set<String> = parentIgnored
+            ? []
+            : Self.ignoredNames(in: path, names: sorted.filter { !$0.hasPrefix(".") })
         var dirs = [FileEntry]()
         var files = [FileEntry]()
-        for name in contents.sorted() {
-            if name.hasPrefix(".") { continue }
+        for name in sorted {
             let fullPath = (path as NSString).appendingPathComponent(name)
             var isDir: ObjCBool = false
             _ = fm.fileExists(atPath: fullPath, isDirectory: &isDir)
-            let entry = FileEntry(name: name, path: fullPath, isDirectory: isDir.boolValue)
+            let entry = FileEntry(
+                name: name,
+                path: fullPath,
+                isDirectory: isDir.boolValue,
+                isIgnored: parentIgnored || ignored.contains(name),
+                isHidden: name.hasPrefix(".")
+            )
             if isDir.boolValue { dirs.append(entry) } else { files.append(entry) }
         }
         return dirs + files
     }
 
+    /// Git-ignored names among `names` listed in `directory` — one batched
+    /// `git check-ignore --stdin -z` subprocess (NUL-separated both ways, so
+    /// exotic path characters survive). Git itself evaluates every pattern
+    /// level — the repo .gitignore, nested ones, excludes, negations and
+    /// root-anchored rules — and never reports tracked files, which is
+    /// exactly the semantics the tree needs. Runs with cwd = the listed
+    /// directory, so bare names resolve against the right pattern context.
+    /// Exit codes: 0 — some names ignored (stdout lists them), 1 — none;
+    /// anything else (no git, not a repository) filters nothing.
+    private static func ignoredNames(in directory: String, names: [String]) -> Set<String> {
+        guard !names.isEmpty else { return [] }
+        let input = names.joined(separator: "\0") + "\0"
+        let result = Shell.git(["check-ignore", "--stdin", "-z"], workDir: directory, stdin: input)
+        guard result.exitCode == 0 else { return [] }
+        return Set(result.stdout.split(separator: "\0", omittingEmptySubsequences: true).map(String.init))
+    }
+
     private func loadChildren(of entry: FileEntry, at index: Int) -> FileEntry {
         var mutable = entry
         if !entry.isLoaded {
-            mutable.children = loadEntries(at: entry.path)
+            mutable.children = loadEntries(at: entry.path, parentIgnored: entry.isIgnored)
             mutable.isLoaded = true
         }
         mutable.isExpanded = !entry.isExpanded
@@ -185,6 +233,10 @@ class FileExplorerWindow: Window {
 
     private func flattenRecursive(_ entries: [FileEntry], depth: Int) {
         for entry in entries {
+            // The filter lives here, not in loadEntries: flagged entries
+            // stay in the model, so `H` re-flattens in memory — instantly,
+            // without a rescan or a subprocess.
+            if !showAllEntries && (entry.isHidden || entry.isIgnored) { continue }
             flatEntries.append((entry, depth))
             if entry.isDirectory && entry.isExpanded {
                 flattenRecursive(entry.children, depth: depth + 1)
@@ -208,6 +260,7 @@ class FileExplorerWindow: Window {
         case .char("a"): beginCreate()
         case .char("d"): beginDelete()
         case .char("r"): beginRename()
+        case .char("H"): toggleShowAll()
         default: return false
         }
         return true
@@ -317,6 +370,33 @@ class FileExplorerWindow: Window {
         scrollOffset = Window.clampedScroll(selectedIndex: selectedIndex, scrollOffset: scrollOffset, visibleCount: height - 1)
     }
 
+    /// `H` — flips the listing filter and re-flattens the tree in memory:
+    /// hidden (dot-prefixed) and git-ignored entries stay in the model
+    /// with their flags, so no rescan or subprocess happens — the flat
+    /// list just includes/excludes the flagged rows. The selection stays
+    /// on the same entry when it survives the re-filter, else clamps.
+    private func toggleShowAll() {
+        let selectedPath = selectedIndex < flatEntries.count ? flatEntries[selectedIndex].entry.path : nil
+        showAllEntries.toggle()
+        flattenEntries()
+        restoreSelection(toPath: selectedPath)
+        dirty = true
+    }
+
+    /// Restores the selection across a flat-list rebuild: the same path
+    /// stays selected when it survives the rebuild, else the index clamps
+    /// onto the last row.
+    private func restoreSelection(toPath path: String?) {
+        if let path, let idx = flatEntries.firstIndex(where: { $0.entry.path == path }) {
+            selectedIndex = idx
+        } else if flatEntries.isEmpty {
+            selectedIndex = 0
+        } else {
+            selectedIndex = flatEntries.count - 1
+        }
+        ensureVisible()
+    }
+
     // MARK: - Create/delete file entries (`a` / `d` → :create / :delete)
 
     /// Relative path of an absolute tree path (nil outside the root).
@@ -403,7 +483,7 @@ class FileExplorerWindow: Window {
     /// FS command dispatch by first word — O(1) key lookup. Computed (not
     /// stored) so the method references never capture self in a cycle.
     private var fsCommands: [String: (String) -> Void] {
-        ["create": createEntry, "delete": deleteEntry, "rename": renameEntry]
+        ["create": createEntry, "delete": deleteEntry, "rename": renameEntry, "fe": feEntry]
     }
 
     override func executeCommand(_ cmd: String) -> Bool {
@@ -539,6 +619,22 @@ class FileExplorerWindow: Window {
         reveal(path: new)
     }
 
+    /// `:fe reset` — full rescan of the tree from disk with expansion and
+    /// selection preserved. The listing flags (git-ignore verdicts) are
+    /// taken when a directory is loaded and stay cached until something
+    /// rescans it — an externally edited .gitignore or files created
+    /// behind swim's back need this command to re-sync.
+    private func feEntry(_ rawArg: String) {
+        let arg = rawArg.trimmingCharacters(in: .whitespaces)
+        guard arg == "reset" else {
+            delegate?.reportError("fe: unknown subcommand — try fe reset")
+            return
+        }
+        let selectedPath = selectedIndex < flatEntries.count ? flatEntries[selectedIndex].entry.path : nil
+        reloadPreservingExpansion()
+        restoreSelection(toPath: selectedPath)
+    }
+
     /// Rescans the tree from disk while keeping the expansion state of
     /// directories that still exist (`loadDirectory` would collapse
     /// everything).
@@ -552,18 +648,18 @@ class FileExplorerWindow: Window {
         }
         collect(rootEntries)
 
-        func reload(_ path: String) -> [FileEntry] {
-            loadEntries(at: path).map { entry in
+        func reload(_ path: String, parentIgnored: Bool) -> [FileEntry] {
+            loadEntries(at: path, parentIgnored: parentIgnored).map { entry in
                 var mutable = entry
                 if entry.isDirectory && expanded.contains(entry.path) {
                     mutable.isLoaded = true
                     mutable.isExpanded = true
-                    mutable.children = reload(entry.path)
+                    mutable.children = reload(entry.path, parentIgnored: entry.isIgnored)
                 }
                 return mutable
             }
         }
-        rootEntries = reload(currentDirectory)
+        rootEntries = reload(currentDirectory, parentIgnored: false)
         flattenEntries()
         dirty = true
     }
