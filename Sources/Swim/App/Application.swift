@@ -1176,6 +1176,15 @@ class Application: WindowDelegate {
         gitPanel.refresh()
     }
 
+    /// Any finished terminal command may have changed the open file,
+    /// renamed something or switched the git branch — resync the status
+    /// bar stats (branch/diff, fetched in the background) and the git
+    /// panel, the same contract as git commands run through CommandWindow.
+    func terminalCommandFinished() {
+        fetchGitStats()
+        gitPanel.refresh()
+    }
+
     func requestCommitMessage() {
         if maximized != nil { restoreMaximized() }
         // Already composing — just refocus, don't wipe the typed message.

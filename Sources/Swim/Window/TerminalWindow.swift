@@ -65,6 +65,9 @@ class TerminalWindow: Window {
         scrollOffset = max(0, scrollOffset - dropped)
         dirty = true
         delegate?.requestRender()
+        // Any finished command may have touched the repository or the open
+        // file (edit, rename, branch switch) — the app state must resync.
+        delegate?.terminalCommandFinished()
     }
 
     override func update() {

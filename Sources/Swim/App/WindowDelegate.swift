@@ -6,6 +6,7 @@ protocol WindowDelegate: AnyObject {
     func handleEditorCommand(_ cmd: String)
     func runGitCommand(label: String, args: [String])
     func gitCommandFinished(_ label: String)
+    func terminalCommandFinished()
     func requestCommitMessage()
     func requestCommit()
     func reportError(_ message: String)
