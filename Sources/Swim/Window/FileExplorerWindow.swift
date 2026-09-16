@@ -202,6 +202,7 @@ class FileExplorerWindow: Window {
         case .char("h"), .ctrlLeft, .ctrl("h"): collapseCurrent()
         case .char("G"): selectedIndex = max(0, flatEntries.count - 1); ensureVisible(); dirty = true
         case .char("g"): selectedIndex = 0; scrollOffset = 0; dirty = true
+        case .char("a"): beginCreate()
         default: return false
         }
         return true
@@ -309,5 +310,123 @@ class FileExplorerWindow: Window {
 
     private func ensureVisible() {
         scrollOffset = Window.clampedScroll(selectedIndex: selectedIndex, scrollOffset: scrollOffset, visibleCount: height - 1)
+    }
+
+    // MARK: - Create file/directory (`a` → :create)
+
+    /// `a` — opens the command line pre-filled with `create <dir>/` relative
+    /// to the selection: inside the selected directory, next to the selected
+    /// file, or at the tree root when nothing is selected. A trailing `/`
+    /// in the typed path creates a directory.
+    private func beginCreate() {
+        enterCommandMode(prefill: "create \(creationPrefix())")
+    }
+
+    /// Directory (relative to the tree root, `./`-prefixed) where `a` will
+    /// offer to create: the selected directory itself, the parent of a
+    /// selected file, or the root.
+    private func creationPrefix() -> String {
+        var relative = "./"
+        if selectedIndex < flatEntries.count {
+            let (entry, _) = flatEntries[selectedIndex]
+            let dirPath = entry.isDirectory
+                ? entry.path
+                : (entry.path as NSString).deletingLastPathComponent
+            if dirPath != currentDirectory, dirPath.hasPrefix(currentDirectory + "/") {
+                relative += String(dirPath.dropFirst(currentDirectory.count + 1)) + "/"
+            }
+        }
+        return relative
+    }
+
+    override func executeCommand(_ cmd: String) -> Bool {
+        if cmd == "create" {
+            delegate?.reportError("create: missing name")
+            return true
+        }
+        if cmd.hasPrefix("create ") {
+            createEntry(String(cmd.dropFirst("create ".count)))
+            return true
+        }
+        return super.executeCommand(cmd)
+    }
+
+    /// Creates the entry described by a path relative to the tree root
+    /// (`./a/b/file.swift`): `.` components normalize away, missing
+    /// intermediate directories are created; a trailing `/` creates a
+    /// directory instead of a file. Errors surface in the status bar via
+    /// the shared `reportError` channel; on success the tree rescans
+    /// (keeping expansion) and reveals the new entry.
+    private func createEntry(_ rawArg: String) {
+        let arg = rawArg.trimmingCharacters(in: .whitespaces)
+        guard !arg.isEmpty else {
+            delegate?.reportError("create: missing name")
+            return
+        }
+        guard !arg.hasPrefix("/") else {
+            delegate?.reportError("create: path must be relative")
+            return
+        }
+        let relative = arg.hasPrefix("./") ? String(arg.dropFirst(2)) : arg
+        let parts = relative.split(separator: "/").map(String.init)
+        guard !parts.isEmpty, !parts.contains("..") else {
+            delegate?.reportError("create: invalid path")
+            return
+        }
+        let wantsDirectory = arg.hasSuffix("/")
+        let absolute = (currentDirectory as NSString).appendingPathComponent(parts.joined(separator: "/"))
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: absolute) else {
+            delegate?.reportError("create: already exists")
+            return
+        }
+        do {
+            if wantsDirectory {
+                try fm.createDirectory(atPath: absolute, withIntermediateDirectories: true)
+            } else {
+                let parent = (absolute as NSString).deletingLastPathComponent
+                if !fm.fileExists(atPath: parent) {
+                    try fm.createDirectory(atPath: parent, withIntermediateDirectories: true)
+                }
+                guard fm.createFile(atPath: absolute, contents: nil) else {
+                    delegate?.reportError("create: failed to create file")
+                    return
+                }
+            }
+        } catch {
+            delegate?.reportError("create: \(error.localizedDescription)")
+            return
+        }
+        reloadPreservingExpansion()
+        reveal(path: absolute)
+    }
+
+    /// Rescans the tree from disk while keeping the expansion state of
+    /// directories that still exist (`loadDirectory` would collapse
+    /// everything).
+    private func reloadPreservingExpansion() {
+        var expanded = Set<String>()
+        func collect(_ entries: [FileEntry]) {
+            for entry in entries where entry.isDirectory && entry.isExpanded {
+                expanded.insert(entry.path)
+                collect(entry.children)
+            }
+        }
+        collect(rootEntries)
+
+        func reload(_ path: String) -> [FileEntry] {
+            loadEntries(at: path).map { entry in
+                var mutable = entry
+                if entry.isDirectory && expanded.contains(entry.path) {
+                    mutable.isLoaded = true
+                    mutable.isExpanded = true
+                    mutable.children = reload(entry.path)
+                }
+                return mutable
+            }
+        }
+        rootEntries = reload(currentDirectory)
+        flattenEntries()
+        dirty = true
     }
 }

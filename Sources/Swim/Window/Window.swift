@@ -75,8 +75,8 @@ class Window {
         drawHeader(plate.text, fg: plate.fg, bg: plate.bg)
     }
 
-    func enterCommandMode() {
-        commandBuffer = ""
+    func enterCommandMode(prefill: String = "") {
+        commandBuffer = prefill
         mode = .command
         dirty = true
     }
