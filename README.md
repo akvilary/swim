@@ -97,6 +97,8 @@ swim <file>       # Open file
 ## Project structure
 
 ```
+Sources/SwimCore/
+└── DiffGutter.swift        # Pure diff gutter parser (unit-tested)
 Sources/Swim/
 ├── main.swift              # Entry point
 ├── App/

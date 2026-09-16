@@ -223,6 +223,26 @@ class Window {
         writeString(text, row: row, col: col, fg: fg, bg: bg, bold: bold)
     }
 
+    /// One line-number gutter row in the editor style: the number
+    /// right-aligned within `lnWidth` with one trailing space (nil — the
+    /// blank gutter). The shared painting primitive behind the editor
+    /// gutter and the git-diff gutter, so both look identical; callers
+    /// own the width, the row and the colors.
+    func drawLineNumberRow(_ row: Int, number: Int?, lnWidth: Int, fg: Color, bg: Color) {
+        guard row >= 0 && row < height else { return }
+        if let number {
+            let numStr = String(number)
+            let padded = String(repeating: " ", count: max(0, lnWidth - numStr.count - 1)) + numStr + " "
+            for (i, c) in padded.enumerated() where i < lnWidth {
+                setCell(row, i, Cell.colored(c, fg: fg, bg: bg))
+            }
+        } else {
+            for i in 0..<min(lnWidth, width) {
+                setCell(row, i, Cell.colored(" ", fg: fg, bg: bg))
+            }
+        }
+    }
+
     func clear(bg: Color = Theme.bgDark) {
         fillRegion(row: 0, col: 0, width: width, height: height, cell: Cell.colored(" ", fg: Theme.fg, bg: bg))
     }

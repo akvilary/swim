@@ -1183,22 +1183,9 @@ class EditorWindow: Window {
         guard height > 0 else { return }
         for row in 0..<contentHeight {
             let lineNum = scrollY + row
-            let isCurrentLine = lineNum == cursorLine
-            if lineNum < lineCount {
-                let numStr = String(lineNum + 1)
-                let spaceCount = max(0, lnWidth - numStr.count - 1)
-                let padded = String(repeating: " ", count: spaceCount) + numStr + " "
-                let fg: Color = isCurrentLine ? Theme.fg : Theme.comment
-                for (i, c) in padded.enumerated() {
-                    if i < width && i < lnWidth {
-                        setCell(row + contentTop, i, Cell.colored(c, fg: fg, bg: Theme.bg))
-                    }
-                }
-            } else {
-                for i in 0..<min(lnWidth, width) {
-                    setCell(row + contentTop, i, Cell.colored(" ", fg: Theme.comment, bg: Theme.bg))
-                }
-            }
+            let number = lineNum < lineCount ? lineNum + 1 : nil
+            let fg: Color = lineNum == cursorLine ? Theme.fg : Theme.comment
+            drawLineNumberRow(row + contentTop, number: number, lnWidth: lnWidth, fg: fg, bg: Theme.bg)
         }
     }
 

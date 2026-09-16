@@ -1,4 +1,5 @@
 import Foundation
+import SwimCore
 
 private struct GitRefreshResult {
     let branch: String
@@ -110,6 +111,14 @@ class GitPanelWindow: Window {
     private(set) var currentBranch: String = ""
     private var diffLines: [Substring] = []
     private var diffHunks: [DiffHunk] = []
+    /// Gutter numbers parallel to `diffLines` (nil — no number: hunk
+    /// headers, file headers, metadata): `+` lines carry the new-file
+    /// number, `-` the old-file one, context lines the shared one. The
+    /// raw `diffLines` stay untouched — yank and patch building must not
+    /// see the gutter. Built by the pure `DiffGutter` parser (SwimCore,
+    /// unit-tested in Tests/SwimCoreTests).
+    private var diffGutter: [DiffGutter.Entry] = []
+    private var diffGutterWidth: Int = 4
     private var diffScrollOffset: Int = 0
     private var diffCursorRow: Int = 0
     private var showDiff: Bool = false
@@ -294,6 +303,7 @@ class GitPanelWindow: Window {
         drawPlate()
         let visibleLines = contentHeight
         let visualRange = mode == .visualLine ? diffVisualRange() : nil
+        let lnWidth = diffGutterWidth
         for i in 0..<visibleLines {
             let lineIdx = diffScrollOffset + i
             guard lineIdx < diffLines.count else { break }
@@ -309,7 +319,22 @@ class GitPanelWindow: Window {
             } else {
                 bg = isCursor ? Theme.bgHighlight : Theme.bgDark
             }
-            drawLine(String(line.prefix(width)), row: row, fg: style.fg, bg: bg, bold: style.bold)
+            // Editor-style gutter (the shared drawLineNumberRow primitive):
+            // green numbers on added lines, red on removed, dim elsewhere;
+            // the cursor row brightens like the editor's current line.
+            let gutter = lineIdx < diffGutter.count ? diffGutter[lineIdx] : nil
+            let numFg: Color
+            if isCursor {
+                numFg = Theme.fg
+            } else if gutter?.add == true {
+                numFg = Theme.green
+            } else if gutter?.del == true {
+                numFg = Theme.red
+            } else {
+                numFg = Theme.comment
+            }
+            drawLineNumberRow(row, number: gutter?.num, lnWidth: lnWidth, fg: numFg, bg: bg)
+            drawLine(String(line.prefix(max(0, width - lnWidth))), row: row, col: lnWidth, fg: style.fg, bg: bg, bold: style.bold)
         }
     }
 
@@ -557,6 +582,8 @@ class GitPanelWindow: Window {
         diffCommitHash = ""
         diffLines = []
         diffHunks = []
+        diffGutter = []
+        diffGutterWidth = 4
         diffScrollOffset = 0
         diffCursorRow = 0
         isDiffLoading = true
@@ -579,6 +606,8 @@ class GitPanelWindow: Window {
         diffCommitHash = hash
         diffLines = []
         diffHunks = []
+        diffGutter = []
+        diffGutterWidth = 4
         diffScrollOffset = 0
         diffCursorRow = 0
         isDiffLoading = true
@@ -592,6 +621,15 @@ class GitPanelWindow: Window {
             let result = Shell.git(["show", hash], workDir: workDir)
             return result.combined.split(separator: "\n", omittingEmptySubsequences: false)
         }
+    }
+
+    /// Annotates the loaded diff with gutter numbers via the pure
+    /// `DiffGutter` parser (SwimCore) — see its doc comment and
+    /// DiffGutterTests for the format rules and edge cases.
+    private func parseDiffGutter() {
+        let parsed = DiffGutter.parse(diffLines)
+        diffGutter = parsed.entries
+        diffGutterWidth = parsed.width
     }
 
     private func parseHunks() -> [DiffHunk] {
@@ -857,6 +895,7 @@ class GitPanelWindow: Window {
         if isDiffLoading, let lines = diffTask.consume() {
             diffLines = lines
             diffHunks = parseHunks()
+            parseDiffGutter()
             isDiffLoading = false
             if diffLines.isEmpty { showDiff = false; mode = .menu }
             anyUpdate = true
