@@ -11,14 +11,17 @@ enum IndentEngine {
     enum Shape: Equatable {
         /// Plain split: the cursor line gets `cursorIndent`.
         case plain(cursorIndent: Int)
-        /// The closer moves to its own line at `bracketIndent`; the cursor
-        /// rides that line before the bracket (no fresh line — no more
-        /// content is coming).
-        case closerOnly(bracketIndent: Int)
+        /// The closer moves to its own line; `bracketPad` spaces are
+        /// prepended on top of the whitespace already sitting between the
+        /// cursor and the bracket (the final indent is
+        /// max(openerIndent, existing) — never doubled). The cursor rides
+        /// that line before the bracket.
+        case closerOnly(bracketPad: Int)
         /// The closer moves down AND a fresh line opens for the cursor
         /// between it and the current line (`{|` / `foo(|` — a body or an
-        /// argument list is still about to be typed).
-        case closerWithBody(cursorIndent: Int, bracketIndent: Int)
+        /// argument list is still about to be typed). `bracketPad` tops up
+        /// the closer line's existing indent the same way.
+        case closerWithBody(cursorIndent: Int, bracketPad: Int)
     }
 
     /// - Parameters:
@@ -44,15 +47,17 @@ enum IndentEngine {
             return .plain(cursorIndent: baseIndent + extra)
         }
 
-        let bracketIndent = matchingOpenerIndent(before: before, tabWidth: tabWidth, lineAbove: lineAbove)
+        let openerIndent = matchingOpenerIndent(before: before, tabWidth: tabWidth, lineAbove: lineAbove)
             ?? max(baseIndent - shiftWidth, 0)
+        let existing = leadingWhitespaceWidth(after, tabWidth: tabWidth)
+        let bracketPad = max(openerIndent - existing, 0)
 
         let beforeTrimmed = before.trimmingCharacters(in: .whitespaces)
         if beforeTrimmed.hasSuffix("{") || beforeTrimmed.hasSuffix("(") {
-            return .closerWithBody(cursorIndent: bracketIndent + shiftWidth,
-                                   bracketIndent: bracketIndent)
+            return .closerWithBody(cursorIndent: openerIndent + shiftWidth,
+                                   bracketPad: bracketPad)
         }
-        return .closerOnly(bracketIndent: bracketIndent)
+        return .closerOnly(bracketPad: bracketPad)
     }
 
     /// Walks backwards from the cursor keeping a generic bracket balance

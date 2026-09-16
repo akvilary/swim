@@ -8,6 +8,10 @@ final class EditorBuffer {
     var mode: WindowMode = .normal
     var cursorLine: Int = 0
     var cursorCol: Int = 0
+    /// Sticky desired column (vim curswant): survives vertical moves across
+    /// shorter lines and mode switches; the actual cursorCol is clamped from
+    /// it at each vertical move.
+    var desiredCol: Int = 0
     var scrollX: Int = 0
     var scrollY: Int = 0
     var visualStartLine: Int = 0

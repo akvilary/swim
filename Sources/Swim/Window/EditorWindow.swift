@@ -20,6 +20,10 @@ class EditorWindow: Window {
         get { tabs.active.cursorCol }
         set { tabs.active.cursorCol = newValue }
     }
+    var desiredCol: Int {
+        get { tabs.active.desiredCol }
+        set { tabs.active.desiredCol = newValue }
+    }
     var scrollY: Int {
         get { tabs.active.scrollY }
         set { tabs.active.scrollY = newValue }
@@ -168,8 +172,9 @@ class EditorWindow: Window {
     func goToPosition(line: Int, colUtf16: Int) {
         guard let buf = buffer else { return }
         cursorLine = min(max(0, line), max(0, buf.lineCount - 1))
-        cursorCol = buf.charIndexForUtf16(line: cursorLine, colUtf16: colUtf16)
-        clampCol()
+        cursorCol = min(buf.charIndexForUtf16(line: cursorLine, colUtf16: colUtf16),
+                        buf.lineCharLength(line: cursorLine))
+        desiredCol = cursorCol
         ensureCursorVisible()
         dirty = true
     }
@@ -276,7 +281,8 @@ class EditorWindow: Window {
         rebuildTokenIndex()
         guard let buf = buffer else { return }
         if cursorLine >= buf.lineCount { cursorLine = max(0, buf.lineCount - 1) }
-        clampCol()
+        cursorCol = min(cursorCol, buf.lineCharLength(line: cursorLine))
+        desiredCol = cursorCol
         ensureCursorVisible()
         dirty = true
         if filePath != lastActiveFilePath {
@@ -352,13 +358,14 @@ class EditorWindow: Window {
         case .ctrl("l"), .ctrlRight: cycleTab(1)
         default: pendingG = false; pendingD = false; pendingY = false; return false
         }
+        if !isVerticalKey(key, insertMode: false) { desiredCol = cursorCol }
         dirty = true
         return true
     }
 
     private func handleInsert(_ key: Key) -> Bool {
         switch key {
-        case .escape: mode = .normal; clampCol()
+        case .escape: mode = .normal
         case .enter: insertNewLineAtCursor()
         case .backspace: deleteBeforeCursor()
         case .tab: insertText("    ")
@@ -371,6 +378,7 @@ class EditorWindow: Window {
         case .end: moveToEndOfLineForInsert()
         default: return false
         }
+        if !isVerticalKey(key, insertMode: true) { desiredCol = cursorCol }
         dirty = true
         return true
     }
@@ -386,6 +394,7 @@ class EditorWindow: Window {
         case .char("d"): deleteVisualSelection(); mode = .normal
         default: return false
         }
+        if !isVerticalKey(key, insertMode: false) { desiredCol = cursorCol }
         dirty = true
         return true
     }
@@ -401,6 +410,7 @@ class EditorWindow: Window {
         case .char("L"), .shiftRight: shiftVisualLines(by: indentSize())
         default: return false
         }
+        if !isVerticalKey(key, insertMode: false) { desiredCol = cursorCol }
         dirty = true
         return true
     }
@@ -479,16 +489,31 @@ class EditorWindow: Window {
         if cursorCol < buf.lineCharLength(line: cursorLine) { cursorCol += 1 }
         ensureCursorVisible()
     }
-    private func moveCursorUp() { if cursorLine > 0 { cursorLine -= 1; clampCol() }; ensureCursorVisible() }
-    private func moveCursorDown() {
+    private func moveCursorUp() { moveVertically(-1) }
+    private func moveCursorDown() { moveVertically(1) }
+
+    /// Vertical moves never recompute the column from the previous clamped
+    /// value — they apply the sticky desired column (vim curswant), so the
+    /// column survives short lines, one-past-end positions and mode
+    /// switches. One-past-end (col == line length) is a legal cursor
+    /// position in every mode: insert needs it (typing appends), all
+    /// consumers are bounds-guarded (x, p/P, visual yank/delete, render).
+    private func moveVertically(_ delta: Int) {
         guard let buf = buffer else { return }
-        if cursorLine < buf.lineCount - 1 { cursorLine += 1; clampCol() }
+        cursorLine = min(max(cursorLine + delta, 0), max(0, buf.lineCount - 1))
+        cursorCol = min(desiredCol, buf.lineCharLength(line: cursorLine))
         ensureCursorVisible()
     }
-    private func clampCol() {
-        guard let buf = buffer else { return }
-        let maxCol = max(0, buf.lineCharLength(line: cursorLine) - 1)
-        if cursorCol > maxCol { cursorCol = maxCol }
+
+    /// Keys that only move vertically — excluded from the desired-column
+    /// refresh at the handler tails so the want survives them. In insert
+    /// mode j/k are literal text, not movement.
+    private func isVerticalKey(_ key: Key, insertMode: Bool) -> Bool {
+        switch key {
+        case .up, .down, .pageUp, .pageDown, .ctrlUp, .ctrlDown: return true
+        case .char("j"), .char("k"), .ctrl("j"), .ctrl("k"): return !insertMode
+        default: return false
+        }
     }
     private func moveToEndOfLine() {
         guard let buf = buffer else { return }
@@ -630,17 +655,16 @@ class EditorWindow: Window {
                 inserted += indentText
             }
             cursorCol = cursorIndent
-        case .closerOnly(let bracketIndent):
-            if bracketIndent > 0 {
-                let indentText = String(repeating: " ", count: bracketIndent)
-                buf.insert(indentText, at: buf.lineStart(line: cursorLine))
-                inserted += indentText
+        case .closerOnly(let bracketPad):
+            if bracketPad > 0 {
+                let padText = String(repeating: " ", count: bracketPad)
+                buf.insert(padText, at: buf.lineStart(line: cursorLine))
+                inserted += padText
             }
-            cursorCol = bracketIndent
-        case .closerWithBody(let cursorIndent, let bracketIndent):
-            let bodyText = String(repeating: " ", count: cursorIndent)
-                + "\n"
-                + String(repeating: " ", count: bracketIndent)
+            cursorCol = leadingSpaces(buf.getLine(cursorLine))
+        case .closerWithBody(let cursorIndent, let bracketPad):
+            let padText = bracketPad > 0 ? String(repeating: " ", count: bracketPad) : ""
+            let bodyText = String(repeating: " ", count: cursorIndent) + "\n" + padText
             buf.insert(bodyText, at: buf.lineStart(line: cursorLine))
             inserted += bodyText
             cursorCol = cursorIndent
@@ -675,7 +699,6 @@ class EditorWindow: Window {
         let deletedText = String(chars[cursorCol])
         buf.delete(at: offset, length: deleteLen)
         recordAction(offset: offset, deleted: deletedText, inserted: "")
-        clampCol()
     }
 
     private func deleteBeforeCursor() {
@@ -697,7 +720,9 @@ class EditorWindow: Window {
             buf.delete(at: offset, length: 1)
             recordAction(offset: offset, deleted: deletedText, inserted: "")
             cursorLine -= 1
-            cursorCol = max(0, buf.lineCharLength(line: cursorLine) - 1)
+            // join point: between the last char of the upper line and the
+            // first char of the lower one — insert cursor sits past the end
+            cursorCol = buf.lineCharLength(line: cursorLine)
         }
     }
 
@@ -869,8 +894,8 @@ class EditorWindow: Window {
         buf.delete(at: start, length: end - start)
         buf.insert(insertedText, at: start)
         recordAction(offset: start, deleted: deletedText, inserted: insertedText)
-        cursorCol = max(0, cursorCol + cursorDelta)
-        clampCol()
+        cursorCol = min(max(0, cursorCol + cursorDelta), buf.lineCharLength(line: cursorLine))
+        desiredCol = cursorCol
         ensureCursorVisible()
     }
 
@@ -892,18 +917,8 @@ class EditorWindow: Window {
         }
     }
 
-    private func pageDown() {
-        guard let buf = buffer else { return }
-        cursorLine += contentHeight - 2
-        if cursorLine >= buf.lineCount { cursorLine = max(0, buf.lineCount - 1) }
-        clampCol(); ensureCursorVisible()
-    }
-
-    private func pageUp() {
-        cursorLine -= (contentHeight - 2)
-        if cursorLine < 0 { cursorLine = 0 }
-        clampCol(); ensureCursorVisible()
-    }
+    private func pageDown() { moveVertically(contentHeight - 2) }
+    private func pageUp() { moveVertically(-(contentHeight - 2)) }
 
     private func applyInverse(_ action: (offset: Int, deleted: String, inserted: String)) {
         guard let buf = buffer else { return }
