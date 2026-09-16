@@ -347,10 +347,7 @@ class GitPanelWindow: Window {
     /// The item under the selection; nil when the list is empty (the
     /// selection is always valid otherwise — headers are not addressable).
     private var selectedItem: StatusItem? {
-        guard statusList.sections.indices.contains(selectedSection) else { return nil }
-        let section = statusList.sections[selectedSection]
-        guard section.items.indices.contains(selectedRow) else { return nil }
-        return section.items[selectedRow]
+        item(at: selectionPosition)
     }
 
     /// True when the item at (section, row) is the selection — or inside
@@ -775,7 +772,10 @@ class GitPanelWindow: Window {
             .init(kind: .commits, items: recentCommits.prefix(5).map(StatusItem.commit)),
         ].filter { !$0.items.isEmpty }
 
+        // Capture identities before replacing the list so the selection
+        // (and the visual anchor) survive entries moving between sections.
         let previousIdentity = selectedItem?.identity
+        let anchorIdentity = item(at: statusVisualStart)?.identity
         statusList = StatusList(sections: sections)
 
         if let identity = previousIdentity,
@@ -786,7 +786,19 @@ class GitPanelWindow: Window {
             selectedSection = min(selectedSection, sections.count - 1)
             selectedRow = min(selectedRow, sections[selectedSection].items.count - 1)
         }
+        // Keep the visual range anchored to the same entry; when it is
+        // gone the range collapses onto the selection.
+        if mode == .visualLine {
+            statusVisualStart = anchorIdentity.flatMap(findItem) ?? selectionPosition
+        }
         dirty = true
+    }
+
+    private func item(at pos: StatusPos) -> StatusItem? {
+        guard statusList.sections.indices.contains(pos.section) else { return nil }
+        let section = statusList.sections[pos.section]
+        guard section.items.indices.contains(pos.row) else { return nil }
+        return section.items[pos.row]
     }
 
     private func findItem(_ identity: String) -> StatusPos? {

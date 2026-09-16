@@ -1179,6 +1179,9 @@ class Application: WindowDelegate {
 
     func runGitCommand(label: String, args: [String]) {
         if maximized != nil { restoreMaximized() }
+        // The command window shares the commit editor's layout slot —
+        // never show both at once (they would overdraw each other).
+        if commitWindow.visible { popWindow(commitWindow) }
         command.workingDirectory = gitPanel.workingDirectory
         command.runCommand(label, args: args)
         recalculateLayout()
