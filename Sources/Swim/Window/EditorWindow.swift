@@ -606,31 +606,44 @@ class EditorWindow: Window {
         let offset = buf.lineStart(line: cursorLine) + byteOff
         buf.insert("\n", at: offset)
         var inserted = "\n"
-        let lineContent = buf.getLine(cursorLine)
+        let fullLine = buf.getLine(cursorLine)
+        let splitIndex = fullLine.index(fullLine.startIndex, offsetBy: cursorCol)
+        let before = String(fullLine[..<splitIndex])
+        let after = String(fullLine[splitIndex...])
         cursorCol = 0; cursorLine += 1
-        let baseIndent = leadingSpaces(lineContent)
-        let trimmed = lineContent.trimmingCharacters(in: .whitespaces)
-        var extra = 0
-        if trimmed.hasSuffix("{") || trimmed.hasSuffix("(") || trimmed.hasSuffix(":") {
-            extra = indentSize()
-        }
-        let newLineContent = buf.getLine(cursorLine)
-        let newTrimmed = newLineContent.trimmingCharacters(in: .whitespaces)
-        let closesBlock = newTrimmed.hasPrefix("}") || newTrimmed.hasPrefix(")")
-        if closesBlock {
-            let fullIndent = baseIndent + extra
-            let extraText = String(repeating: " ", count: fullIndent) + "\n" + String(repeating: " ", count: baseIndent)
-            buf.insert(extraText, at: buf.lineStart(line: cursorLine))
-            inserted += extraText
-            cursorCol = fullIndent
-        } else {
-            let indent = baseIndent + extra
-            if indent > 0 {
-                let indentText = String(repeating: " ", count: indent)
+        let plan = IndentEngine.plan(
+            before: before,
+            after: after,
+            fullLine: fullLine,
+            baseIndent: leadingSpaces(fullLine),
+            shiftWidth: indentSize(),
+            tabWidth: tabWidth,
+            lineAbove: { n in
+                let idx = self.cursorLine - 1 - n
+                return idx >= 0 ? buf.getLine(idx) : nil
+            })
+        switch plan {
+        case .plain(let cursorIndent):
+            if cursorIndent > 0 {
+                let indentText = String(repeating: " ", count: cursorIndent)
                 buf.insert(indentText, at: buf.lineStart(line: cursorLine))
                 inserted += indentText
-                cursorCol = indent
             }
+            cursorCol = cursorIndent
+        case .closerOnly(let bracketIndent):
+            if bracketIndent > 0 {
+                let indentText = String(repeating: " ", count: bracketIndent)
+                buf.insert(indentText, at: buf.lineStart(line: cursorLine))
+                inserted += indentText
+            }
+            cursorCol = bracketIndent
+        case .closerWithBody(let cursorIndent, let bracketIndent):
+            let bodyText = String(repeating: " ", count: cursorIndent)
+                + "\n"
+                + String(repeating: " ", count: bracketIndent)
+            buf.insert(bodyText, at: buf.lineStart(line: cursorLine))
+            inserted += bodyText
+            cursorCol = cursorIndent
         }
         recordAction(offset: offset, deleted: "", inserted: inserted)
         ensureCursorVisible()
