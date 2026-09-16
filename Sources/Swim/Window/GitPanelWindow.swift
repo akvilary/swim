@@ -209,7 +209,7 @@ class GitPanelWindow: Window {
         if mode == .visualLine {
             headerPlate = HeaderPlate(text: " [ VISUAL ] \(branchLabel) ", fg: Theme.purple)
         } else {
-            headerPlate = HeaderPlate(text: " \(branchLabel) (s: stage/unstage, x: discard, c: commit) ", fg: Theme.orange)
+            headerPlate = HeaderPlate(text: " \(branchLabel) (s: stage/unstage, d: discard, c: commit) ", fg: Theme.orange)
         }
         drawPlate()
 
@@ -289,7 +289,7 @@ class GitPanelWindow: Window {
             headerPlate = HeaderPlate(text: " \(title) (yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
         } else {
             let hunkHint = diffUntracked ? "s: add file" : (diffStaged ? "s: unstage hunk" : "s: stage hunk")
-            headerPlate = HeaderPlate(text: " \(title) (\(hunkHint), x: discard, yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
+            headerPlate = HeaderPlate(text: " \(title) (\(hunkHint), d: discard, yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
         }
         drawPlate()
         let visibleLines = contentHeight
@@ -401,7 +401,7 @@ class GitPanelWindow: Window {
             case .char("s"):
                 stageOrUnstageFromDiff()
                 pendingY = false
-            case .char("x"):
+            case .char("d"):
                 pendingY = false
                 discardFromDiff()
             case .char("y"):
@@ -442,7 +442,7 @@ class GitPanelWindow: Window {
         case .char("s"):
             mode = .menu; pendingY = false
             stageOrUnstageSelected()
-        case .char("x"):
+        case .char("d"):
             mode = .menu; pendingY = false
             discardSelected()
         case .char("c"):

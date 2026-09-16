@@ -378,14 +378,14 @@ Emoji-иконки: 🐦 Swift, 🌐 JS, 🐍 Python, 🦀 Rust, 🐹 Go, 📝 M
 **Status-вид:**
 - `j/k` — навигация, `Enter` — diff выбранного файла/коммита
 - `s` — stage (unstaged/untracked) или unstage (staged) файла; staged rename откатывается с обеих сторон (`reset HEAD -- old new`)
-- `x` — discard: staged → `checkout HEAD --` (для новых `A` — `rm -f`; для rename — восстановление старого пути + удаление нового; copy — `rm -f` копии), unstaged → `checkout --`, untracked — удаление файла с диска
+- `d` — discard: staged → `checkout HEAD --` (для новых `A` — `rm -f`; для rename — восстановление старого пути + удаление нового; copy — `rm -f` копии), unstaged → `checkout --`, untracked — удаление файла с диска
 - `c` — окно коммита (см. CommitWindow); повторное `c` при открытом окне — рефокус без затирания текста
 - `-` / `+` — `git pull` / `git push` (вывод и spinner — в CommandWindow)
 - `yy` — копировать строку статуса (OSC52), `V` — visual-выделение записей
 - `Escape` — закрыть панель
 
 **Diff-вид:**
-- `j/k` — навигация по строкам, `s` — stage/unstage активного hunk'а (патч собирается из заголовка diff + строк hunk'а), `x` — discard hunk'а: `git apply --reverse` для worktree; staged-ханк откатывается и в index, и в worktree (частичная неудача worktree-реверса репортится — ханк переезжает в unstaged)
+- `j/k` — навигация по строкам, `s` — stage/unstage активного hunk'а (патч собирается из заголовка diff + строк hunk'а), `d` — discard hunk'а: `git apply --reverse` для worktree; staged-ханк откатывается и в index, и в worktree (частичная неудача worktree-реверса репортится — ханк переезжает в unstaged)
 - `yy` / `V`+`y` — копирование строк, `Escape` — назад к статусу (из visual — сначала выход из visual)
 
 Diff подсвачивается: зелёный — добавления, красный — удаления, голубой — заголовки hunk'ов. Все заголовки панели (ветка/загрузка/visual/diff с подсказками) — через единый механизм `HeaderPlate`; длинные пути усекаются по ширине окна (`drawHeader` использует `prefix(width)`).
