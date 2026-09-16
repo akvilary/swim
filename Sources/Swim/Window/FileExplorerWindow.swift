@@ -10,6 +10,7 @@ struct FileEntry {
 }
 
 class FileExplorerWindow: Window {
+    override var availableModes: [WindowMode] { [.menu, .command] }
     private var rootEntries: [FileEntry] = []
     private var flatEntries: [(entry: FileEntry, depth: Int)] = []
     private(set) var selectedIndex: Int = 0

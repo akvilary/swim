@@ -51,6 +51,7 @@ class Application: WindowDelegate {
     private let tabBar = TabBarWindow()
     private let fileExplorer = FileExplorerWindow()
     private let gitPanel = GitPanelWindow()
+    private let commitWindow = CommitWindow()
     private let searchResults = SearchResultsWindow()
     private let preview = PreviewWindow()
     private let command = CommandWindow()
@@ -63,6 +64,7 @@ class Application: WindowDelegate {
         editorSpace.addWindow("editor", editor)
         editorSpace.addWindow("gitPanel", gitPanel)
         editorSpace.addWindow("command", command)
+        editorSpace.addWindow("commit", commitWindow)
         editorSpace.addWindow("terminal", terminalWindow)
         editorSpace.addWindow("statusBar", statusBar)
 
@@ -147,7 +149,17 @@ class Application: WindowDelegate {
             }
             if terminal.bytesAvailable() {
                 if let key = Key.parse(from: terminal) {
+                    // Consume completed background results before the key
+                    // is handled: handlers must act on the freshest state,
+                    // otherwise key/result interleaving is nondeterministic
+                    // (a navigation move could land on a stale list).
+                    spaces.current.pollWindows()
                     handleGlobalKey(key)
+                    // The status bar mirrors the focused window (mode,
+                    // cursor) — resync after every key so focus moves from
+                    // toggles, Tab cycling and space switches are reflected
+                    // even when their handlers don't update it themselves.
+                    updateStatusBar()
                 }
                 spaces.current.update()
                 render()
@@ -608,22 +620,23 @@ class Application: WindowDelegate {
 
     private func handleGlobalKey(_ key: Key) {
         if editor.lastError != nil { editor.lastError = nil }
-        if editor.mode == .command {
+        // The window that owns the command line consumes every key while
+        // it is being typed (focus cannot change mid-command).
+        if let owner = commandModeWindow {
             var isEnter = false
             if case .enter = key { isEnter = true }
             let pathBefore = editor.filePath
-            if editor.handleKey(key) {
-                // A command like `:e` may have opened a file while the editor
-                // was hidden or another space was active — reveal it now.
-                if isEnter, case .normal = editor.mode,
-                   editor.filePath != nil, editor.filePath != pathBefore {
-                    if !editor.visible { ensureEditorVisible() }
-                    if spaces.current.id != "editor" { switchToSpace("editor") }
-                    focus(editor)
-                }
-                updateStatusBar()
-                notifyLSPChange()
+            _ = owner.handleCommandModeKey(key)
+            // A command like `:e` may have opened a file while the editor
+            // was hidden or another space was active — reveal it now.
+            if isEnter, owner === editor, case .normal = editor.mode,
+               editor.filePath != nil, editor.filePath != pathBefore {
+                if !editor.visible { ensureEditorVisible() }
+                if spaces.current.id != "editor" { switchToSpace("editor") }
+                focus(editor)
             }
+            updateStatusBar()
+            if owner === editor { notifyLSPChange() }
             return
         }
 
@@ -670,8 +683,12 @@ class Application: WindowDelegate {
             break
         }
 
+        // Tab cycles focus, but only from modes that don't take text:
+        // insert (editor, search query, commit message) and command
+        // modes consume it, and the terminal types it literally.
         if case .tab = key, spaces.current.focused !== terminalWindow,
-           case .normal = editor.mode {
+           let focused = spaces.current.focused,
+           focused.mode == .menu || focused.mode == .normal {
             cycleFocus()
             return
         }
@@ -692,33 +709,22 @@ class Application: WindowDelegate {
         }
     }
 
-    /// `:` opens the command line from any window. Blocked only while the
-    /// editor itself is taking text (insert mode) or the focused search
-    /// window is accepting a query — there `:` must be typed literally.
+    /// `:` opens the command line on the focused window — allowed when
+    /// that window supports command mode and is not taking text (insert
+    /// mode types `:` literally). Windows without command mode (the
+    /// terminal, passive panels) never open it.
     private func canOpenCommandLine() -> Bool {
-        switch editor.mode {
-        case .normal, .visual, .visualLine: break
-        default: return false
-        }
-        if let focused = spaces.current.focused,
-           focused === searchResults, searchResults.inputMode {
-            return false
-        }
-        // The terminal panel always takes literal text — `:` and Tab belong
-        // to the command being typed, not to the app.
-        if let focused = spaces.current.focused, focused === terminalWindow {
-            return false
-        }
-        return true
+        guard let focused = spaces.current.focused,
+              focused.availableModes.contains(.command) else { return false }
+        return focused.mode != .insert
     }
 
-    /// Enters command mode no matter which window has focus. The focused
-    /// window keeps focus (and its place on top of the stack); the command
-    /// is typed through the status bar, and `:q` closes the focused window.
+    /// Enters command mode on the focused window: the command line is
+    /// owned by that window — `:q` closes it, an editor's `:w` saves it.
+    /// The focused window keeps focus and its place on the stack; the
+    /// command is typed through the status bar.
     private func openCommandLine() {
-        editor.mode = .command
-        editor.commandBuffer = ""
-        editor.dirty = true
+        spaces.current.focused?.enterCommandMode()
         updateStatusBar()
     }
 
@@ -818,6 +824,9 @@ class Application: WindowDelegate {
         if maximized != nil { restoreMaximized() }
         gitPanel.visible = !gitPanel.visible
         if gitPanel.visible {
+            // A diff left open when the panel was closed (`:q`, Ctrl+X)
+            // would show stale content on reopen — return to the list.
+            gitPanel.closeDiffView()
             gitPanel.refresh()
             focus(gitPanel)
         } else {
@@ -918,7 +927,7 @@ class Application: WindowDelegate {
         guard let window = halfScreenWindow else { return .none }
         if window === fileExplorer { return .explorer }
         if window === gitPanel { return .git }
-        if window === command { return .command }
+        if window === command || window === commitWindow { return .command }
         if window === terminalWindow { return .terminal }
         if window === searchResults { return .searchResults }
         if window === preview { return .preview }
@@ -958,7 +967,7 @@ class Application: WindowDelegate {
             showExplorer: fileExplorer.visible,
             showEditor: editor.visible,
             showGit: gitPanel.visible,
-            showCommand: command.visible,
+            showCommand: command.visible || commitWindow.visible,
             showTerminal: terminalWindow.visible,
             showTabBar: editor.visible && tabBar.visible,
             halfScreen: halfScreenRole()
@@ -971,6 +980,7 @@ class Application: WindowDelegate {
         searchResults.resize(x: layout.searchResults.x, y: layout.searchResults.y, width: layout.searchResults.width, height: layout.searchResults.height)
         preview.resize(x: layout.preview.x, y: layout.preview.y, width: layout.preview.width, height: layout.preview.height)
         command.resize(x: layout.command.x, y: layout.command.y, width: layout.command.width, height: layout.command.height)
+        commitWindow.resize(x: layout.command.x, y: layout.command.y, width: layout.command.width, height: layout.command.height)
         terminalWindow.resize(x: layout.terminal.x, y: layout.terminal.y, width: layout.terminal.width, height: layout.terminal.height)
         statusBar.resize(x: layout.status.x, y: layout.status.y, width: layout.status.width, height: layout.status.height)
 
@@ -989,14 +999,24 @@ class Application: WindowDelegate {
         recalculateLayout()
     }
 
+    /// The window currently owning the command line. Only the focused
+    /// window can enter command mode and focus cannot change while the
+    /// command is being typed, so at most one visible window is in
+    /// command mode.
+    private var commandModeWindow: Window? {
+        spaces.current.visibleWindows.first { $0.mode == .command }
+    }
+
     private func render() {
         var cursorInfo: CursorRenderInfo?
-        if editor.visible && editor.mode == .insert {
-            let screenRow = editor.cursorLine - editor.scrollY
-            let screenCol = editor.cursorCol - editor.scrollX
-            let lnW = editor.lineNumberWidth()
-            if screenRow >= 0 && screenRow < editor.height && screenCol >= 0 && screenCol + lnW < editor.width {
-                cursorInfo = CursorRenderInfo(row: editor.y + screenRow, col: editor.x + lnW + screenCol, shape: 5, visible: true)
+        // The terminal cursor follows the focused editor in insert mode —
+        // the main editor or the commit editor.
+        if let ed = spaces.current.focused as? EditorWindow, ed.visible, ed.mode == .insert {
+            let screenRow = ed.cursorLine - ed.scrollY + ed.contentTop
+            let screenCol = ed.cursorCol - ed.scrollX
+            let lnW = ed.lineNumberWidth()
+            if screenRow >= 0 && screenRow < ed.height && screenCol >= 0 && screenCol + lnW < ed.width {
+                cursorInfo = CursorRenderInfo(row: ed.y + screenRow, col: ed.x + lnW + screenCol, shape: 5, visible: true)
             }
         }
         if editor.visible {
@@ -1012,22 +1032,32 @@ class Application: WindowDelegate {
     }
 
     private func updateStatusBar() {
-        statusBar.modeText = modeString(editor.mode)
-        statusBar.cursorLine = editor.cursorLine
-        statusBar.cursorCol = editor.cursorCol
-        statusBar.totalLines = editor.buffer?.lineCount ?? 0
-        statusBar.commandText = editor.commandBuffer
-        statusBar.errorMessage = editor.lastError
-        tabBar.dirty = true
-        if let path = editor.filePath {
+        // The mode label and command text come from the window that owns
+        // the command line, else from the focused window; cursor stats
+        // come from the focused editor when one has focus (main or
+        // commit), else from the main editor.
+        let focused = spaces.current.focused
+        let modeSource = commandModeWindow ?? focused ?? editor
+        let statsSource = (focused is EditorWindow) ? (focused as! EditorWindow) : editor
+        statusBar.modeText = modeString(modeSource.mode)
+        statusBar.commandText = modeSource.commandBuffer
+        statusBar.cursorLine = statsSource.cursorLine
+        statusBar.cursorCol = statsSource.cursorCol
+        statusBar.totalLines = statsSource.buffer?.lineCount ?? 0
+        if let path = statsSource.filePath {
             let ext = (path as NSString).pathExtension
             statusBar.fileType = ext.isEmpty ? "" : "[\(ext)]"
+        } else {
+            statusBar.fileType = ""
         }
+        statusBar.errorMessage = editor.lastError
+        tabBar.dirty = true
         statusBar.dirty = true
     }
 
-    private func modeString(_ mode: EditorMode) -> String {
+    private func modeString(_ mode: WindowMode) -> String {
         switch mode {
+        case .menu: return "MENU"
         case .normal: return "NORMAL"
         case .insert: return "INSERT"
         case .visual: return "VISUAL"
@@ -1154,6 +1184,46 @@ class Application: WindowDelegate {
         recalculateLayout()
         focus(command)
         spaces.markAllDirty()
+    }
+
+    /// Any finished git command (pull, push, commit) may have changed the
+    /// repository — refresh the panel so the status list stays truthful.
+    func gitCommandFinished(_ label: String) {
+        gitPanel.refresh()
+    }
+
+    func requestCommitMessage() {
+        if maximized != nil { restoreMaximized() }
+        // Already composing — just refocus, don't wipe the typed message.
+        if commitWindow.visible {
+            focus(commitWindow)
+            spaces.markAllDirty()
+            updateStatusBar()
+            return
+        }
+        // The commit editor shares the command window's layout slot —
+        // never show both at once (they would overdraw each other).
+        if command.visible { popWindow(command) }
+        commitWindow.newFile()
+        commitWindow.mode = .insert
+        commitWindow.headerPlate = HeaderPlate(text: " Commit @ \(gitPanel.currentBranch) ", fg: Theme.orange)
+        commitWindow.visible = true
+        focus(commitWindow)
+        recalculateLayout()
+        spaces.markAllDirty()
+        updateStatusBar()
+    }
+
+    /// `:w`/`:wq`/`:x` in the commit editor confirms the commit.
+    func requestCommit() {
+        guard let buffer = commitWindow.buffer else { return }
+        let message = buffer.getAllText().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else {
+            reportError("Commit message is empty")
+            return
+        }
+        closeWindow(commitWindow)
+        runGitCommand(label: "git commit", args: ["commit", "-m", message])
     }
 
     func requestRender() {

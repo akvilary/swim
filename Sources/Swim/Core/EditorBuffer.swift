@@ -1,19 +1,11 @@
 import Foundation
 
-enum EditorMode {
-    case normal
-    case insert
-    case visual
-    case visualLine
-    case command
-}
-
 /// Per-file editor state. One tab == one EditorBuffer.
 final class EditorBuffer {
     let buffer: PieceTable
     let filePath: String?
     var modified: Bool = false
-    var mode: EditorMode = .normal
+    var mode: WindowMode = .normal
     var cursorLine: Int = 0
     var cursorCol: Int = 0
     var scrollX: Int = 0

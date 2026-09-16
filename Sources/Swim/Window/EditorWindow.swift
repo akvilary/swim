@@ -3,10 +3,12 @@ import Foundation
 class EditorWindow: Window {
     let tabs = BufferManager()
 
+    override var availableModes: [WindowMode] { [.normal, .insert, .visual, .visualLine, .command] }
+
     // Per-buffer state forwarded to the active tab
     var buffer: PieceTable? { tabs.active.buffer }
     var filePath: String? { tabs.active.filePath }
-    var mode: EditorMode {
+    override var mode: WindowMode {
         get { tabs.active.mode }
         set { tabs.active.mode = newValue }
     }
@@ -61,7 +63,6 @@ class EditorWindow: Window {
     }
 
     // Window-global state (registers, pending keys, transient UI)
-    var commandBuffer: String = ""
     var yankBuffer: String = ""
     var searchQuery: String = ""
     var lastSearchForward: Bool = true
@@ -291,7 +292,8 @@ class EditorWindow: Window {
         case .insert: return handleInsert(key)
         case .visual: return handleVisual(key)
         case .visualLine: return handleVisualLine(key)
-        case .command: return handleCommand(key)
+        case .command: return handleCommandModeKey(key)
+        case .menu: return false
         }
     }
 
@@ -403,42 +405,31 @@ class EditorWindow: Window {
         return true
     }
 
-    private func handleCommand(_ key: Key) -> Bool {
-        switch key {
-        case .escape: mode = .normal
-        case .enter: executeCommand(); mode = .normal
-        case .backspace:
-            if commandBuffer.isEmpty { mode = .normal }
-            else { commandBuffer.removeLast() }
-        case .char(let c): commandBuffer.append(c)
-        default: return false
+    override func executeCommand(_ cmd: String) -> Bool {
+        switch cmd {
+        case "w":
+            saveFile()
+        case "wq", "x":
+            saveFile()
+            delegate?.handleEditorCommand("wquit")
+        default:
+            if cmd.hasPrefix("e! ") {
+                editFile(String(cmd.dropFirst(3)).trimmingCharacters(in: .whitespaces))
+            } else if cmd.hasPrefix("e ") {
+                if modified { lastError = "No write since last change (add ! to override)" }
+                else { editFile(String(cmd.dropFirst(2)).trimmingCharacters(in: .whitespaces)) }
+            } else if cmd.hasPrefix("%s/") {
+                handleSubstitute(cmd)
+            } else if cmd.hasPrefix("/") {
+                searchQuery = String(cmd.dropFirst())
+                lastSearchForward = true
+                searchNext()
+            } else {
+                // Window-management commands (q, q!, qa, terminal, ...)
+                return super.executeCommand(cmd)
+            }
         }
-        dirty = true
         return true
-    }
-
-    private func executeCommand() {
-        let cmd = commandBuffer
-        if cmd == "w" { saveFile() }
-        else if cmd == "q" || cmd == "bd" { delegate?.handleEditorCommand(cmd) }
-        else if cmd == "wq" || cmd == "x" { saveFile(); delegate?.handleEditorCommand("wquit") }
-        else if cmd == "q!" || cmd == "forcequit" { delegate?.handleEditorCommand("forcequit") }
-        else if cmd == "bd!" { delegate?.handleEditorCommand("bd!") }
-        else if cmd == "qa" || cmd == "qa!" { delegate?.handleEditorCommand(cmd) }
-        else if cmd == "terminal" || cmd == "term" || cmd == "sh" { delegate?.handleEditorCommand(cmd) }
-        else if cmd.hasPrefix("e! ") {
-            editFile(String(cmd.dropFirst(3)).trimmingCharacters(in: .whitespaces))
-        }
-        else if cmd.hasPrefix("e ") {
-            if modified { lastError = "No write since last change (add ! to override)" }
-            else { editFile(String(cmd.dropFirst(2)).trimmingCharacters(in: .whitespaces)) }
-        }
-        else if cmd.hasPrefix("%s/") { handleSubstitute(cmd) }
-        else if cmd.hasPrefix("/") {
-            searchQuery = String(cmd.dropFirst())
-            lastSearchForward = true
-            searchNext()
-        }
     }
 
     private func handleSubstitute(_ cmd: String) {
@@ -890,13 +881,13 @@ class EditorWindow: Window {
 
     private func pageDown() {
         guard let buf = buffer else { return }
-        cursorLine += height - 2
+        cursorLine += contentHeight - 2
         if cursorLine >= buf.lineCount { cursorLine = max(0, buf.lineCount - 1) }
         clampCol(); ensureCursorVisible()
     }
 
     private func pageUp() {
-        cursorLine -= (height - 2)
+        cursorLine -= (contentHeight - 2)
         if cursorLine < 0 { cursorLine = 0 }
         clampCol(); ensureCursorVisible()
     }
@@ -964,7 +955,7 @@ class EditorWindow: Window {
             return
         }
         if cursorLine < scrollY { scrollY = cursorLine }
-        else if cursorLine >= scrollY + height { scrollY = cursorLine - height + 1 }
+        else if cursorLine >= scrollY + contentHeight { scrollY = cursorLine - contentHeight + 1 }
         let dispCol = displayColForChar(line: cursorLine, charCol: cursorCol)
         if dispCol < scrollX { scrollX = dispCol }
         else if dispCol >= scrollX + width - lineNumberWidth() - 1 {
@@ -1023,6 +1014,8 @@ class EditorWindow: Window {
 
         clear(bg: Theme.bg)
 
+        drawPlate()
+
         let lnWidth = lineNumberWidth()
         let textWidth = max(0, width - lnWidth)
 
@@ -1045,7 +1038,7 @@ class EditorWindow: Window {
         if langSyntax.mlRules.isEmpty {
             if !mlStringStates.isEmpty { mlStringStates = [] }
         } else {
-            ensureMLStringStates(through: min(scrollY + height, buf.lineCount),
+            ensureMLStringStates(through: min(scrollY + contentHeight, buf.lineCount),
                                  buffer: buf, keywords: builtinKeywords ?? [],
                                  literals: builtinLiterals ?? [],
                                  syntax: langSyntax)
@@ -1053,7 +1046,7 @@ class EditorWindow: Window {
 
         var mdTokenIndex: [Int: [SemanticToken]]?
         if useBuiltinTokens && isMD {
-            let mdTokens = SyntaxTokenizer.tokenizeMarkdownVisible(buffer: buf, scrollY: scrollY, height: height, cache: &markdownCache)
+            let mdTokens = SyntaxTokenizer.tokenizeMarkdownVisible(buffer: buf, scrollY: scrollY, height: contentHeight, cache: &markdownCache)
             var idx = [Int: [SemanticToken]]()
             idx.reserveCapacity(height)
             for t in mdTokens {
@@ -1062,7 +1055,7 @@ class EditorWindow: Window {
             mdTokenIndex = idx
         }
 
-        for row in 0..<height {
+        for row in 0..<contentHeight {
             let lineNum = scrollY + row
             guard lineNum < buf.lineCount else { continue }
             let chars = buf.getLineChars(lineNum)
@@ -1120,7 +1113,7 @@ class EditorWindow: Window {
                     for _ in 0..<spaces {
                         let cellX = lnWidth + colOffset
                         if cellX < width {
-                            setCell(row, cellX, Cell.colored(" ", fg: tokenColor, bg: Theme.bg))
+                            setCell(row + contentTop, cellX, Cell.colored(" ", fg: tokenColor, bg: Theme.bg))
                         }
                         colOffset += 1
                     }
@@ -1129,13 +1122,13 @@ class EditorWindow: Window {
                     guard w > 0 else { continue }
                     let cellX = lnWidth + colOffset
                     if cellX < width {
-                        setCell(row, cellX, Cell.colored(chars[i], fg: tokenColor, bg: Theme.bg))
+                        setCell(row + contentTop, cellX, Cell.colored(chars[i], fg: tokenColor, bg: Theme.bg))
                         if w == 2, cellX + 1 < width {
                             var cont = Cell.blank
                             cont.fg = tokenColor
                             cont.bg = Theme.bg
                             cont.wideContinuation = true
-                            setCell(row, cellX + 1, cont)
+                            setCell(row + contentTop, cellX + 1, cont)
                         }
                     }
                     colOffset += w
@@ -1150,7 +1143,7 @@ class EditorWindow: Window {
 
     private func drawLineNumbers(lnWidth: Int, lineCount: Int) {
         guard height > 0 else { return }
-        for row in 0..<height {
+        for row in 0..<contentHeight {
             let lineNum = scrollY + row
             let isCurrentLine = lineNum == cursorLine
             if lineNum < lineCount {
@@ -1160,20 +1153,20 @@ class EditorWindow: Window {
                 let fg: Color = isCurrentLine ? Theme.fg : Theme.comment
                 for (i, c) in padded.enumerated() {
                     if i < width && i < lnWidth {
-                        setCell(row, i, Cell.colored(c, fg: fg, bg: Theme.bg))
+                        setCell(row + contentTop, i, Cell.colored(c, fg: fg, bg: Theme.bg))
                     }
                 }
             } else {
                 for i in 0..<min(lnWidth, width) {
-                    setCell(row, i, Cell.colored(" ", fg: Theme.comment, bg: Theme.bg))
+                    setCell(row + contentTop, i, Cell.colored(" ", fg: Theme.comment, bg: Theme.bg))
                 }
             }
         }
     }
 
     private func drawCursor(lnWidth: Int) {
-        guard cursorLine >= scrollY && cursorLine < scrollY + height else { return }
-        let screenRow = cursorLine - scrollY
+        guard cursorLine >= scrollY && cursorLine < scrollY + contentHeight else { return }
+        let screenRow = cursorLine - scrollY + contentTop
         let screenCol = displayColForChar(line: cursorLine, charCol: cursorCol) - scrollX
         guard screenCol >= 0 && screenCol + lnWidth < width else { return }
         let absCol = lnWidth + screenCol
@@ -1186,8 +1179,8 @@ class EditorWindow: Window {
     private func drawVisualHighlight(lnWidth: Int) {
         let (startLine, startCol, endLine, endCol) = visualRange()
         for lineNum in startLine...endLine {
-            let screenRow = lineNum - scrollY
-            guard screenRow >= 0 && screenRow < height else { continue }
+            let screenRow = lineNum - scrollY + contentTop
+            guard screenRow >= contentTop && screenRow < height else { continue }
             guard let buf = buffer else { continue }
             let lineEnd = max(0, buf.lineCharLength(line: lineNum) - 1)
             let colStart = (lineNum == startLine) ? startCol : 0
@@ -1211,8 +1204,8 @@ class EditorWindow: Window {
     private func drawVisualLineHighlight(lnWidth: Int) {
         let (startLine, endLine) = visualLineRange()
         for lineNum in startLine...endLine {
-            let screenRow = lineNum - scrollY
-            guard screenRow >= 0 && screenRow < height else { continue }
+            let screenRow = lineNum - scrollY + contentTop
+            guard screenRow >= contentTop && screenRow < height else { continue }
             for col in 0..<width {
                 var cell = getCell(screenRow, col)
                 cell.bg = Theme.visualBg

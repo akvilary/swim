@@ -20,6 +20,15 @@ class Space {
         windows.values.filter { $0.visible }
     }
 
+    /// Polls every window's background tasks without redrawing — used
+    /// before a key is dispatched so handlers act on the freshest
+    /// consumable state.
+    func pollWindows() {
+        for window in windows.values {
+            window.poll()
+        }
+    }
+
     func markDirty() {
         for window in windows.values {
             window.dirty = true

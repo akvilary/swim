@@ -9,6 +9,7 @@ struct SearchResult {
 }
 
 class SearchResultsWindow: Window {
+    override var availableModes: [WindowMode] { [.insert, .menu, .command] }
     private(set) var results: [SearchResult] = []
     private(set) var groupedResults: [(dir: String, files: [(name: String, results: [SearchResult])])] = []
     private(set) var selectedIndex: Int = 0
@@ -22,13 +23,15 @@ class SearchResultsWindow: Window {
     private let searchTask = BackgroundTask<[SearchResult]>()
     var workingDirectory: String = ""
     private(set) var isSearching: Bool = false
-    private(set) var inputMode: Bool = true
+    /// The query-input phase is the window's insert mode; results
+    /// navigation is menu mode.
+    var inputMode: Bool { mode == .insert }
     private(set) var inputBuffer: String = ""
     private(set) var inputCursorPos: Int = 0
 
     func prepareInput(workingDirectory: String) {
         self.workingDirectory = workingDirectory
-        inputMode = true
+        mode = .insert
         inputBuffer = ""
         inputCursorPos = 0
         dirty = true
@@ -265,7 +268,7 @@ class SearchResultsWindow: Window {
         case .enter, .char("l"), .ctrlRight, .ctrl("l"): handleEnter()
         case .char("h"), .ctrlLeft, .ctrl("h"): handleCollapse()
         case .escape:
-            inputMode = true
+            mode = .insert
             inputBuffer = ""
             inputCursorPos = 0
             dirty = true
@@ -280,7 +283,7 @@ class SearchResultsWindow: Window {
             return false
         case .enter:
             guard !inputBuffer.isEmpty else { return true }
-            inputMode = false
+            mode = .menu
             let cwd = workingDirectory.isEmpty
                 ? FileManager.default.currentDirectoryPath
                 : workingDirectory

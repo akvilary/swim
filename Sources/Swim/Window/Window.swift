@@ -1,5 +1,33 @@
 import Foundation
 
+/// Interaction modes. Each window declares the modes it supports via
+/// `availableModes`; the mode determines what `:` does, how Tab behaves
+/// and what the status bar shows:
+/// - `menu` — the standard behavior of the list windows (git panel,
+///   explorer, search results): j/k line navigation, Enter performs the
+///   primary action, other action keys are window-specific extras.
+/// - `normal`, `insert`, `visual`, `visualLine` — editor modes; menu
+///   windows reuse `visualLine` for line selection.
+/// - `command` — the command line owned by the window that entered it:
+///   `:q`/`:q!` close that window, an editor's `:w` saves it.
+enum WindowMode {
+    case menu
+    case normal
+    case insert
+    case visual
+    case visualLine
+    case command
+}
+
+/// A one-line plate drawn at the top of a window (row 0); window content
+/// then starts at `contentTop`. Set `window.headerPlate` and call
+/// `drawPlate()` from `update()` to use it.
+struct HeaderPlate {
+    var text: String
+    var fg: Color = Theme.fg
+    var bg: Color = Theme.bgHighlight
+}
+
 class Window {
     weak var delegate: WindowDelegate?
     var x: Int = 0
@@ -11,6 +39,93 @@ class Window {
     var dirty: Bool = true
 
     private var cells: [Cell]
+
+    private var _mode: WindowMode = .menu
+
+    /// The window's current mode. Stored on the window itself; editors
+    /// override this to keep the mode per tab.
+    var mode: WindowMode {
+        get { _mode }
+        set { _mode = newValue }
+    }
+
+    /// Modes this window can be in. Windows that list `.command` own a
+    /// command line when focused; windows without it (terminal, passive
+    /// panels) never do — `:` is literal text there.
+    var availableModes: [WindowMode] { [] }
+
+    /// The command-line buffer while this window owns the command line.
+    var commandBuffer: String = ""
+
+    /// Optional one-line plate at the top of the window. Windows that
+    /// show it draw their content starting at `contentTop`.
+    var headerPlate: HeaderPlate?
+
+    /// Row where window content starts — below the header plate when one
+    /// is shown.
+    var contentTop: Int { headerPlate == nil ? 0 : 1 }
+
+    /// Number of content rows below the plate.
+    var contentHeight: Int { max(0, height - contentTop) }
+
+    /// Draws the plate row; call from update() after assigning
+    /// headerPlate (it may change per frame).
+    func drawPlate() {
+        guard let plate = headerPlate else { return }
+        drawHeader(plate.text, fg: plate.fg, bg: plate.bg)
+    }
+
+    func enterCommandMode() {
+        commandBuffer = ""
+        mode = .command
+        dirty = true
+    }
+
+    func exitCommandMode() {
+        guard mode == .command else { return }
+        mode = availableModes.contains(.menu) ? .menu : .normal
+        commandBuffer = ""
+        dirty = true
+    }
+
+    /// Command-mode key handling shared by every mode-capable window:
+    /// the buffer is typed through the status bar, Enter executes the
+    /// command against this window, Esc cancels.
+    func handleCommandModeKey(_ key: Key) -> Bool {
+        switch key {
+        case .escape:
+            exitCommandMode()
+        case .enter:
+            let cmd = commandBuffer
+            // Exit before executing: a command like `:q` closes this very
+            // window and must not leave it in command mode.
+            exitCommandMode()
+            executeCommand(cmd)
+        case .backspace:
+            if commandBuffer.isEmpty { exitCommandMode() }
+            else { commandBuffer.removeLast() }
+        case .char(let c):
+            commandBuffer.append(c)
+        default:
+            return false
+        }
+        return true
+    }
+
+    /// Executes a command typed in this window's command line. The base
+    /// implementation covers the window-management commands shared by
+    /// every window; editors override it to add file commands.
+    @discardableResult
+    func executeCommand(_ cmd: String) -> Bool {
+        switch cmd {
+        case "q", "quit", "bd", "q!", "quit!", "forcequit", "bd!",
+             "qa", "qa!", "terminal", "term", "sh":
+            delegate?.handleEditorCommand(cmd)
+            return true
+        default:
+            return false
+        }
+    }
 
     init(x: Int = 0, y: Int = 0, width: Int = 0, height: Int = 0) {
         self.x = x

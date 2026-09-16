@@ -75,10 +75,11 @@ class TerminalWindow: Window {
         }
         clampScroll()
 
+        headerPlate = HeaderPlate(text: " Terminal @ \(dirName()) ")
         drawPlate()
 
-        for row in 1..<max(1, height) {
-            let lineIdx = scrollOffset + (row - 1)
+        for row in contentTop..<max(contentTop, height) {
+            let lineIdx = scrollOffset + (row - contentTop)
             if lineIdx < flatLines.count {
                 let line = flatLines[lineIdx]
                 let fg: Color
@@ -187,13 +188,6 @@ class TerminalWindow: Window {
         return true
     }
 
-    /// Fixed one-line plate at the top: `Terminal@folder_name`,
-    /// spanning the full window width.
-    private func drawPlate() {
-        guard height >= 2 else { return }
-        drawHeader(" Terminal @ \(dirName()) ", fg: Theme.fg)
-    }
-
     /// The live prompt — the last line of the scrollable buffer.
     private func drawPromptLine(row: Int) {
         var prompt = " > "
@@ -241,7 +235,7 @@ class TerminalWindow: Window {
 
     /// Offset at which the prompt line is the last visible row.
     private func standardCeiling() -> Int {
-        max(0, flatLines.count + 1 - max(0, height - 1))
+        max(0, flatLines.count + 1 - max(0, contentHeight))
     }
 
     /// +1 — the prompt line lives at the end of the scrollable content;

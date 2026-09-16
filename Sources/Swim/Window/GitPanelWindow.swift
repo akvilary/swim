@@ -27,19 +27,87 @@ private struct DiffHunk {
     let contentEnd: Int  // exclusive: index of next @@ or diffLines.count
 }
 
-private enum GitPanelMode {
-    case normal
-    case visual
+/// Ordered sections of the status list; the raw value is the display
+/// order.
+private enum StatusSection: Int {
+    case staged, unstaged, untracked, commits
+
+    var title: String {
+        switch self {
+        case .staged: return "Staged changes"
+        case .unstaged: return "Changes"
+        case .untracked: return "Untracked"
+        case .commits: return "Recent commits"
+        }
+    }
+}
+
+/// One selectable row of the status list.
+private enum StatusItem {
+    case file(GitFileStatus)
+    case commit(GitCommit)
+
+    /// Stable identity used to keep the selection on the same entry when
+    /// the list is rebuilt after an action (a file moves between the
+    /// staged/unstaged sections on stage/unstage/discard).
+    var identity: String {
+        switch self {
+        case .file(let f): return "file:" + f.filePath
+        case .commit(let c): return "commit:" + c.hash
+        }
+    }
+
+    var visibleText: String {
+        switch self {
+        case .file(let f): return " \(f.status) \(f.filePath)"
+        case .commit(let c): return " \(c.hash.prefix(7)) \(c.message)"
+        }
+    }
+}
+
+/// A (section, row) position in the status list, ordered
+/// lexicographically — visual selections can span sections.
+private struct StatusPos: Comparable {
+    let section: Int
+    let row: Int
+
+    static func < (lhs: StatusPos, rhs: StatusPos) -> Bool {
+        lhs.section < rhs.section || (lhs.section == rhs.section && lhs.row < rhs.row)
+    }
+}
+
+/// The status list view model: non-empty sections in display order.
+/// Rendering derives the header rows from it, and the selection is
+/// addressed as (section, row) — a header can never be selected by
+/// construction.
+private struct StatusList {
+    struct Section {
+        let kind: StatusSection
+        let items: [StatusItem]
+    }
+
+    let sections: [Section]
+
+    /// Total screen rows the list occupies: one header per section plus
+    /// every item.
+    var rowCount: Int {
+        sections.reduce(0) { $0 + 1 + $1.items.count }
+    }
 }
 
 class GitPanelWindow: Window {
-    private(set) var stagedFiles: [GitFileStatus] = []
-    private(set) var unstagedFiles: [GitFileStatus] = []
-    private(set) var untrackedFiles: [GitFileStatus] = []
-    private(set) var recentCommits: [GitCommit] = []
-    private(set) var selectedIndex: Int = 0
+    override var availableModes: [WindowMode] { [.menu, .visualLine, .command] }
+    private var stagedFiles: [GitFileStatus] = []
+    private var unstagedFiles: [GitFileStatus] = []
+    private var untrackedFiles: [GitFileStatus] = []
+    private var recentCommits: [GitCommit] = []
+    private var statusList: StatusList = StatusList(sections: [])
+    /// Selection as (section index, row within the section) into
+    /// `statusList` — never a section header.
+    private var selectedSection: Int = 0
+    private var selectedRow: Int = 0
     private var scrollOffset: Int = 0
-    private var currentBranch: String = ""
+    private(set) var currentBranch: String = ""
     private var diffLines: [Substring] = []
     private var diffHunks: [DiffHunk] = []
     private var diffScrollOffset: Int = 0
@@ -62,17 +130,15 @@ class GitPanelWindow: Window {
     /// Resolved on refresh; resolved synchronously as a fallback until then.
     private var repoRoot: String = ""
 
-    private var mode: GitPanelMode = .normal
     private var pendingY: Bool = false
-    private var statusVisualStart: Int = 0
+    /// Visual selection anchor; compared with the current position
+    /// lexicographically.
+    private var statusVisualStart: StatusPos = StatusPos(section: 0, row: 0)
     private var diffVisualStart: Int = 0
+    private var selectionPosition: StatusPos { StatusPos(section: selectedSection, row: selectedRow) }
 
     var workingDirectory: String = "" {
         didSet { refresh() }
-    }
-
-    private var fileSections: [(String, [GitFileStatus])] {
-        [("Staged changes", stagedFiles), ("Changes", unstagedFiles), ("Untracked", untrackedFiles)]
     }
 
     /// Runs a git command, surfacing failures as a red status-bar message
@@ -125,101 +191,67 @@ class GitPanelWindow: Window {
         if showDiff { drawDiff() } else { drawStatus() }
     }
 
-    private func totalContentRowCount() -> Int {
-        var count = 1
-        for (_, files) in fileSections {
-            if !files.isEmpty { count += 1 + files.count }
-        }
-        if !recentCommits.isEmpty { count += 1 + min(recentCommits.count, 5) }
-        return count
-    }
-
+    /// Screen row of the selected item, mirroring the drawStatus walk
+    /// (one header row per section, then its items).
     private func rowForSelectedItem() -> Int? {
-        var row = 1
-        var globalIdx = 0
-        for (_, files) in fileSections {
-            guard !files.isEmpty else { continue }
-            row += 1
-            for _ in files {
-                if globalIdx == selectedIndex { return row }
-                globalIdx += 1; row += 1
-            }
-        }
-        if !recentCommits.isEmpty {
-            row += 1
-            for _ in 0..<min(recentCommits.count, 5) {
-                if globalIdx == selectedIndex { return row }
-                globalIdx += 1; row += 1
-            }
+        guard statusList.sections.indices.contains(selectedSection) else { return nil }
+        var row = contentTop
+        for (sectionIdx, section) in statusList.sections.enumerated() {
+            row += 1  // section header
+            if sectionIdx == selectedSection { return row + selectedRow }
+            row += section.items.count
         }
         return nil
     }
 
     private func drawStatus() {
         let branchLabel = isRefreshing ? "Git @ loading..." : "Git @ \(currentBranch)"
-        if mode == .visual {
-            drawHeader(" [ VISUAL ] \(branchLabel) ", fg: Theme.purple)
+        if mode == .visualLine {
+            headerPlate = HeaderPlate(text: " [ VISUAL ] \(branchLabel) ", fg: Theme.purple)
         } else {
-            drawHeader(" \(branchLabel) (s: stage/unstage, x: discard) ", fg: Theme.orange)
+            headerPlate = HeaderPlate(text: " \(branchLabel) (s: stage/unstage, x: discard, c: commit) ", fg: Theme.orange)
         }
+        drawPlate()
 
-        let totalContentRows = totalContentRowCount()
-        let visibleHeight = height - 1
-
-        if totalContentRows - 1 <= visibleHeight {
+        let totalRows = statusList.rowCount
+        let visibleHeight = contentHeight
+        if totalRows <= visibleHeight {
             scrollOffset = 0
         } else {
-            scrollOffset = max(0, min(scrollOffset, totalContentRows - 1 - visibleHeight))
+            scrollOffset = max(0, min(scrollOffset, totalRows - visibleHeight))
         }
 
-        var row = 1 - scrollOffset
-        var globalIdx = 0
-
-        for (title, files) in fileSections {
-            drawFileSection(title, files: files, row: &row, globalIdx: &globalIdx)
-        }
-
-        if !recentCommits.isEmpty && row < height + scrollOffset {
-            drawSectionHeader("Recent commits", screenRow: row)
+        var row = contentTop - scrollOffset
+        for (sectionIdx, section) in statusList.sections.enumerated() {
+            drawSectionHeader(section.kind.title, screenRow: row)
             row += 1
-            for commit in recentCommits.prefix(5) {
-                if row >= 1 && row < height {
-                    let bg = bgForStatusRow(globalIdx)
-                    let commitText = " \(commit.hash.prefix(7)) \(commit.message.prefix(max(0, width - 14)))"
-                    drawLine(commitText, row: row, fg: Theme.cyan, bg: bg)
+            for (itemIdx, item) in section.items.enumerated() {
+                if row >= contentTop && row < height {
+                    drawItemRow(item, row: row, selected: isSelectedItem(sectionIdx, itemIdx))
                 }
-                globalIdx += 1
                 row += 1
             }
         }
 
-        if stagedFiles.isEmpty && unstagedFiles.isEmpty && untrackedFiles.isEmpty && recentCommits.isEmpty {
-            drawLine(" No changes", row: max(1, row), fg: Theme.comment)
+        if statusList.sections.isEmpty {
+            drawLine(" No changes", row: max(contentTop, row), fg: Theme.comment)
         }
     }
 
-    private func drawFileSection(_ title: String, files: [GitFileStatus], row: inout Int, globalIdx: inout Int) {
-        guard !files.isEmpty else { return }
-        drawSectionHeader(title, screenRow: row)
-        row += 1
-        for file in files {
-            if row >= 1 && row < height {
-                drawFileRow(file, row: row, globalIdx: globalIdx)
-            }
-            globalIdx += 1
-            row += 1
+    private func drawItemRow(_ item: StatusItem, row: Int, selected: Bool) {
+        let bg: Color = selected
+            ? (mode == .visualLine ? Theme.visualBg : Theme.bgHighlight)
+            : Theme.bgDark
+        switch item {
+        case .file(let file):
+            let statusText = " \(file.status) "
+            drawLine(statusText, row: row, col: 0, fg: statusColorFor(file.status), bg: bg, bold: true)
+            let name = file.filePath.prefix(max(0, width - statusText.count))
+            drawLine(String(name), row: row, col: statusText.count, fg: selected ? Theme.fg : Theme.fgDark, bg: bg)
+        case .commit(let commit):
+            let commitText = " \(commit.hash.prefix(7)) \(commit.message.prefix(max(0, width - 14)))"
+            drawLine(commitText, row: row, fg: Theme.cyan, bg: bg)
         }
-    }
-
-    private func drawFileRow(_ file: GitFileStatus, row: Int, globalIdx: Int) {
-        let bg = bgForStatusRow(globalIdx)
-        let isSelected = isStatusRowSelected(globalIdx)
-        let statusColor = statusColorFor(file.status)
-        let statusText = " \(file.status) "
-        drawLine(statusText, row: row, col: 0, fg: statusColor, bg: bg, bold: true)
-        let nameStart = statusText.count
-        let name = file.filePath.prefix(max(0, width - nameStart))
-        drawLine(String(name), row: row, col: nameStart, fg: isSelected ? Theme.fg : Theme.fgDark, bg: bg)
     }
 
     private func drawDiff() {
@@ -228,7 +260,8 @@ class GitPanelWindow: Window {
 
         if isDiffLoading {
             let spinner = Self.spinnerChars[diffSpinnerFrame % Self.spinnerChars.count]
-            drawHeader(" \(spinner) \(title) ", fg: Theme.blue)
+            headerPlate = HeaderPlate(text: " \(spinner) \(title) ", fg: Theme.blue)
+            drawPlate()
             let msg = "\(spinner) Loading..."
             let midRow = height / 2
             let startCol = max(0, (width - msg.count - 2) / 2)
@@ -241,7 +274,8 @@ class GitPanelWindow: Window {
         }
 
         if diffLines.isEmpty {
-            drawHeader(" \(title) (empty) ", fg: Theme.comment)
+            headerPlate = HeaderPlate(text: " \(title) (empty) ", fg: Theme.comment)
+            drawPlate()
             let msg = "No changes"
             let midRow = height / 2
             let startCol = max(0, (width - msg.count - 2) / 2)
@@ -249,22 +283,22 @@ class GitPanelWindow: Window {
             return
         }
 
-        if isCommit {
-            drawHeader(" \(title) (yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
+        if mode == .visualLine {
+            headerPlate = HeaderPlate(text: " [ VISUAL ] \(title) (y: copy, Esc: cancel) ", fg: Theme.purple)
+        } else if isCommit {
+            headerPlate = HeaderPlate(text: " \(title) (yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
         } else {
             let hunkHint = diffUntracked ? "s: add file" : (diffStaged ? "s: unstage hunk" : "s: stage hunk")
-            drawHeader(" \(title) (\(hunkHint), x: discard, yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
+            headerPlate = HeaderPlate(text: " \(title) (\(hunkHint), x: discard, yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
         }
-        if mode == .visual {
-            drawHeader(" [ VISUAL ] \(title) (y: copy, Esc: cancel) ", fg: Theme.purple)
-        }
-        let visibleLines = height - 1
-        let visualRange = mode == .visual ? diffVisualRange() : nil
+        drawPlate()
+        let visibleLines = contentHeight
+        let visualRange = mode == .visualLine ? diffVisualRange() : nil
         for i in 0..<visibleLines {
             let lineIdx = diffScrollOffset + i
             guard lineIdx < diffLines.count else { break }
             let line = diffLines[lineIdx]
-            let row = i + 1
+            let row = i + contentTop
             let isCursor = lineIdx == diffCursorRow
 
             let style = diffLineStyle(for: line)
@@ -295,7 +329,7 @@ class GitPanelWindow: Window {
     }
 
     private func drawSectionHeader(_ text: String, screenRow: Int) {
-        guard screenRow >= 1 && screenRow < height else { return }
+        guard screenRow >= contentTop && screenRow < height else { return }
         drawLine(" \(text)", row: screenRow, fg: Theme.blue, bold: true)
     }
 
@@ -310,34 +344,48 @@ class GitPanelWindow: Window {
         }
     }
 
-    private enum FileSection {
-        case staged, unstaged, untracked, commit
+    /// The item under the selection; nil when the list is empty (the
+    /// selection is always valid otherwise — headers are not addressable).
+    private var selectedItem: StatusItem? {
+        guard statusList.sections.indices.contains(selectedSection) else { return nil }
+        let section = statusList.sections[selectedSection]
+        guard section.items.indices.contains(selectedRow) else { return nil }
+        return section.items[selectedRow]
     }
 
-    private func selectedFileSection() -> (section: FileSection, index: Int)? {
-        fileSection(for: selectedIndex)
-    }
-
-    private func fileSection(for globalIdx: Int) -> (section: FileSection, index: Int)? {
-        var idx = globalIdx
-        if idx < stagedFiles.count { return (.staged, idx) }
-        idx -= stagedFiles.count
-        if idx < unstagedFiles.count { return (.unstaged, idx) }
-        idx -= untrackedFiles.count
-        if idx < untrackedFiles.count { return (.untracked, idx) }
-        idx -= untrackedFiles.count
-        if idx < min(recentCommits.count, 5) { return (.commit, idx) }
-        return nil
-    }
-
-    private func visibleTextForItem(at globalIdx: Int) -> String? {
-        guard let sel = fileSection(for: globalIdx) else { return nil }
-        switch sel.section {
-        case .staged:    return " \(stagedFiles[sel.index].status) \(stagedFiles[sel.index].filePath)"
-        case .unstaged:  return " \(unstagedFiles[sel.index].status) \(unstagedFiles[sel.index].filePath)"
-        case .untracked: return " \(untrackedFiles[sel.index].status) \(untrackedFiles[sel.index].filePath)"
-        case .commit:    return " \(recentCommits[sel.index].hash.prefix(7)) \(recentCommits[sel.index].message)"
+    /// True when the item at (section, row) is the selection — or inside
+    /// the visual range in visual-line mode.
+    private func isSelectedItem(_ sectionIdx: Int, _ itemIdx: Int) -> Bool {
+        let position = StatusPos(section: sectionIdx, row: itemIdx)
+        if mode == .visualLine {
+            let lo = min(statusVisualStart, selectionPosition)
+            let hi = max(statusVisualStart, selectionPosition)
+            return position >= lo && position <= hi
         }
+        return sectionIdx == selectedSection && itemIdx == selectedRow
+    }
+
+    /// Moves the selection one item down/up, crossing section borders;
+    /// section headers are skipped because only items are addressable.
+    private func moveSelection(_ down: Bool) {
+        guard statusList.sections.indices.contains(selectedSection) else { return }
+        if down {
+            if selectedRow + 1 < statusList.sections[selectedSection].items.count {
+                selectedRow += 1
+            } else if selectedSection + 1 < statusList.sections.count {
+                selectedSection += 1
+                selectedRow = 0
+            }
+        } else {
+            if selectedRow > 0 {
+                selectedRow -= 1
+            } else if selectedSection > 0 {
+                selectedSection -= 1
+                selectedRow = statusList.sections[selectedSection].items.count - 1
+            }
+        }
+        ensureVisible()
+        dirty = true
     }
 
     override func handleKey(_ key: Key) -> Bool {
@@ -363,18 +411,18 @@ class GitPanelWindow: Window {
                 if pendingY {
                     yankDiffLines(diffCursorRow...diffCursorRow)
                     pendingY = false
-                } else if mode == .visual {
+                } else if mode == .visualLine {
                     yankDiffLines(diffVisualRange())
-                    mode = .normal; dirty = true
+                    mode = .menu; dirty = true
                 } else {
                     pendingY = true
                 }
             case .char("V"):
-                mode = (mode == .visual) ? .normal : .visual
+                mode = (mode == .visualLine) ? .menu : .visualLine
                 diffVisualStart = diffCursorRow
                 pendingY = false; dirty = true
             case .escape:
-                if mode == .visual { mode = .normal; dirty = true }
+                if mode == .visualLine { mode = .menu; dirty = true }
                 else { showDiff = false; dirty = true }
                 pendingY = false
             default:
@@ -386,45 +434,45 @@ class GitPanelWindow: Window {
 
         switch key {
         case .char("j"), .down:
-            let total = totalItemCount()
-            if selectedIndex < total - 1 { selectedIndex += 1; ensureVisible(); dirty = true }
+            moveSelection(true)
             pendingY = false
         case .char("k"), .up:
-            if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); dirty = true }
+            moveSelection(false)
             pendingY = false
         case .enter:
-            mode = .normal; pendingY = false
+            mode = .menu; pendingY = false
             showDiffForSelected()
         case .char("s"):
-            mode = .normal; pendingY = false
+            mode = .menu; pendingY = false
             stageOrUnstageSelected()
         case .char("x"):
-            mode = .normal; pendingY = false
+            mode = .menu; pendingY = false
             discardSelected()
+        case .char("c"):
+            mode = .menu; pendingY = false
+            delegate?.requestCommitMessage()
         case .char("-"):
-            mode = .normal; pendingY = false
+            mode = .menu; pendingY = false
             delegate?.runGitCommand(label: "git pull", args: ["pull"])
         case .char("+"):
-            mode = .normal; pendingY = false
+            mode = .menu; pendingY = false
             delegate?.runGitCommand(label: "git push", args: ["push"])
         case .char("y"):
             if pendingY {
-                if let text = visibleTextForItem(at: selectedIndex) { Terminal.shared.osc52Copy(text) }
+                if let item = selectedItem { Terminal.shared.osc52Copy(item.visibleText) }
                 pendingY = false
-            } else if mode == .visual {
-                let lo = min(statusVisualStart, selectedIndex)
-                let hi = max(statusVisualStart, selectedIndex)
-                yankStatusItems(lo...hi)
-                mode = .normal; dirty = true
+            } else if mode == .visualLine {
+                yankSelectedItems()
+                mode = .menu; dirty = true
             } else {
                 pendingY = true
             }
         case .char("V"):
-            mode = (mode == .visual) ? .normal : .visual
-            statusVisualStart = selectedIndex
+            mode = (mode == .visualLine) ? .menu : .visualLine
+            statusVisualStart = selectionPosition
             pendingY = false; dirty = true
         case .escape:
-            if mode == .visual { mode = .normal; dirty = true; pendingY = false; return true }
+            if mode == .visualLine { mode = .menu; dirty = true; pendingY = false; return true }
             pendingY = false
             return false
         default:
@@ -434,50 +482,54 @@ class GitPanelWindow: Window {
         return true
     }
 
-    private func totalItemCount() -> Int {
-        stagedFiles.count + unstagedFiles.count + untrackedFiles.count + min(recentCommits.count, 5)
-    }
-
     private func ensureVisible() {
-        let visibleCount = height - 1
-        let totalContentRows = totalContentRowCount()
-        if totalContentRows - 1 <= visibleCount {
+        let visibleCount = contentHeight
+        let totalRows = statusList.rowCount
+        if totalRows <= visibleCount {
             scrollOffset = 0
             return
         }
-        if let selectedRow = rowForSelectedItem() {
-            if selectedRow < scrollOffset + 1 { scrollOffset = selectedRow - 1 }
-            else if selectedRow >= scrollOffset + height { scrollOffset = selectedRow - height + 1 }
+        if let selectedScreenRow = rowForSelectedItem() {
+            if selectedScreenRow < scrollOffset + contentTop {
+                scrollOffset = selectedScreenRow - contentTop
+            } else if selectedScreenRow >= scrollOffset + height {
+                scrollOffset = selectedScreenRow - height + 1
+            }
         }
     }
 
     private func showDiffForSelected() {
-        guard let sel = selectedFileSection() else { return }
-        switch sel.section {
-        case .staged:    runDiff(for: stagedFiles[sel.index].filePath,    staged: true,  untracked: false)
-        case .unstaged:  runDiff(for: unstagedFiles[sel.index].filePath,  staged: false, untracked: false)
-        case .untracked: runDiff(for: untrackedFiles[sel.index].filePath, staged: false, untracked: true)
-        case .commit:    runDiffForCommit(recentCommits[sel.index].hash)
+        switch selectedItem {
+        case .file(let file):
+            let section = statusList.sections[selectedSection].kind
+            runDiff(for: file.filePath,
+                    staged: section == .staged,
+                    untracked: section == .untracked)
+        case .commit(let commit):
+            runDiffForCommit(commit.hash)
+        case nil:
+            break
         }
     }
 
     private func stageOrUnstageSelected() {
-        guard let sel = selectedFileSection() else { return }
-        switch sel.section {
-        case .staged:
-            let file = stagedFiles[sel.index]
-            // A staged rename is two index changes (delete old + add new);
-            // resetting only the new path would leave the deletion staged.
-            var paths = [topPathspec(file.filePath)]
-            if file.status == "R", let old = file.origPath {
-                paths.insert(topPathspec(old), at: 0)
+        switch selectedItem {
+        case .file(let file):
+            let section = statusList.sections[selectedSection].kind
+            if section == .staged {
+                // A staged rename is two index changes (delete old + add
+                // new); resetting only the new path would leave the
+                // deletion staged.
+                var paths = [topPathspec(file.filePath)]
+                if file.status == "R", let old = file.origPath {
+                    paths.insert(topPathspec(old), at: 0)
+                }
+                runGit(["reset", "HEAD", "--"] + paths)
+            } else {
+                runGit(["add", "--", topPathspec(file.filePath)])
             }
-            runGit(["reset", "HEAD", "--"] + paths)
-        case .unstaged:
-            runGit(["add", "--", topPathspec(unstagedFiles[sel.index].filePath)])
-        case .untracked:
-            runGit(["add", "--", topPathspec(untrackedFiles[sel.index].filePath)])
-        case .commit: break
+        case .commit, nil:
+            break
         }
         refresh()
     }
@@ -512,7 +564,7 @@ class GitPanelWindow: Window {
         diffCursorRow = 0
         isDiffLoading = true
         showDiff = true
-        mode = .normal
+        mode = .menu
         pendingY = false
         dirty = true
 
@@ -534,7 +586,7 @@ class GitPanelWindow: Window {
         diffCursorRow = 0
         isDiffLoading = true
         showDiff = true
-        mode = .normal
+        mode = .menu
         pendingY = false
         dirty = true
 
@@ -603,33 +655,39 @@ class GitPanelWindow: Window {
     }
 
     private func discardSelected() {
-        guard let sel = selectedFileSection() else { return }
-        switch sel.section {
-        case .staged:
-            let file = stagedFiles[sel.index]
-            switch file.status {
-            case "A":
-                // Not in HEAD: drop from index and disk.
-                runGit(["rm", "-f", "--", topPathspec(file.filePath)])
-            case "R":
-                // Staged rename: restore the old path, remove the new one.
-                if let old = file.origPath {
-                    runGit(["checkout", "HEAD", "--", topPathspec(old)])
+        let section = statusList.sections.indices.contains(selectedSection)
+            ? statusList.sections[selectedSection].kind : nil
+        switch selectedItem {
+        case .file(let file):
+            switch section {
+            case .staged:
+                switch file.status {
+                case "A":
+                    // Not in HEAD: drop from index and disk.
                     runGit(["rm", "-f", "--", topPathspec(file.filePath)])
-                } else {
+                case "R":
+                    // Staged rename: restore the old path, remove the new one.
+                    if let old = file.origPath {
+                        runGit(["checkout", "HEAD", "--", topPathspec(old)])
+                        runGit(["rm", "-f", "--", topPathspec(file.filePath)])
+                    } else {
+                        runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)])
+                    }
+                case "C":
+                    // Staged copy: the source is untouched, drop only the copy.
+                    runGit(["rm", "-f", "--", topPathspec(file.filePath)])
+                default:
                     runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)])
                 }
-            case "C":
-                // Staged copy: the source is untouched, drop only the copy.
-                runGit(["rm", "-f", "--", topPathspec(file.filePath)])
-            default:
-                runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)])
+            case .unstaged:
+                runGit(["checkout", "--", topPathspec(file.filePath)])
+            case .untracked:
+                deleteFileOnDisk(file.filePath)
+            case .commits, nil:
+                break
             }
-        case .unstaged:
-            runGit(["checkout", "--", topPathspec(unstagedFiles[sel.index].filePath)])
-        case .untracked:
-            deleteFileOnDisk(untrackedFiles[sel.index].filePath)
-        case .commit: break
+        case .commit, nil:
+            break
         }
         refresh()
         dirty = true
@@ -665,26 +723,12 @@ class GitPanelWindow: Window {
     }
 
     private func ensureDiffCursorVisible() {
-        let visibleLines = height - 1
+        let visibleLines = contentHeight
         if diffCursorRow < diffScrollOffset {
             diffScrollOffset = diffCursorRow
         } else if diffCursorRow >= diffScrollOffset + visibleLines {
             diffScrollOffset = diffCursorRow - visibleLines + 1
         }
-    }
-
-    private func isStatusRowSelected(_ globalIdx: Int) -> Bool {
-        if mode == .visual {
-            let lo = min(statusVisualStart, selectedIndex)
-            let hi = max(statusVisualStart, selectedIndex)
-            return globalIdx >= lo && globalIdx <= hi
-        }
-        return globalIdx == selectedIndex
-    }
-
-    private func bgForStatusRow(_ globalIdx: Int) -> Color {
-        guard isStatusRowSelected(globalIdx) else { return Theme.bgDark }
-        return mode == .visual ? Theme.visualBg : Theme.bgHighlight
     }
 
     private func diffVisualRange() -> ClosedRange<Int> {
@@ -702,12 +746,67 @@ class GitPanelWindow: Window {
         Terminal.shared.osc52Copy(text)
     }
 
-    private func yankStatusItems(_ range: ClosedRange<Int>) {
+    /// Yanks every item between the visual anchor and the selection.
+    private func yankSelectedItems() {
+        let lo = min(statusVisualStart, selectionPosition)
+        let hi = max(statusVisualStart, selectionPosition)
         var text = ""
-        for i in range {
-            if let t = visibleTextForItem(at: i) { text += t + "\n" }
+        for (sectionIdx, section) in statusList.sections.enumerated() {
+            for (itemIdx, item) in section.items.enumerated() {
+                let position = StatusPos(section: sectionIdx, row: itemIdx)
+                if position >= lo && position <= hi {
+                    text += item.visibleText + "\n"
+                }
+            }
         }
         if !text.isEmpty { Terminal.shared.osc52Copy(text) }
+    }
+
+    /// Rebuilds the status list from the data arrays — the single
+    /// composition point, called after parseStatus/parseLog. Keeps the
+    /// selection on the same entry when it still exists (a file moves
+    /// between sections on stage/unstage/discard); otherwise clamps the
+    /// (section, row) into the new list.
+    private func rebuildStatusList() {
+        let sections: [StatusList.Section] = [
+            .init(kind: .staged, items: stagedFiles.map(StatusItem.file)),
+            .init(kind: .unstaged, items: unstagedFiles.map(StatusItem.file)),
+            .init(kind: .untracked, items: untrackedFiles.map(StatusItem.file)),
+            .init(kind: .commits, items: recentCommits.prefix(5).map(StatusItem.commit)),
+        ].filter { !$0.items.isEmpty }
+
+        let previousIdentity = selectedItem?.identity
+        statusList = StatusList(sections: sections)
+
+        if let identity = previousIdentity,
+           let found = findItem(identity) {
+            selectedSection = found.section
+            selectedRow = found.row
+        } else if !sections.isEmpty {
+            selectedSection = min(selectedSection, sections.count - 1)
+            selectedRow = min(selectedRow, sections[selectedSection].items.count - 1)
+        }
+        dirty = true
+    }
+
+    private func findItem(_ identity: String) -> StatusPos? {
+        for (sectionIdx, section) in statusList.sections.enumerated() {
+            for (itemIdx, item) in section.items.enumerated() where item.identity == identity {
+                return StatusPos(section: sectionIdx, row: itemIdx)
+            }
+        }
+        return nil
+    }
+
+    /// Returns from the diff view to the status list; called when the
+    /// panel is reopened so a diff left open at close time (`:q`, Ctrl+X)
+    /// does not show stale content.
+    func closeDiffView() {
+        guard showDiff else { return }
+        showDiff = false
+        diffCursorRow = 0
+        diffScrollOffset = 0
+        dirty = true
     }
 
     func refresh() {
@@ -739,11 +838,7 @@ class GitPanelWindow: Window {
             }
             parseStatus(result.statusOutput)
             parseLog(result.logOutput)
-            // Sections may have shrunk (discard, external changes) — keep
-            // the selection inside the item list so keys stay functional.
-            if selectedIndex >= totalItemCount() {
-                selectedIndex = max(0, totalItemCount() - 1)
-            }
+            rebuildStatusList()
             anyUpdate = true
         }
 
@@ -751,7 +846,7 @@ class GitPanelWindow: Window {
             diffLines = lines
             diffHunks = parseHunks()
             isDiffLoading = false
-            if diffLines.isEmpty { showDiff = false; mode = .normal }
+            if diffLines.isEmpty { showDiff = false; mode = .menu }
             anyUpdate = true
         }
 

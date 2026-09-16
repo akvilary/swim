@@ -38,6 +38,7 @@ class CommandWindow: Window {
         isRunning = false
         dirty = true
         delegate?.requestRender()
+        delegate?.gitCommandFinished(title)
     }
 
     override func update() {
