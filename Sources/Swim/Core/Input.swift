@@ -18,6 +18,8 @@ enum Key: Equatable {
     case ctrlDown
     case ctrlLeft
     case ctrlRight
+    case shiftLeft
+    case shiftRight
     case f(Int)
     case shiftTab
     case insert
@@ -117,11 +119,12 @@ enum Key: Equatable {
         switch final {
         case 65, 66, 67, 68: // A B C D — arrows
             let ctrl = params == "1;5" || params == "5" || params == ";5"
+            let shift = params == "1;2" || params == "2" || params == ";2"
             switch final {
             case 65: return ctrl ? .ctrlUp : .up
             case 66: return ctrl ? .ctrlDown : .down
-            case 67: return ctrl ? .ctrlRight : .right
-            default: return ctrl ? .ctrlLeft : .left
+            case 67: return ctrl ? .ctrlRight : (shift ? .shiftRight : .right)
+            default: return ctrl ? .ctrlLeft : (shift ? .shiftLeft : .left)
             }
         case 72: return .home
         case 70: return .end

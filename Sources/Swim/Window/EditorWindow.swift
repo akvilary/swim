@@ -397,8 +397,8 @@ class EditorWindow: Window {
         case .char("k"), .up: moveCursorUp()
         case .char("y"): yankVisualLineSelection(); mode = .normal
         case .char("d"): deleteVisualLineSelection(); mode = .normal
-        case .char("H"), .ctrl("h"), .ctrlLeft: shiftVisualLines(by: -indentSize())
-        case .char("L"), .ctrl("l"), .ctrlRight: shiftVisualLines(by: indentSize())
+        case .char("H"), .shiftLeft: shiftVisualLines(by: -indentSize())
+        case .char("L"), .shiftRight: shiftVisualLines(by: indentSize())
         default: return false
         }
         dirty = true
