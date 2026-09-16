@@ -320,13 +320,12 @@ class GitPanelWindow: Window {
                 bg = isCursor ? Theme.bgHighlight : Theme.bgDark
             }
             // Editor-style gutter (the shared drawLineNumberRow primitive):
-            // green numbers on added lines, red on removed, dim elsewhere;
-            // the cursor row brightens like the editor's current line.
+            // green numbers on added lines, red on removed, dim elsewhere.
+            // The number color never changes with the cursor — the row
+            // highlight already marks the current line.
             let gutter = lineIdx < diffGutter.count ? diffGutter[lineIdx] : nil
             let numFg: Color
-            if isCursor {
-                numFg = Theme.fg
-            } else if gutter?.add == true {
+            if gutter?.add == true {
                 numFg = Theme.green
             } else if gutter?.del == true {
                 numFg = Theme.red
