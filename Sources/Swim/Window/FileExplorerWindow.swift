@@ -115,7 +115,7 @@ class FileExplorerWindow: Window {
         guard !currentDirectory.isEmpty, path.hasPrefix(currentDirectory + "/") else { return }
         var changed = revealAncestors(&rootEntries, target: path)
         flattenEntries()
-        if let idx = flatEntries.firstIndex(where: { $0.entry.path == path && !$0.entry.isDirectory }) {
+        if let idx = flatEntries.firstIndex(where: { $0.entry.path == path }) {
             if selectedIndex != idx {
                 selectedIndex = idx
                 changed = true
@@ -203,6 +203,8 @@ class FileExplorerWindow: Window {
         case .char("G"): selectedIndex = max(0, flatEntries.count - 1); ensureVisible(); dirty = true
         case .char("g"): selectedIndex = 0; scrollOffset = 0; dirty = true
         case .char("a"): beginCreate()
+        case .char("d"): beginDelete()
+        case .char("r"): beginRename()
         default: return false
         }
         return true
@@ -312,7 +314,24 @@ class FileExplorerWindow: Window {
         scrollOffset = Window.clampedScroll(selectedIndex: selectedIndex, scrollOffset: scrollOffset, visibleCount: height - 1)
     }
 
-    // MARK: - Create file/directory (`a` → :create)
+    // MARK: - Create/delete file entries (`a` / `d` → :create / :delete)
+
+    /// Relative path of an absolute tree path (nil outside the root).
+    private func relativePath(of absolute: String) -> String? {
+        guard absolute.hasPrefix(currentDirectory + "/") else { return nil }
+        return String(absolute.dropFirst(currentDirectory.count + 1))
+    }
+
+    /// Common `create`/`delete` argument parsing: trims, rejects absolute
+    /// paths and `..`; a leading `./` strips away.
+    private func relativeParts(_ rawArg: String) -> [String]? {
+        let arg = rawArg.trimmingCharacters(in: .whitespaces)
+        guard !arg.isEmpty, !arg.hasPrefix("/") else { return nil }
+        let relative = arg.hasPrefix("./") ? String(arg.dropFirst(2)) : arg
+        let parts = relative.split(separator: "/").map(String.init)
+        guard !parts.isEmpty, !parts.contains("..") else { return nil }
+        return parts
+    }
 
     /// `a` — opens the command line pre-filled with `create <dir>/` relative
     /// to the selection: inside the selected directory, next to the selected
@@ -326,54 +345,78 @@ class FileExplorerWindow: Window {
     /// offer to create: the selected directory itself, the parent of a
     /// selected file, or the root.
     private func creationPrefix() -> String {
-        var relative = "./"
-        if selectedIndex < flatEntries.count {
-            let (entry, _) = flatEntries[selectedIndex]
-            let dirPath = entry.isDirectory
-                ? entry.path
-                : (entry.path as NSString).deletingLastPathComponent
-            if dirPath != currentDirectory, dirPath.hasPrefix(currentDirectory + "/") {
-                relative += String(dirPath.dropFirst(currentDirectory.count + 1)) + "/"
-            }
+        guard selectedIndex < flatEntries.count else { return "./" }
+        let (entry, _) = flatEntries[selectedIndex]
+        let dirPath = entry.isDirectory
+            ? entry.path
+            : (entry.path as NSString).deletingLastPathComponent
+        if let rel = relativePath(of: dirPath) { return "./\(rel)/" }
+        return "./"
+    }
+
+    /// `d` — opens the command line pre-filled with `delete ./<selected>`;
+    /// the visible command buffer is the confirmation (Enter deletes —
+    /// recursively for directories —, Esc cancels).
+    private func beginDelete() {
+        guard selectedIndex < flatEntries.count else {
+            delegate?.reportError("delete: nothing selected")
+            return
         }
-        return relative
+        let (entry, _) = flatEntries[selectedIndex]
+        guard let rel = relativePath(of: entry.path) else { return }
+        enterCommandMode(prefill: "delete ./\(rel)\(entry.isDirectory ? "/" : "")")
+    }
+
+    /// `r` — opens the command line pre-filled with `rename ./<selected> `:
+    /// the second argument is a bare name (rename next to the old entry) or
+    /// a `./`-path from the tree root (move + rename). The visible buffer
+    /// is the confirmation.
+    private func beginRename() {
+        guard selectedIndex < flatEntries.count else {
+            delegate?.reportError("rename: nothing selected")
+            return
+        }
+        let (entry, _) = flatEntries[selectedIndex]
+        guard let rel = relativePath(of: entry.path) else { return }
+        enterCommandMode(prefill: "rename ./\(rel)\(entry.isDirectory ? "/" : "") ")
+    }
+
+    /// FS command dispatch by first word — O(1) key lookup. Computed (not
+    /// stored) so the method references never capture self in a cycle.
+    private var fsCommands: [String: (String) -> Void] {
+        ["create": createEntry, "delete": deleteEntry, "rename": renameEntry]
     }
 
     override func executeCommand(_ cmd: String) -> Bool {
-        if cmd == "create" {
-            delegate?.reportError("create: missing name")
+        let (name, arg) = Self.splitCommand(cmd)
+        guard let handler = fsCommands[name] else { return super.executeCommand(cmd) }
+        guard !arg.isEmpty else {
+            delegate?.reportError("\(name): missing arguments")
             return true
         }
-        if cmd.hasPrefix("create ") {
-            createEntry(String(cmd.dropFirst("create ".count)))
-            return true
-        }
-        return super.executeCommand(cmd)
+        handler(arg)
+        return true
+    }
+
+    /// ("create", "./a b") for "create ./a b"; ("create", "") without args.
+    private static func splitCommand(_ cmd: String) -> (name: String, arg: String) {
+        guard let spaceIdx = cmd.firstIndex(of: " ") else { return (cmd, "") }
+        let arg = String(cmd[cmd.index(after: spaceIdx)...]).trimmingCharacters(in: .whitespaces)
+        return (String(cmd[..<spaceIdx]), arg)
     }
 
     /// Creates the entry described by a path relative to the tree root
-    /// (`./a/b/file.swift`): `.` components normalize away, missing
+    /// (`./a/b/file.swift`): a leading `./` strips away, missing
     /// intermediate directories are created; a trailing `/` creates a
     /// directory instead of a file. Errors surface in the status bar via
     /// the shared `reportError` channel; on success the tree rescans
     /// (keeping expansion) and reveals the new entry.
     private func createEntry(_ rawArg: String) {
-        let arg = rawArg.trimmingCharacters(in: .whitespaces)
-        guard !arg.isEmpty else {
-            delegate?.reportError("create: missing name")
-            return
-        }
-        guard !arg.hasPrefix("/") else {
-            delegate?.reportError("create: path must be relative")
-            return
-        }
-        let relative = arg.hasPrefix("./") ? String(arg.dropFirst(2)) : arg
-        let parts = relative.split(separator: "/").map(String.init)
-        guard !parts.isEmpty, !parts.contains("..") else {
+        guard let parts = relativeParts(rawArg) else {
             delegate?.reportError("create: invalid path")
             return
         }
-        let wantsDirectory = arg.hasSuffix("/")
+        let wantsDirectory = rawArg.trimmingCharacters(in: .whitespaces).hasSuffix("/")
         let absolute = (currentDirectory as NSString).appendingPathComponent(parts.joined(separator: "/"))
         let fm = FileManager.default
         guard !fm.fileExists(atPath: absolute) else {
@@ -399,6 +442,84 @@ class FileExplorerWindow: Window {
         }
         reloadPreservingExpansion()
         reveal(path: absolute)
+    }
+
+    /// Deletes the entry described by a path relative to the tree root —
+    /// recursively when it is a directory. `.` components are rejected
+    /// (a sole `.` would resolve to the tree root itself).
+    private func deleteEntry(_ rawArg: String) {
+        guard let parts = relativeParts(rawArg), !parts.contains(".") else {
+            delegate?.reportError("delete: invalid path")
+            return
+        }
+        let absolute = (currentDirectory as NSString).appendingPathComponent(parts.joined(separator: "/"))
+        guard FileManager.default.fileExists(atPath: absolute) else {
+            delegate?.reportError("delete: not found")
+            return
+        }
+        do {
+            try FileManager.default.removeItem(atPath: absolute)
+        } catch {
+            delegate?.reportError("delete: \(error.localizedDescription)")
+            return
+        }
+        reloadPreservingExpansion()
+        if selectedIndex >= flatEntries.count {
+            selectedIndex = max(0, flatEntries.count - 1)
+        }
+        ensureVisible()
+    }
+
+    /// `rename ./old new`: the first path is `./`-relative to the tree root
+    /// (prefilled from the selection); the second is a bare name (renames
+    /// inside the old entry's directory) or a `./`-path from the root (move
+    /// + rename). `moveItem` handles files and directories alike. On
+    /// success the tree rescans keeping expansion and reveals the new path.
+    private func renameEntry(_ rawArg: String) {
+        let arg = rawArg.trimmingCharacters(in: .whitespaces)
+        guard let spaceIdx = arg.firstIndex(of: " ") else {
+            delegate?.reportError("rename: new name missing")
+            return
+        }
+        let oldArg = String(arg[..<spaceIdx])
+        var newArg = String(arg[arg.index(after: spaceIdx)...]).trimmingCharacters(in: .whitespaces)
+        guard let oldParts = relativeParts(oldArg), !oldParts.contains("."),
+              !newArg.isEmpty, !newArg.hasPrefix("/") else {
+            delegate?.reportError("rename: invalid arguments")
+            return
+        }
+        while newArg.hasSuffix("/") { newArg.removeLast() }
+        let fromRoot = newArg.hasPrefix("./")
+        let newRel = fromRoot ? String(newArg.dropFirst(2)) : newArg
+        let newParts = newRel.split(separator: "/").map(String.init)
+        guard !newParts.isEmpty, !newParts.contains("."), !newParts.contains("..") else {
+            delegate?.reportError("rename: invalid path")
+            return
+        }
+        let fm = FileManager.default
+        let old = (currentDirectory as NSString).appendingPathComponent(oldParts.joined(separator: "/"))
+        guard fm.fileExists(atPath: old) else {
+            delegate?.reportError("rename: not found")
+            return
+        }
+        let parent = fromRoot ? currentDirectory : (old as NSString).deletingLastPathComponent
+        let new = (parent as NSString).appendingPathComponent(newParts.joined(separator: "/"))
+        guard old != new else {
+            delegate?.reportError("rename: same path")
+            return
+        }
+        guard !fm.fileExists(atPath: new) else {
+            delegate?.reportError("rename: already exists")
+            return
+        }
+        do {
+            try fm.moveItem(atPath: old, toPath: new)
+        } catch {
+            delegate?.reportError("rename: \(error.localizedDescription)")
+            return
+        }
+        reloadPreservingExpansion()
+        reveal(path: new)
     }
 
     /// Rescans the tree from disk while keeping the expansion state of
