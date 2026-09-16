@@ -378,10 +378,11 @@ class FileExplorerWindow: Window {
     }
 
     /// `r` — opens the command line pre-filled with `rename ./<path>` of
-    /// the selected entry, the caret right after its name (before the
-    /// trailing `/` of a directory): edit the path in place — backspace
-    /// over the name to rename, rewrite the directories to move. Enter
-    /// renames the captured entry to the edited path.
+    /// the selected entry, the caret ready for retyping the name: before
+    /// the trailing `/` of a directory, before the `.extension` of a file
+    /// (end when there is none). Edit the path in place — backspace over
+    /// the name to rename, rewrite the directories to move. Enter renames
+    /// the captured entry to the edited path.
     private func beginRename() {
         guard selectedIndex < flatEntries.count else {
             delegate?.reportError("rename: nothing selected")
@@ -391,7 +392,12 @@ class FileExplorerWindow: Window {
         guard let rel = relativePath(of: entry.path) else { return }
         enterCommandMode(prefill: "rename ./\(rel)\(entry.isDirectory ? "/" : "")")
         pendingRenamePath = entry.path
-        commandCursorPos = "rename ./".count + rel.count
+        var back = 0
+        if !entry.isDirectory {
+            let ext = (entry.name as NSString).pathExtension
+            if !ext.isEmpty { back = ext.count + 1 }
+        }
+        commandCursorPos = "rename ./".count + rel.count - back
     }
 
     /// FS command dispatch by first word — O(1) key lookup. Computed (not
