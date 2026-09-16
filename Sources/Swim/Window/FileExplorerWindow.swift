@@ -336,10 +336,10 @@ class FileExplorerWindow: Window {
         return parts
     }
 
-    /// `a` — opens the command line pre-filled with `create <dir>/` relative
-    /// to the selection: inside the selected directory, next to the selected
-    /// file, or at the tree root when nothing is selected. A trailing `/`
-    /// in the typed path creates a directory.
+    /// `a` — opens the command line pre-filled with `create ./<dir>/`
+    /// relative to the selection: inside the selected directory, next to
+    /// the selected file, or at the tree root when nothing is selected. A
+    /// trailing `/` in the typed path creates a directory.
     private func beginCreate() {
         enterCommandMode(prefill: "create \(creationPrefix())")
     }

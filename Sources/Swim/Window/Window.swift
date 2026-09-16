@@ -241,6 +241,13 @@ class Window {
 
     func handleKey(_ key: Key) -> Bool { false }
 
+    /// The terminal cursor this window wants shown — its typing surface:
+    /// the insert-mode caret in an editor, the command-line caret in the
+    /// status bar (same bar shape — command mode is an insert surface
+    /// there, Enter being the only intercepted key). Nil — no typing
+    /// surface; by focus rules at most one visible window returns non-nil.
+    func cursorRenderInfo() -> CursorRenderInfo? { nil }
+
     func update() {}
 
     func poll() {}

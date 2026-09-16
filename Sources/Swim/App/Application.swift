@@ -1008,17 +1008,10 @@ class Application: WindowDelegate {
     }
 
     private func render() {
-        var cursorInfo: CursorRenderInfo?
-        // The terminal cursor follows the focused editor in insert mode —
-        // the main editor or the commit editor.
-        if let ed = spaces.current.focused as? EditorWindow, ed.visible, ed.mode == .insert {
-            let screenRow = ed.cursorLine - ed.scrollY + ed.contentTop
-            let screenCol = ed.cursorCol - ed.scrollX
-            let lnW = ed.lineNumberWidth()
-            if screenRow >= 0 && screenRow < ed.height && screenCol >= 0 && screenCol + lnW < ed.width {
-                cursorInfo = CursorRenderInfo(row: ed.y + screenRow, col: ed.x + lnW + screenCol, shape: 5, visible: true)
-            }
-        }
+        // Each visible window may own a typing surface (editor insert
+        // caret, status-bar command caret) and provides the terminal
+        // cursor for it; by focus rules at most one is active.
+        let cursorInfo = spaces.current.visibleWindows.compactMap { $0.cursorRenderInfo() }.last
         if editor.visible {
             renderer.render(
                 windows: spaces.current.visibleWindows,

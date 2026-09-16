@@ -15,9 +15,16 @@ class StatusBarWindow: Window {
     var cursorCol: Int = 0
     var totalLines: Int = 0
     var fileType: String = ""
+    /// Command-line caret column inside the status bar while a command is
+    /// being typed (nil otherwise) — computed with the center layout; the
+    /// real terminal cursor (insert-mode bar) is placed there by the
+    /// renderer.
+    private(set) var commandCaretScreenCol: Int?
+
     var errorMessage: String?
 
     override func update() {
+        commandCaretScreenCol = nil
         guard height > 0 else { return }
 
         let source = commandSource
@@ -67,6 +74,9 @@ class StatusBarWindow: Window {
             let prefix = commandText.hasPrefix("/") ? "" : ":"
             centerParts = [(" \(prefix)\(commandText)", fg: Theme.fg)]
             centerBold = false
+            let prefixLen = commandText.hasPrefix("/") ? 0 : 1
+            let caret = modeLabel.count + 1 + prefixLen + source.commandCursorPos
+            if caret < width { commandCaretScreenCol = caret }
         } else if let branch = branch {
             var parts: [(text: String, fg: Color)] = [(" \(branch)", fg: Theme.fgDark)]
             if branchAdded > 0 { parts.append((" +\(branchAdded)", fg: Theme.green)) }
@@ -84,16 +94,6 @@ class StatusBarWindow: Window {
                 guard ccol < width else { break centerLoop }
                 setCell(0, ccol, Cell.colored(c, fg: part.fg, bg: bgColor, bold: centerBold))
                 ccol += 1
-            }
-        }
-        if inCommand, errorMessage == nil, let source = source {
-            let commandText = source.commandBuffer
-            let prefixLen = commandText.hasPrefix("/") ? 0 : 1
-            let cursorCol = modeLabel.count + 1 + prefixLen + source.commandCursorPos
-            if cursorCol < width {
-                var cell = getCell(0, cursorCol)
-                cell.reverse = !cell.reverse
-                setCell(0, cursorCol, cell)
             }
         }
 
@@ -127,6 +127,11 @@ class StatusBarWindow: Window {
                 col += 1
             }
         }
+    }
+
+    override func cursorRenderInfo() -> CursorRenderInfo? {
+        guard let caret = commandCaretScreenCol else { return nil }
+        return CursorRenderInfo(row: y, col: x + caret, shape: 5, visible: true)
     }
 
     private static func modeText(_ mode: WindowMode) -> String {

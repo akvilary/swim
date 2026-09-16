@@ -991,6 +991,16 @@ class EditorWindow: Window {
         }
     }
 
+    /// The insert-mode caret as a terminal cursor (bar, shape 5).
+    override func cursorRenderInfo() -> CursorRenderInfo? {
+        guard visible, focused, mode == .insert else { return nil }
+        let screenRow = cursorLine - scrollY + contentTop
+        let screenCol = cursorCol - scrollX
+        let lnW = lineNumberWidth()
+        guard screenRow >= 0 && screenRow < height, screenCol >= 0, screenCol + lnW < width else { return nil }
+        return CursorRenderInfo(row: y + screenRow, col: x + lnW + screenCol, shape: 5, visible: true)
+    }
+
     func lineNumberWidth() -> Int {
         guard let buf = buffer else { return 4 }
         return max(4, String(buf.lineCount).count + 2)
