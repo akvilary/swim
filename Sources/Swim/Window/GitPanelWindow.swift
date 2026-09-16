@@ -2,6 +2,7 @@ import Foundation
 
 private struct GitRefreshResult {
     let branch: String
+    let repoRoot: String
     let statusOutput: String
     let logOutput: String
 }
@@ -10,6 +11,8 @@ struct GitFileStatus {
     let status: String
     let filePath: String
     let staged: Bool
+    /// Original path for staged renames/copies (`R`/`C`); nil otherwise.
+    let origPath: String?
 }
 
 struct GitCommit {
@@ -54,6 +57,11 @@ class GitPanelWindow: Window {
     private(set) var isRefreshing: Bool = false
     private let gitTask = BackgroundTask<GitRefreshResult>()
 
+    /// Absolute path of the repository root (git paths are always
+    /// repo-root-relative, even when `workingDirectory` is a subdirectory).
+    /// Resolved on refresh; resolved synchronously as a fallback until then.
+    private var repoRoot: String = ""
+
     private var mode: GitPanelMode = .normal
     private var pendingY: Bool = false
     private var statusVisualStart: Int = 0
@@ -65,6 +73,51 @@ class GitPanelWindow: Window {
 
     private var fileSections: [(String, [GitFileStatus])] {
         [("Staged changes", stagedFiles), ("Changes", unstagedFiles), ("Untracked", untrackedFiles)]
+    }
+
+    /// Runs a git command, surfacing failures as a red status-bar message
+    /// (same channel as editor errors, cleared by the next key press).
+    @discardableResult
+    private func runGit(_ args: [String], stdin: String? = nil) -> Shell.Result {
+        let result = Shell.git(args, workDir: workingDirectory, stdin: stdin)
+        if result.exitCode != 0 {
+            var detail = result.stderr.split(separator: "\n").first.map(String.init) ?? ""
+            detail = detail.trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "fatal: ", with: "")
+                .replacingOccurrences(of: "error: ", with: "")
+            if detail.isEmpty { detail = "exit code \(result.exitCode)" }
+            let command = args.first ?? "?"
+            delegate?.reportError("git \(command): \(detail)")
+        }
+        return result
+    }
+
+    /// `--porcelain` paths are repo-root-relative; pathspec magic makes the
+    /// same string valid no matter which subdirectory git runs from.
+    /// `literal` disables globbing for names containing `*?[]`.
+    private func topPathspec(_ path: String) -> String {
+        ":(top,literal)\(path)"
+    }
+
+    private func absolutePath(_ repoRelativePath: String) -> String {
+        var root = repoRoot
+        if root.isEmpty {
+            root = Shell.git(["rev-parse", "--show-toplevel"], workDir: workingDirectory)
+                .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !root.isEmpty, !root.hasPrefix("fatal") else {
+            return workingDirectory + "/" + repoRelativePath
+        }
+        return root + "/" + repoRelativePath
+    }
+
+    private func deleteFileOnDisk(_ repoRelativePath: String) {
+        let path = absolutePath(repoRelativePath)
+        do {
+            try FileManager.default.removeItem(atPath: path)
+        } catch {
+            delegate?.reportError("discard: \(error.localizedDescription)")
+        }
     }
 
     override func update() {
@@ -107,7 +160,7 @@ class GitPanelWindow: Window {
         if mode == .visual {
             drawHeader(" [ VISUAL ] \(branchLabel) ", fg: Theme.purple)
         } else {
-            drawHeader(" \(branchLabel) ", fg: Theme.orange)
+            drawHeader(" \(branchLabel) (s: stage/unstage, x: discard) ", fg: Theme.orange)
         }
 
         let totalContentRows = totalContentRowCount()
@@ -200,7 +253,7 @@ class GitPanelWindow: Window {
             drawHeader(" \(title) (yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
         } else {
             let hunkHint = diffUntracked ? "s: add file" : (diffStaged ? "s: unstage hunk" : "s: stage hunk")
-            drawHeader(" \(title) (\(hunkHint), yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
+            drawHeader(" \(title) (\(hunkHint), x: discard, yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
         }
         if mode == .visual {
             drawHeader(" [ VISUAL ] \(title) (y: copy, Esc: cancel) ", fg: Theme.purple)
@@ -303,6 +356,9 @@ class GitPanelWindow: Window {
             case .char("s"):
                 stageOrUnstageFromDiff()
                 pendingY = false
+            case .char("x"):
+                pendingY = false
+                discardFromDiff()
             case .char("y"):
                 if pendingY {
                     yankDiffLines(diffCursorRow...diffCursorRow)
@@ -342,6 +398,9 @@ class GitPanelWindow: Window {
         case .char("s"):
             mode = .normal; pendingY = false
             stageOrUnstageSelected()
+        case .char("x"):
+            mode = .normal; pendingY = false
+            discardSelected()
         case .char("-"):
             mode = .normal; pendingY = false
             delegate?.runGitCommand(label: "git pull", args: ["pull"])
@@ -407,29 +466,40 @@ class GitPanelWindow: Window {
         switch sel.section {
         case .staged:
             let file = stagedFiles[sel.index]
-            Shell.git(["reset", "HEAD", "--", file.filePath], workDir: workingDirectory)
+            // A staged rename is two index changes (delete old + add new);
+            // resetting only the new path would leave the deletion staged.
+            var paths = [topPathspec(file.filePath)]
+            if file.status == "R", let old = file.origPath {
+                paths.insert(topPathspec(old), at: 0)
+            }
+            runGit(["reset", "HEAD", "--"] + paths)
         case .unstaged:
-            let file = unstagedFiles[sel.index]
-            Shell.git(["add", "--", file.filePath], workDir: workingDirectory)
+            runGit(["add", "--", topPathspec(unstagedFiles[sel.index].filePath)])
         case .untracked:
-            let file = untrackedFiles[sel.index]
-            Shell.git(["add", "--", file.filePath], workDir: workingDirectory)
+            runGit(["add", "--", topPathspec(untrackedFiles[sel.index].filePath)])
         case .commit: break
         }
         refresh()
-        if selectedIndex >= totalItemCount() {
-            selectedIndex = max(0, totalItemCount() - 1)
-        }
     }
 
     private func runDiff(for path: String, staged: Bool, untracked: Bool) {
         let args: [String]
+        var workDir = workingDirectory
         if untracked {
+            // `--no-index` takes file operands (not pathspecs) — resolve
+            // them from the repo root so repo-root-relative paths work and
+            // the diff header stays root-relative.
+            var root = repoRoot
+            if root.isEmpty {
+                root = Shell.git(["rev-parse", "--show-toplevel"], workDir: workDir)
+                    .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if !root.isEmpty, !root.hasPrefix("fatal") { workDir = root }
             args = ["diff", "--no-index", "/dev/null", path]
         } else if staged {
-            args = ["diff", "--cached", "--", path]
+            args = ["diff", "--cached", "--", topPathspec(path)]
         } else {
-            args = ["diff", "--", path]
+            args = ["diff", "--", topPathspec(path)]
         }
 
         diffPath = path
@@ -446,9 +516,9 @@ class GitPanelWindow: Window {
         pendingY = false
         dirty = true
 
-        let workDir = workingDirectory
+        let dir = workDir
         diffTask.start {
-            let result = Shell.git(args, workDir: workDir)
+            let result = Shell.git(args, workDir: dir)
             return result.combined.split(separator: "\n", omittingEmptySubsequences: false)
         }
     }
@@ -517,15 +587,77 @@ class GitPanelWindow: Window {
         guard !diffPath.isEmpty else { return }
 
         if diffUntracked {
-            Shell.git(["add", "--", diffPath], workDir: workingDirectory)
+            runGit(["add", "--", topPathspec(diffPath)])
         } else if let hunkIdx = activeHunkIndex() {
             let patch = buildPatchForHunk(diffHunks[hunkIdx])
             guard !patch.isEmpty else { return }
             if diffStaged {
-                Shell.git(["apply", "--reverse", "--cached"], workDir: workingDirectory, stdin: patch)
+                runGit(["apply", "--reverse", "--cached"], stdin: patch)
             } else {
-                Shell.git(["apply", "--cached"], workDir: workingDirectory, stdin: patch)
+                runGit(["apply", "--cached"], stdin: patch)
             }
+        }
+
+        refresh()
+        runDiff(for: diffPath, staged: diffStaged, untracked: diffUntracked)
+    }
+
+    private func discardSelected() {
+        guard let sel = selectedFileSection() else { return }
+        switch sel.section {
+        case .staged:
+            let file = stagedFiles[sel.index]
+            switch file.status {
+            case "A":
+                // Not in HEAD: drop from index and disk.
+                runGit(["rm", "-f", "--", topPathspec(file.filePath)])
+            case "R":
+                // Staged rename: restore the old path, remove the new one.
+                if let old = file.origPath {
+                    runGit(["checkout", "HEAD", "--", topPathspec(old)])
+                    runGit(["rm", "-f", "--", topPathspec(file.filePath)])
+                } else {
+                    runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)])
+                }
+            case "C":
+                // Staged copy: the source is untouched, drop only the copy.
+                runGit(["rm", "-f", "--", topPathspec(file.filePath)])
+            default:
+                runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)])
+            }
+        case .unstaged:
+            runGit(["checkout", "--", topPathspec(unstagedFiles[sel.index].filePath)])
+        case .untracked:
+            deleteFileOnDisk(untrackedFiles[sel.index].filePath)
+        case .commit: break
+        }
+        refresh()
+        dirty = true
+    }
+
+    private func discardFromDiff() {
+        guard !diffPath.isEmpty, diffCommitHash.isEmpty else { return }
+
+        if diffUntracked {
+            deleteFileOnDisk(diffPath)
+            showDiff = false
+            refresh()
+            return
+        }
+
+        guard let hunkIdx = activeHunkIndex() else { return }
+        let patch = buildPatchForHunk(diffHunks[hunkIdx])
+        guard !patch.isEmpty else { return }
+        if diffStaged {
+            let indexResult = runGit(["apply", "--reverse", "--cached"], stdin: patch)
+            if indexResult.exitCode == 0 {
+                // Worktree may have diverged from the index (partially
+                // staged region): a failure here leaves the hunk moved to
+                // unstaged instead of discarded — the user must know.
+                runGit(["apply", "--reverse"], stdin: patch)
+            }
+        } else {
+            runGit(["apply", "--reverse"], stdin: patch)
         }
 
         refresh()
@@ -587,6 +719,7 @@ class GitPanelWindow: Window {
         gitTask.start { [workDir] in
             GitRefreshResult(
                 branch: Shell.git(["rev-parse", "--abbrev-ref", "HEAD"], workDir: workDir).stdout.trimmingCharacters(in: .whitespacesAndNewlines),
+                repoRoot: Shell.git(["rev-parse", "--show-toplevel"], workDir: workDir).stdout.trimmingCharacters(in: .whitespacesAndNewlines),
                 // -z: NUL-separated entries with raw (unquoted, unescaped)
                 // paths — Cyrillic and other non-ASCII paths stay intact.
                 statusOutput: Shell.git(["status", "--porcelain", "-z"], workDir: workDir).stdout,
@@ -601,8 +734,16 @@ class GitPanelWindow: Window {
         if let result = gitTask.consume() {
             isRefreshing = false
             currentBranch = result.branch.hasPrefix("fatal") ? "not a git repo" : result.branch
+            if !result.repoRoot.isEmpty, !result.repoRoot.hasPrefix("fatal") {
+                repoRoot = result.repoRoot
+            }
             parseStatus(result.statusOutput)
             parseLog(result.logOutput)
+            // Sections may have shrunk (discard, external changes) — keep
+            // the selection inside the item list so keys stay functional.
+            if selectedIndex >= totalItemCount() {
+                selectedIndex = max(0, totalItemCount() - 1)
+            }
             anyUpdate = true
         }
 
@@ -631,12 +772,13 @@ class GitPanelWindow: Window {
             let indexStatus = entry[entry.index(entry.startIndex, offsetBy: 0)]
             let workStatus = entry[entry.index(entry.startIndex, offsetBy: 1)]
             let filePath = String(entry.dropFirst(3))
+            var origPath: String? = nil
             if indexStatus == "R" || indexStatus == "C" || workStatus == "R" {
-                _ = fields.next()
+                origPath = fields.next().map(String.init)
             }
-            if indexStatus != " " && indexStatus != "?" { stagedFiles.append(GitFileStatus(status: String(indexStatus), filePath: filePath, staged: true)) }
-            if workStatus != " " && workStatus != "?" { unstagedFiles.append(GitFileStatus(status: String(workStatus), filePath: filePath, staged: false)) }
-            if indexStatus == "?" && workStatus == "?" { untrackedFiles.append(GitFileStatus(status: "?", filePath: filePath, staged: false)) }
+            if indexStatus != " " && indexStatus != "?" { stagedFiles.append(GitFileStatus(status: String(indexStatus), filePath: filePath, staged: true, origPath: indexStatus == "R" || indexStatus == "C" ? origPath : nil)) }
+            if workStatus != " " && workStatus != "?" { unstagedFiles.append(GitFileStatus(status: String(workStatus), filePath: filePath, staged: false, origPath: nil)) }
+            if indexStatus == "?" && workStatus == "?" { untrackedFiles.append(GitFileStatus(status: "?", filePath: filePath, staged: false, origPath: nil)) }
         }
     }
 

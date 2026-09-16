@@ -1162,6 +1162,14 @@ class Application: WindowDelegate {
         render()
     }
 
+    /// Shows a transient red message in the status bar. Reuses the editor's
+    /// error slot so the message follows the existing lifecycle: any key
+    /// press clears it (see handleGlobalKey).
+    func reportError(_ message: String) {
+        editor.lastError = message
+        updateStatusBar()
+    }
+
     func updatePreview(path: String?, highlightLine: Int) {
         preview.loadFile(path, highlightLine: highlightLine)
     }
