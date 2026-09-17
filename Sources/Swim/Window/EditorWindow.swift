@@ -1,3 +1,4 @@
+import SwimCore
 import Foundation
 
 class EditorWindow: Window {

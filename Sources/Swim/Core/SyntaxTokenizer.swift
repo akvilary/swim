@@ -1,3 +1,4 @@
+import SwimCore
 struct SyntaxTokenizer {
     static let swiftKeywords: Set<String> = [
         "import", "class", "struct", "enum", "protocol", "extension",

@@ -98,6 +98,7 @@ swim <file>       # Open file
 
 ```
 Sources/SwimCore/
+├── PieceTable.swift        # Text buffer (unit-tested)
 └── DiffGutter.swift        # Pure diff gutter parser (unit-tested)
 Sources/Swim/
 ├── main.swift              # Entry point
@@ -111,7 +112,6 @@ Sources/Swim/
 │   ├── Cell.swift           # Screen cells, colors
 │   ├── Theme.swift          # Tokyo Night Storm palette
 │   ├── Terminal.swift       # Low-level terminal I/O
-│   ├── PieceTable.swift     # Text buffer
 │   ├── EditorBuffer.swift   # Buffer state + tab manager
 │   ├── Input.swift          # Key parsing
 │   ├── SyntaxTokenizer.swift # Built-in highlighting

@@ -1,3 +1,4 @@
+import SwimCore
 import Foundation
 
 /// Per-file editor state. One tab == one EditorBuffer.
