@@ -74,6 +74,8 @@ class EditorWindow: Window {
     var pendingG: Bool = false
     var pendingD: Bool = false
     var pendingY: Bool = false
+    /// Vim-style numeric count prefix (`20gg`, `5G`); nil while unused.
+    var pendingCount: Int?
     private var isUndoRedoing = false
 
     private var tokenIndex: [Int: [SemanticToken]] = [:]
@@ -305,6 +307,19 @@ class EditorWindow: Window {
     }
 
     private func handleNormal(_ key: Key) -> Bool {
+        // Vim-style count prefix: 1-9 starts a count, 0 extends it (a bare 0
+        // still jumps to start of line). Consumed by gg/G below; every other
+        // key discards it so a stale count never leaks into later commands.
+        if case .char(let c) = key, c.isASCII, c.isNumber {
+            let d = c.wholeNumberValue!
+            guard d > 0 || pendingCount != nil else {
+                cursorCol = 0; desiredCol = 0; scrollX = 0; dirty = true; return true
+            }
+            pendingCount = (pendingCount ?? 0) * 10 + d
+            return true
+        }
+        var keepCount = false
+        defer { if !keepCount { pendingCount = nil } }
         switch key {
         case .char("h"), .left: moveCursorLeft()
         case .char("j"), .down: moveCursorDown()
@@ -314,11 +329,13 @@ class EditorWindow: Window {
         case .char("b"):
             if pendingG { pendingG = false; goBack() }
             else { moveWordBackward() }
-        case .char("0"), .home: cursorCol = 0; scrollX = 0
+        case .home: cursorCol = 0; scrollX = 0
         case .char("$"), .end: moveToEndOfLine()
         case .char("g"):
-            if pendingG { cursorLine = 0; cursorCol = 0; ensureCursorVisible(); pendingG = false }
-            else { pendingD = false; pendingY = false; pendingG = true; return true }
+            if pendingG {
+                pendingG = false
+                goToCountedLine(defaultLine: 0)
+            } else { pendingD = false; pendingY = false; pendingG = true; keepCount = true; return true }
         case .char("t"):
             guard pendingG else { pendingG = false; pendingD = false; pendingY = false; return false }
             pendingG = false
@@ -327,7 +344,8 @@ class EditorWindow: Window {
             guard pendingG else { pendingG = false; pendingD = false; pendingY = false; return false }
             pendingG = false
             cycleTab(-1)
-        case .char("G"): cursorLine = max(0, buffer!.lineCount - 1); cursorCol = 0; ensureCursorVisible()
+        case .char("G"):
+            goToCountedLine(defaultLine: max(0, buffer!.lineCount - 1))
         case .char("i"): mode = .insert
         case .char("a"): moveCursorRight(); mode = .insert
         case .char("o"): insertNewLineBelow(); mode = .insert
@@ -338,11 +356,11 @@ class EditorWindow: Window {
         case .char("d"):
             if pendingG { pendingG = false; goToDefinition() }
             else if pendingD { deleteCurrentLine(); pendingD = false }
-            else { pendingD = true; return true }
+            else { pendingD = true; keepCount = true; return true }
         case .char("y"):
             pendingG = false
             if pendingY { yankCurrentLine(); pendingY = false }
-            else { pendingY = true; return true }
+            else { pendingY = true; keepCount = true; return true }
         case .char("p"): pasteAfter()
         case .char("P"): pasteBefore()
         case .char("u"): undo()
@@ -366,6 +384,21 @@ class EditorWindow: Window {
         if !isVerticalKey(key, insertMode: false) { desiredCol = cursorCol }
         dirty = true
         return true
+    }
+
+    /// `Ngg` / `NG` — jumps to line N (1-based), falling back to `defaultLine`
+    /// when no count is pending. Consumes the count.
+    private func goToCountedLine(defaultLine: Int) {
+        guard let buf = buffer else { return }
+        if let n = pendingCount {
+            pendingCount = nil
+            cursorLine = min(max(0, n - 1), max(0, buf.lineCount - 1))
+        } else {
+            cursorLine = defaultLine
+        }
+        cursorCol = 0
+        desiredCol = 0
+        ensureCursorVisible()
     }
 
     private func handleInsert(_ key: Key) -> Bool {
@@ -439,6 +472,14 @@ class EditorWindow: Window {
                 searchQuery = String(cmd.dropFirst())
                 lastSearchForward = true
                 searchNext()
+            } else if let line = Int(cmd), line >= 0 {
+                // `:N` — go to line N (1-based); `:0` clamps to the first line.
+                if let buf = buffer {
+                    cursorLine = min(max(0, line - 1), max(0, buf.lineCount - 1))
+                    cursorCol = 0
+                    ensureCursorVisible()
+                    dirty = true
+                }
             } else {
                 // Window-management commands (q, q!, qa, terminal, ...)
                 return super.executeCommand(cmd)
