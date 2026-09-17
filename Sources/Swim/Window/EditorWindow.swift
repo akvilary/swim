@@ -349,8 +349,12 @@ class EditorWindow: Window {
         case .ctrl("r"): redo()
         case .char("v"): mode = .visual; visualStartLine = cursorLine; visualStartCol = cursorCol
         case .char("V"): mode = .visualLine; visualStartLine = cursorLine
-        case .char(":"): mode = .command; commandBuffer = ""
-        case .char("/"): mode = .command; commandBuffer = "/"
+        // Both go through enterCommandMode: it resets commandCursorPos to
+        // the prefill length — setting the buffer by hand leaves the caret
+        // at 0 and typed text lands BEFORE the `/` prefix ("/" → "foo/",
+        // the search then runs for the wrong query).
+        case .char(":"): enterCommandMode()
+        case .char("/"): enterCommandMode(prefill: "/")
         case .char("n"): searchNext()
         case .char("N"): searchPrev()
         case .ctrl("j"), .ctrlDown: pageDown()
