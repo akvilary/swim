@@ -1222,6 +1222,7 @@ class Application: WindowDelegate {
     /// refresh stats, and hand the LSP server the full new content (a
     /// contentChange without a range replaces the whole document).
     private func applyBufferReload(_ fresh: EditorBuffer) {
+        editor.bufferReloaded(fresh)
         editor.dirty = true
         tabBar.dirty = true
         updateStatusBar()

@@ -78,6 +78,12 @@ class EditorWindow: Window {
     var pendingCount: Int?
     private var isUndoRedoing = false
 
+    /// Converted (grapheme-indexed) LSP tokens of the ACTIVE tab, by line.
+    /// Invariant: always mirrors the active tab's `semanticTokens` — rebuilt
+    /// on tab activation and on token application, dropped by bufferReloaded
+    /// when a disk reload swaps the active buffer in place (a reload brings
+    /// empty semanticTokens; without the drop, files at/above the 50000-line
+    /// cap would render stale converted tokens against the new content).
     private var tokenIndex: [Int: [SemanticToken]] = [:]
 
     var lastError: String?
@@ -270,6 +276,18 @@ class EditorWindow: Window {
         rebuildTokenIndex()
         dirty = true
         return true
+    }
+
+    /// A disk reload swapped a tab's buffer in place — same tab, no
+    /// activation event. When it is the active tab, the converted-token
+    /// cache must be dropped now: it still mirrors the OLD content, and
+    /// for files at/above the 50000-line cap the empty `semanticTokens`
+    /// gate does NOT force the builtin path, so stale tokens would render
+    /// against the new text until the LSP answers. Non-active tabs need
+    /// nothing — activation rebuilds.
+    func bufferReloaded(_ buffer: EditorBuffer) {
+        guard buffer === tabs.active else { return }
+        rebuildTokenIndex()
     }
 
     func tabInfos() -> [(name: String, active: Bool, modified: Bool)] {

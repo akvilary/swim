@@ -176,10 +176,6 @@ struct SyntaxTokenizer {
         }
     }
 
-    static func tokenize(line: String, lineNum: Int, keywords: Set<String>, literals: Set<String> = []) -> [SemanticToken] {
-        tokenize(lineChars: Array(line), lineNum: lineNum, keywords: keywords, literals: literals)
-    }
-
     /// Multi-line string syntax per language (keyed by file extension — works
     /// for both LSP-backed and builtin highlighting).
     struct MultilineStringRule {
@@ -253,14 +249,6 @@ struct SyntaxTokenizer {
             lineCommentAtWordStartOnly: syntax.lineCommentAtWordStartOnly,
             softKeywords: syntax.softKeywords)
         return sorted
-    }
-
-    static func multilineStringRules(for fileExt: String) -> [MultilineStringRule] {
-        syntax(for: fileExt).mlRules
-    }
-
-    static func tokenize(lineChars chars: [Character], lineNum: Int, keywords: Set<String>, literals: Set<String> = []) -> [SemanticToken] {
-        tokenize(chars: chars, lineNum: lineNum, keywords: keywords, literals: literals).tokens
     }
 
     /// Soft keywords are keywords only in statement-initial position: the
@@ -434,20 +422,6 @@ struct SyntaxTokenizer {
         }
 
         return (tokens, .none)
-    }
-
-    static func tokenizeVisibleLines(buffer: PieceTable, scrollY: Int, height: Int, fileExt: String) -> [SemanticToken] {
-        let kw = keywords(for: fileExt)
-        let literals = valueLiterals(for: fileExt)
-        var allTokens = [SemanticToken]()
-        allTokens.reserveCapacity(height * 4)
-        for row in 0..<height {
-            let lineNum = scrollY + row
-            guard lineNum < buffer.lineCount else { break }
-            let line = buffer.getLine(lineNum)
-            allTokens.append(contentsOf: tokenize(line: line, lineNum: lineNum, keywords: kw, literals: literals))
-        }
-        return allTokens
     }
 
     struct MarkdownCache {
