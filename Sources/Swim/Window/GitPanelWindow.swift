@@ -218,7 +218,7 @@ class GitPanelWindow: Window {
         if mode == .visualLine {
             headerPlate = HeaderPlate(text: " [ VISUAL ] \(branchLabel) ", fg: Theme.purple)
         } else {
-            headerPlate = HeaderPlate(text: " \(branchLabel) (s: stage/unstage, d: discard, c: commit, C: commit w/ last msg) ", fg: Theme.orange)
+            headerPlate = HeaderPlate(text: " \(branchLabel) (s: stage/unstage, d: discard, c/C: commit / + last msg) ", fg: Theme.orange)
         }
         drawPlate()
 
@@ -478,10 +478,10 @@ class GitPanelWindow: Window {
         case .char("C"):
             mode = .menu; pendingY = false
             delegate?.requestCommitMessage(prefill: lastCommitMessage())
-        case .char("-"):
+        case .char("p"):
             mode = .menu; pendingY = false
             delegate?.runGitCommand(label: "git pull", args: ["pull"])
-        case .char("+"):
+        case .char("P"):
             mode = .menu; pendingY = false
             delegate?.runGitCommand(label: "git push", args: ["push"])
         case .char("y"):

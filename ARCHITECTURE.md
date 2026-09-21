@@ -397,7 +397,7 @@ Emoji-иконки: 🐦 Swift, 🌐 JS, 🐍 Python, 🦀 Rust, 🐹 Go, 📝 M
 - `d` — discard: staged → `checkout HEAD --` (для новых `A` — `rm -f`; для rename — восстановление старого пути + удаление нового; copy — `rm -f` копии), unstaged → `checkout --`, untracked — удаление файла с диска. Discard переписывает файл на диске — панель зовёт `fileChangedOnDisk` (абсолютный путь), и Application перезагружает чистую вкладку редактора этого файла с диска (`BufferManager.reloadIfClean`: место вкладки, режим и клэмпнутые курсор/скролл сохраняются, undo сбрасывается; modified-буфер не трогается — несохранённые правки важнее диска; файла нет на диске — vim-семантика, буфер живёт, `:w` пересоздаст), LSP получает полный didChange (contentChange без range) + перезапрос токенов. stage/unstage файл НЕ переписывают (только индекс) — перезагрузка не нужна
 - `c` — окно коммита (см. CommitWindow); повторное `c` при открытом окне — рефокус без затирания текста
 - `C` — окно коммита с префиллом сообщения последнего коммита (`git log -1 --format=%B` — subject + body, не только subject из списка лога): удобно для серии коммитов по одной задаче. Текст вставляется как начальное содержимое (без undo-записи и modified), курсор — в конец. Пустая история (свежий репозиторий) — просто пустой редактор, поведение `c`
-- `-` / `+` — `git pull` / `git push` (вывод и spinner — в CommandWindow; если remote спрашивает учётные — ввод в командной строке CommandWindow, см. Core/InteractiveShell.swift)
+- `p` / `P` — `git pull` / `git push` (вывод и spinner — в CommandWindow; если remote спрашивает учётные — ввод в командной строке CommandWindow, см. Core/InteractiveShell.swift)
 - `yy` — копировать строку статуса (OSC52), `V` — visual-выделение записей
 - `Escape` — закрыть панель
 
@@ -666,7 +666,7 @@ while running:
 | `s` | Stage/unstage файла (в diff — активного hunk'а) |
 | `x` | Discard файла (в diff — активного hunk'а) |
 | `c` | Окно коммита (insert-режим; `:w`/`:wq` — коммит, `:q`/двойной Esc — отмена) |
-| `-` / `+` | `git pull` / `git push` |
+| `p` / `P` | `git pull` / `git push` |
 | `yy` / `V`+`y` | Копирование (OSC52) / visual-выделение |
 
 ---
