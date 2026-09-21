@@ -218,7 +218,7 @@ class GitPanelWindow: Window {
         if mode == .visualLine {
             headerPlate = HeaderPlate(text: " [ VISUAL ] \(branchLabel) ", fg: Theme.purple)
         } else {
-            headerPlate = HeaderPlate(text: " \(branchLabel) (s: stage/unstage, d: discard, c: commit) ", fg: Theme.orange)
+            headerPlate = HeaderPlate(text: " \(branchLabel) (s: stage/unstage, d: discard, c: commit, C: commit w/ last msg) ", fg: Theme.orange)
         }
         drawPlate()
 
@@ -471,7 +471,10 @@ class GitPanelWindow: Window {
             discardSelected()
         case .char("c"):
             mode = .menu; pendingY = false
-            delegate?.requestCommitMessage()
+            delegate?.requestCommitMessage(prefill: "")
+        case .char("C"):
+            mode = .menu; pendingY = false
+            delegate?.requestCommitMessage(prefill: lastCommitMessage())
         case .char("-"):
             mode = .menu; pendingY = false
             delegate?.runGitCommand(label: "git pull", args: ["pull"])
@@ -686,6 +689,15 @@ class GitPanelWindow: Window {
 
         refresh()
         runDiff(for: diffPath, staged: diffStaged, untracked: diffUntracked)
+    }
+
+    /// Full message (subject + body) of HEAD — the `C` prefill for a
+    /// follow-up commit with the same description. Empty when there is
+    /// no history yet (fresh repo): `C` then behaves like `c`.
+    private func lastCommitMessage() -> String {
+        let result = Shell.git(["log", "-1", "--format=%B"], workDir: workingDirectory)
+        guard result.exitCode == 0 else { return "" }
+        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func discardSelected() {

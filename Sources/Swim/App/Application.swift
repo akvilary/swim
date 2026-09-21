@@ -1185,7 +1185,7 @@ class Application: WindowDelegate {
         gitPanel.refresh()
     }
 
-    func requestCommitMessage() {
+    func requestCommitMessage(prefill: String) {
         if maximized != nil { restoreMaximized() }
         // Already composing — just refocus, don't wipe the typed message.
         if commitWindow.visible {
@@ -1198,6 +1198,15 @@ class Application: WindowDelegate {
         // never show both at once (they would overdraw each other).
         if command.visible { popWindow(command) }
         commitWindow.newFile()
+        // `C` — prefill with the last commit's message. Inserted as
+        // initial content (no undo entry, not modified): `u` can't wipe
+        // the template, `:q` stays quota-free. Cursor lands at the end
+        // of the text so typing appends.
+        if !prefill.isEmpty, let buf = commitWindow.buffer {
+            buf.insert(prefill, at: 0)
+            let lastLine = max(0, buf.lineCount - 1)
+            commitWindow.goToPosition(line: lastLine, colUtf16: buf.getLine(lastLine).utf16.count)
+        }
         commitWindow.mode = .insert
         commitWindow.headerPlate = HeaderPlate(text: " Commit @ \(gitPanel.currentBranch) ", fg: Theme.orange)
         commitWindow.visible = true

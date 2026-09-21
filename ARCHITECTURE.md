@@ -393,6 +393,7 @@ Emoji-иконки: 🐦 Swift, 🌐 JS, 🐍 Python, 🦀 Rust, 🐹 Go, 📝 M
 - `s` — stage (unstaged/untracked) или unstage (staged) файла; staged rename откатывается с обеих сторон (`reset HEAD -- old new`)
 - `d` — discard: staged → `checkout HEAD --` (для новых `A` — `rm -f`; для rename — восстановление старого пути + удаление нового; copy — `rm -f` копии), unstaged → `checkout --`, untracked — удаление файла с диска
 - `c` — окно коммита (см. CommitWindow); повторное `c` при открытом окне — рефокус без затирания текста
+- `C` — окно коммита с префиллом сообщения последнего коммита (`git log -1 --format=%B` — subject + body, не только subject из списка лога): удобно для серии коммитов по одной задаче. Текст вставляется как начальное содержимое (без undo-записи и modified), курсор — в конец. Пустая история (свежий репозиторий) — просто пустой редактор, поведение `c`
 - `-` / `+` — `git pull` / `git push` (вывод и spinner — в CommandWindow)
 - `yy` — копировать строку статуса (OSC52), `V` — visual-выделение записей
 - `Escape` — закрыть панель

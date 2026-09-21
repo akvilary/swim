@@ -7,7 +7,7 @@ protocol WindowDelegate: AnyObject {
     func runGitCommand(label: String, args: [String])
     func gitCommandFinished(_ label: String)
     func terminalCommandFinished()
-    func requestCommitMessage()
+    func requestCommitMessage(prefill: String)
     func requestCommit()
     func reportError(_ message: String)
     func requestRender()
