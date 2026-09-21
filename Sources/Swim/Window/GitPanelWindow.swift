@@ -700,6 +700,13 @@ class GitPanelWindow: Window {
         return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Notifies the app that a discard rewrote a working-tree file — a
+    /// clean editor tab for it reloads from disk (see
+    /// `Application.fileChangedOnDisk`).
+    private func notifyBufferReload(_ repoRelativePath: String) {
+        delegate?.fileChangedOnDisk(absolutePath(repoRelativePath))
+    }
+
     private func discardSelected() {
         let section = statusList.sections.indices.contains(selectedSection)
             ? statusList.sections[selectedSection].kind : nil
@@ -710,23 +717,37 @@ class GitPanelWindow: Window {
                 switch file.status {
                 case "A":
                     // Not in HEAD: drop from index and disk.
-                    runGit(["rm", "-f", "--", topPathspec(file.filePath)])
+                    if runGit(["rm", "-f", "--", topPathspec(file.filePath)]).exitCode == 0 {
+                        notifyBufferReload(file.filePath)
+                    }
                 case "R":
                     // Staged rename: restore the old path, remove the new one.
                     if let old = file.origPath {
-                        runGit(["checkout", "HEAD", "--", topPathspec(old)])
-                        runGit(["rm", "-f", "--", topPathspec(file.filePath)])
+                        if runGit(["checkout", "HEAD", "--", topPathspec(old)]).exitCode == 0 {
+                            notifyBufferReload(old)
+                        }
+                        if runGit(["rm", "-f", "--", topPathspec(file.filePath)]).exitCode == 0 {
+                            notifyBufferReload(file.filePath)
+                        }
                     } else {
-                        runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)])
+                        if runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)]).exitCode == 0 {
+                            notifyBufferReload(file.filePath)
+                        }
                     }
                 case "C":
                     // Staged copy: the source is untouched, drop only the copy.
-                    runGit(["rm", "-f", "--", topPathspec(file.filePath)])
+                    if runGit(["rm", "-f", "--", topPathspec(file.filePath)]).exitCode == 0 {
+                        notifyBufferReload(file.filePath)
+                    }
                 default:
-                    runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)])
+                    if runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)]).exitCode == 0 {
+                        notifyBufferReload(file.filePath)
+                    }
                 }
             case .unstaged:
-                runGit(["checkout", "--", topPathspec(file.filePath)])
+                if runGit(["checkout", "--", topPathspec(file.filePath)]).exitCode == 0 {
+                    notifyBufferReload(file.filePath)
+                }
             case .untracked:
                 deleteFileOnDisk(file.filePath)
             case .commits, nil:
@@ -758,10 +779,15 @@ class GitPanelWindow: Window {
                 // Worktree may have diverged from the index (partially
                 // staged region): a failure here leaves the hunk moved to
                 // unstaged instead of discarded — the user must know.
-                runGit(["apply", "--reverse"], stdin: patch)
+                let worktreeResult = runGit(["apply", "--reverse"], stdin: patch)
+                if worktreeResult.exitCode == 0 {
+                    notifyBufferReload(diffPath)
+                }
             }
         } else {
-            runGit(["apply", "--reverse"], stdin: patch)
+            if runGit(["apply", "--reverse"], stdin: patch).exitCode == 0 {
+                notifyBufferReload(diffPath)
+            }
         }
 
         refresh()

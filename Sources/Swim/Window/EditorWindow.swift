@@ -458,8 +458,11 @@ class EditorWindow: Window {
         case "w":
             saveFile()
         case "wq", "x":
-            saveFile()
-            delegate?.handleEditorCommand("wquit")
+            // Not quitting when the write didn't happen — the
+            // changed-on-disk confirm may be pending or aborted.
+            if saveOrConfirm() {
+                delegate?.handleEditorCommand("wquit")
+            }
         default:
             if cmd.hasPrefix("e! ") {
                 editFile(String(cmd.dropFirst(3)).trimmingCharacters(in: .whitespaces))
@@ -511,17 +514,91 @@ class EditorWindow: Window {
     }
 
     private func saveFile() {
-        guard let path = filePath, let buf = buffer else { return }
+        _ = saveOrConfirm()
+    }
+
+    /// `:w` with vim's W12 guard: if the file was rewritten externally
+    /// since it was read (mtime differs), refuse to clobber it silently —
+    /// arm the confirm prompt and let the next key decide. The prompt is
+    /// modal through command-mode ownership (the established "window
+    /// owns the input line" mechanism): every key routes here, `:` and
+    /// the global toggles included, and Escape cleans the state by
+    /// simply leaving command mode. Returns false when nothing was
+    /// written (confirm pending, aborted or failed) — `:wq`/`:x` must
+    /// not quit then.
+    @discardableResult
+    private func saveOrConfirm() -> Bool {
+        guard let path = filePath else {
+            if buffer?.totalLength ?? 0 > 0 {
+                lastError = "No file name"
+                return false
+            }
+            return true
+        }
+        if !pendingWriteConfirm,
+           let diskMtime = BufferManager.mtime(of: path),
+           diskMtime != tabs.active.fileMtime {
+            pendingWriteConfirm = true
+            enterCommandMode()
+            lastError = Self.writeConfirmPrompt
+            return false
+        }
+        pendingWriteConfirm = false
+        return performWrite()
+    }
+
+    private static let writeConfirmPrompt =
+        "Changed on disk — w: write, r: reload (discard edits), q: quit, a: abort"
+
+    /// The changed-on-disk confirm owns the command line: one key
+    /// decides, anything else re-prompts (vim's modal dialog). Escape is
+    /// the abort.
+    override func handleCommandModeKey(_ key: Key) -> Bool {
+        guard pendingWriteConfirm else { return super.handleCommandModeKey(key) }
+        switch key {
+        case .char("w"), .char("W"):
+            pendingWriteConfirm = false
+            exitCommandMode()
+            _ = performWrite()
+        case .char("r"), .char("R"):
+            pendingWriteConfirm = false
+            exitCommandMode()
+            delegate?.reloadActiveBufferDiscardingEdits()
+        case .char("q"), .char("Q"):
+            pendingWriteConfirm = false
+            exitCommandMode()
+            delegate?.handleEditorCommand("q!")
+        case .char("a"), .char("A"), .escape:
+            pendingWriteConfirm = false
+            exitCommandMode()
+            lastError = "Write aborted"
+        default:
+            lastError = Self.writeConfirmPrompt
+        }
+        dirty = true
+        return true
+    }
+
+    @discardableResult
+    private func performWrite() -> Bool {
+        guard let path = filePath, let buf = buffer else { return false }
         let text = buf.getAllText()
         do {
             try text.write(toFile: path, atomically: true, encoding: .utf8)
             modified = false
+            tabs.noteSaved()
             lastError = nil
             delegate?.fileSaved()
+            return true
         } catch {
             lastError = "Error saving: \(error.localizedDescription)"
+            return false
         }
     }
+
+    /// The changed-on-disk confirm prompt is armed (see `saveOrConfirm`)
+    /// while the user answers it.
+    private var pendingWriteConfirm = false
 
     private func moveCursorLeft() { if cursorCol > 0 { cursorCol -= 1 }; ensureCursorVisible() }
     private func moveCursorRight() {

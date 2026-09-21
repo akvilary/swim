@@ -1174,18 +1174,64 @@ class Application: WindowDelegate {
     }
 
     /// Any finished git command (pull, push, commit) may have changed the
-    /// repository — refresh the panel so the status list stays truthful.
+    /// repository — refresh the panel so the status list stays truthful,
+    /// and sweep clean tabs: a pull merge may have rewritten their files.
     func gitCommandFinished(_ label: String) {
         gitPanel.refresh()
+        for fresh in editor.tabs.reloadChangedOnDisk() {
+            applyBufferReload(fresh)
+        }
     }
 
     /// Any finished terminal command may have changed the open file,
     /// renamed something or switched the git branch — resync the status
     /// bar stats (branch/diff, fetched in the background) and the git
-    /// panel, the same contract as git commands run through CommandWindow.
+    /// panel, the same contract as git commands run through CommandWindow;
+    /// the sweep picks up files the command rewrote (e.g. git checkout
+    /// typed into the terminal).
     func terminalCommandFinished() {
         fetchGitStats()
         gitPanel.refresh()
+        for fresh in editor.tabs.reloadChangedOnDisk() {
+            applyBufferReload(fresh)
+        }
+    }
+
+    /// A git-panel discard rewrote a working-tree file: reload any clean
+    /// editor tab for it (modified buffers keep the user's unsaved
+    /// edits), then resync stats and LSP with the new content.
+    func fileChangedOnDisk(_ path: String) {
+        guard let fresh = editor.tabs.reloadIfClean(path: path) else { return }
+        applyBufferReload(fresh)
+    }
+
+    /// The [R]eload answer of the changed-on-disk confirm prompt: the
+    /// user deliberately discards the active tab's edits. A file gone
+    /// from disk cannot be reloaded — the edits stay and the user hears
+    /// why (vim's E211).
+    func reloadActiveBufferDiscardingEdits() {
+        guard let path = editor.filePath else { return }
+        guard let fresh = editor.tabs.reloadDiscardingEdits(path: path) else {
+            reportError("File no longer exists on disk — edits kept")
+            return
+        }
+        applyBufferReload(fresh)
+    }
+
+    /// Common post-reload resync for a swapped-in fresh buffer: repaint,
+    /// refresh stats, and hand the LSP server the full new content (a
+    /// contentChange without a range replaces the whole document).
+    private func applyBufferReload(_ fresh: EditorBuffer) {
+        editor.dirty = true
+        tabBar.dirty = true
+        updateStatusBar()
+        fetchGitStats()
+        guard let path = fresh.filePath,
+              let key = lspClientKey(for: path),
+              let client = lspClients[key], client.isReady else { return }
+        lspVersion += 1
+        client.reloadDocument(uri: "file://\(path)", version: lspVersion,
+                              text: fresh.buffer.getAllText())
     }
 
     func requestCommitMessage(prefill: String) {

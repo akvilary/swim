@@ -14,6 +14,13 @@ protocol WindowDelegate: AnyObject {
     func updatePreview(path: String?, highlightLine: Int)
     func bufferClosed(_ buffer: EditorBuffer)
     func fileSaved()
+    /// A git-panel operation rewrote a working-tree file (a discard of
+    /// the whole file or a hunk): any clean editor tab for it should be
+    /// reloaded from disk.
+    func fileChangedOnDisk(_ path: String)
+    /// The [R]eload answer of the changed-on-disk confirm prompt —
+    /// discard the active tab's edits and reload it from disk.
+    func reloadActiveBufferDiscardingEdits()
     func activeFileChanged()
     func requestClose(_ window: Window)
     func requestGoToDefinition(line: Int, charUtf16: Int)

@@ -210,6 +210,23 @@ class LSPClient {
         sendNotification(method: "textDocument/didChange", params: params)
     }
 
+    /// Full-sync didChange after an external rewrite (e.g. a git discard
+    /// from the panel reloaded the buffer): a contentChange without a
+    /// range replaces the whole document, per the LSP spec. Cached
+    /// semantic tokens are stale — re-request them.
+    func reloadDocument(uri: String, version: Int, text: String) {
+        guard initialized else { return }
+        let params: [String: Any] = [
+            "textDocument": [
+                "uri": uri,
+                "version": version
+            ] as [String: Any],
+            "contentChanges": [["text": text] as [String: Any]]
+        ]
+        sendNotification(method: "textDocument/didChange", params: params)
+        requestSemanticTokens(uri: uri)
+    }
+
     func requestSemanticTokens(uri: String) {
         guard initialized else { return }
         let params: [String: Any] = [

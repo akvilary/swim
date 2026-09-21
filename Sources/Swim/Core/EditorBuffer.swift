@@ -25,6 +25,10 @@ final class EditorBuffer {
     /// State of multi-line strings before each line; built lazily for the
     /// visible viewport, truncated on edits below the cursor.
     var mlStringStates: [SyntaxTokenizer.MultilineStringState] = []
+    /// File mtime as of the last load/save — the external-change sweep
+    /// compares against it to detect disk rewrites (a git pull merge, a
+    /// command run in the embedded terminal). Nil = unknown.
+    var fileMtime: TimeInterval? = nil
 
     init(buffer: PieceTable, filePath: String? = nil) {
         self.buffer = buffer
@@ -61,6 +65,14 @@ final class BufferManager {
         buffers.first { $0.filePath == path }
     }
 
+    /// File mtime, or nil when the file cannot be stated.
+    static func mtime(of path: String) -> TimeInterval? {
+        guard let date = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date else {
+            return nil
+        }
+        return date.timeIntervalSince1970
+    }
+
     /// Opens a file in a new tab, or switches to the existing tab when the file
     /// is already open. The pristine `[No Name]` buffer created at startup is
     /// replaced by the first opened file instead of piling up as a tab.
@@ -74,6 +86,7 @@ final class BufferManager {
         }
         let table = PieceTable.fromFile(path) ?? PieceTable(text: "")
         let tab = EditorBuffer(buffer: table, filePath: normalized.isEmpty ? nil : normalized)
+        tab.fileMtime = normalized.isEmpty ? nil : Self.mtime(of: normalized)
         if buffers.count == 1, let only = buffers.first,
            only.filePath == nil, !only.modified, only.buffer.totalLength == 0 {
             buffers[0] = tab
@@ -83,6 +96,72 @@ final class BufferManager {
             activeIndex = buffers.count - 1
         }
         return (tab, true)
+    }
+
+    /// Reloads the tab for `path` from disk when its buffer is clean —
+    /// an external tool (a git discard from the panel) rewrote the file.
+    /// The tab keeps its place, mode and clamped cursor/scroll; the undo
+    /// history resets (the old content is gone). A modified buffer is
+    /// left untouched — unsaved edits outrank the disk — and so is a
+    /// file that no longer exists on disk (vim semantics: the in-memory
+    /// copy survives, `:w` would recreate it). A rewrite that produced
+    /// identical content only refreshes the mtime (no swap — the undo
+    /// history must not be reset for nothing). Returns the fresh buffer
+    /// when a reload happened, nil otherwise.
+    @discardableResult
+    func reloadIfClean(path: String) -> EditorBuffer? {
+        reload(path: path, force: false)
+    }
+
+    /// `:e!`-style forced reload — the [R]eload answer of the
+    /// changed-on-disk confirm prompt: the user deliberately discards
+    /// their edits. No identical-content guard either: the point is to
+    /// reset the modified flag.
+    @discardableResult
+    func reloadDiscardingEdits(path: String) -> EditorBuffer? {
+        reload(path: path, force: true)
+    }
+
+    private func reload(path: String, force: Bool) -> EditorBuffer? {
+        let normalized = Self.normalize(path)
+        guard let idx = buffers.firstIndex(where: { $0.filePath == normalized }) else { return nil }
+        let tab = buffers[idx]
+        guard force || !tab.modified, let table = PieceTable.fromFile(normalized) else { return nil }
+        let newMtime = Self.mtime(of: normalized)
+        if !force, tab.buffer.getAllText() == table.getAllText() {
+            tab.fileMtime = newMtime
+            return nil
+        }
+        let fresh = EditorBuffer(buffer: table, filePath: normalized)
+        fresh.fileMtime = newMtime
+        fresh.mode = tab.mode
+        let lastLine = max(0, table.lineCount - 1)
+        fresh.cursorLine = min(tab.cursorLine, lastLine)
+        fresh.cursorCol = min(tab.cursorCol, max(0, table.lineCharLength(line: fresh.cursorLine)))
+        fresh.desiredCol = tab.desiredCol
+        fresh.scrollY = min(tab.scrollY, lastLine)
+        fresh.scrollX = tab.scrollX
+        buffers[idx] = fresh
+        return fresh
+    }
+
+    /// After a command that may have rewritten working files through git
+    /// (a pull merge, anything run in the embedded terminal): reload
+    /// every clean tab whose file changed on disk (mtime differs).
+    /// Modified tabs keep the user's edits; files gone from disk keep
+    /// their buffers (vim semantics). Returns the reloaded tabs.
+    func reloadChangedOnDisk() -> [EditorBuffer] {
+        var reloaded = [EditorBuffer]()
+        // Iterating a copy (Array value semantics): reloadIfClean swaps
+        // elements in `buffers` mid-loop safely.
+        for tab in buffers where !tab.modified {
+            guard let path = tab.filePath,
+                  let pathMtime = Self.mtime(of: path),
+                  pathMtime != tab.fileMtime,
+                  let fresh = reloadIfClean(path: path) else { continue }
+            reloaded.append(fresh)
+        }
+        return reloaded
     }
 
     enum CloseResult {
@@ -117,9 +196,16 @@ final class BufferManager {
         }
         let table = PieceTable.fromFile(path) ?? PieceTable(text: "")
         let fresh = EditorBuffer(buffer: table, filePath: normalized.isEmpty ? nil : normalized)
+        fresh.fileMtime = normalized.isEmpty ? nil : Self.mtime(of: normalized)
         let old = active
         buffers[activeIndex] = fresh
         return old
+    }
+
+    /// The file was just written by `:w` — record its mtime so the
+    /// external-change sweep doesn't flag our own save.
+    func noteSaved() {
+        if let path = active.filePath { active.fileMtime = Self.mtime(of: path) }
     }
 
     /// `gt` / `gT` — cycle active tab with wrap-around.
