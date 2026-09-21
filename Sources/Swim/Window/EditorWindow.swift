@@ -679,7 +679,8 @@ class EditorWindow: Window {
         return changes
     }
 
-    /// Extends mlStringStates (state before each line) up to `line`.
+    /// Extends mlStringStates up to `line`. Entry N holds the state AFTER
+    /// line N; consumers tokenize line N starting from mlStringStates[N - 1].
     /// Appends go directly into the tab's stored property — through-accessor
     /// or local-copy patterns COW-copy the whole array per call, which made
     /// scrolling a large file copy the array every frame.
@@ -1229,7 +1230,7 @@ class EditorWindow: Window {
                 // untyped (sourcekit-lsp). Layer the syntactic tokenizer
                 // underneath: builtin tokens fill the gaps between LSP ones.
                 let lsp = semanticTokensFor(line: lineNum)
-                let initial = lineNum < mlStringStates.count ? mlStringStates[lineNum] : .none
+                let initial = lineNum > 0 && lineNum - 1 < mlStringStates.count ? mlStringStates[lineNum - 1] : .none
                 let builtin = SyntaxTokenizer.tokenize(chars: chars, lineNum: lineNum,
                                                         keywords: builtinKeywords ?? [],
                                                         syntax: langSyntax, initialState: initial,
@@ -1247,7 +1248,7 @@ class EditorWindow: Window {
             } else if isJSON {
                 tokens = SyntaxTokenizer.tokenizeJSON(lineChars: chars, lineNum: lineNum)
             } else {
-                let initial = lineNum < mlStringStates.count ? mlStringStates[lineNum] : .none
+                let initial = lineNum > 0 && lineNum - 1 < mlStringStates.count ? mlStringStates[lineNum - 1] : .none
                 tokens = SyntaxTokenizer.tokenize(chars: chars, lineNum: lineNum,
                                                    keywords: builtinKeywords ?? [],
                                                    syntax: langSyntax, initialState: initial,
