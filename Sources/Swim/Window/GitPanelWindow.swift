@@ -438,6 +438,9 @@ class GitPanelWindow: Window {
                 } else {
                     pendingY = true
                 }
+            case .char("Y"):
+                copyCurrentBranch()
+                pendingY = false
             case .char("V"):
                 mode = (mode == .visualLine) ? .menu : .visualLine
                 diffVisualStart = diffCursorRow
@@ -491,6 +494,9 @@ class GitPanelWindow: Window {
             } else {
                 pendingY = true
             }
+        case .char("Y"):
+            copyCurrentBranch()
+            pendingY = false
         case .char("V"):
             mode = (mode == .visualLine) ? .menu : .visualLine
             statusVisualStart = selectionPosition
@@ -807,6 +813,12 @@ class GitPanelWindow: Window {
         let lo = min(diffVisualStart, diffCursorRow)
         let hi = max(diffVisualStart, diffCursorRow)
         return lo...hi
+    }
+
+    private func copyCurrentBranch() {
+        let branch = currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !branch.isEmpty, branch != "not a git repo" else { return }
+        Terminal.shared.osc52Copy(branch)
     }
 
     private func yankDiffLines(_ range: ClosedRange<Int>) {
