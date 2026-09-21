@@ -37,7 +37,7 @@ class FileExplorerWindow: Window {
 
         drawHeader(" EXPLORER ", fg: Theme.fgDark)
 
-        let visibleCount = height - 1
+        let visibleCount = max(0, height - 1)
         for row in 0..<visibleCount {
             let idx = scrollOffset + row
             guard idx < flatEntries.count else { break }
@@ -274,7 +274,7 @@ class FileExplorerWindow: Window {
 
     private func maxVisibleContentLength() -> Int {
         var maxLen = 0
-        let visibleCount = height - 1
+        let visibleCount = max(0, height - 1)
         for row in 0..<visibleCount {
             let idx = scrollOffset + row
             guard idx < flatEntries.count else { break }
@@ -367,7 +367,7 @@ class FileExplorerWindow: Window {
     }
 
     private func ensureVisible() {
-        scrollOffset = Window.clampedScroll(selectedIndex: selectedIndex, scrollOffset: scrollOffset, visibleCount: height - 1)
+        scrollOffset = Window.clampedScroll(selectedIndex: selectedIndex, scrollOffset: scrollOffset, visibleCount: max(0, height - 1))
     }
 
     /// `H` — flips the listing filter and re-flattens the tree in memory:

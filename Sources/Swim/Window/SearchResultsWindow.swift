@@ -90,7 +90,7 @@ class SearchResultsWindow: Window {
             buildFlatItems()
             flatItemsDirty = false
         }
-        let visibleH = height - 1
+        let visibleH = max(0, height - 1)
         for row in 0..<visibleH {
             let itemIdx = scrollOffset + row
             guard itemIdx < flatItems.count else { break }
@@ -359,7 +359,7 @@ class SearchResultsWindow: Window {
 
     private func maxVisibleContentLength() -> Int {
         var maxLen = 0
-        let visibleH = height - 1
+        let visibleH = max(0, height - 1)
         for row in 0..<visibleH {
             let itemIdx = scrollOffset + row
             guard itemIdx < flatItems.count else { break }
@@ -392,6 +392,6 @@ class SearchResultsWindow: Window {
     }
 
     private func ensureVisible() {
-        scrollOffset = Window.clampedScroll(selectedIndex: selectedIndex, scrollOffset: scrollOffset, visibleCount: height - 1)
+        scrollOffset = Window.clampedScroll(selectedIndex: selectedIndex, scrollOffset: scrollOffset, visibleCount: max(0, height - 1))
     }
 }

@@ -44,7 +44,11 @@ class Space {
     func update() {
         for window in windows.values {
             window.poll()
-            if window.visible {
+            // A zero-area window is squeezed out of the layout — it has
+            // nothing to draw; its render math (content rows) must never
+            // run. Polling continues: background tasks don't depend on
+            // geometry (a squeezed editor still polls LSP).
+            if window.visible && window.height > 0 && window.width > 0 {
                 window.update()
             }
         }

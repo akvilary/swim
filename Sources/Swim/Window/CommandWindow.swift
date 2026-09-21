@@ -135,7 +135,7 @@ class CommandWindow: Window {
                 ? " \(title) — cancelled (Esc to close) "
                 : " \(title) — done (Esc to close) "
             drawHeader(header, fg: lastRunCancelled ? Theme.orange : Theme.green)
-            let visibleLines = height - 1
+            let visibleLines = max(0, height - 1)
             for i in 0..<visibleLines {
                 let lineIdx = scrollOffset + i
                 guard lineIdx < outputLines.count else { break }
@@ -150,7 +150,7 @@ class CommandWindow: Window {
         switch key {
         case .char("j"), .down:
             if !isRunning {
-                let visibleLines = height - 1
+                let visibleLines = max(0, height - 1)
                 if scrollOffset + visibleLines < outputLines.count {
                     scrollOffset += 1; dirty = true
                 }

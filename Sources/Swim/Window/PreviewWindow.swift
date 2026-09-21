@@ -20,7 +20,7 @@ class PreviewWindow: Window {
         }
         self.highlightLine = highlightLine
         if highlightLine > 0 {
-            let visibleH = height - 1
+            let visibleH = max(0, height - 1)
             if highlightLine < scrollY + 1 || highlightLine > scrollY + visibleH {
                 scrollY = max(0, highlightLine - visibleH / 2 - 1)
             }
@@ -42,7 +42,7 @@ class PreviewWindow: Window {
         let fileName = filePath.map { ($0 as NSString).lastPathComponent } ?? "Preview"
         drawHeader(" \(fileName) ", fg: Theme.comment, bg: Theme.bgDark)
 
-        let visibleH = height - 1
+        let visibleH = max(0, height - 1)
         let lineNumW = max(3, String(max(lines.count, 1)).count + 1)
         let contentW = max(0, width - lineNumW - 1)
 
@@ -75,13 +75,13 @@ class PreviewWindow: Window {
     override func handleKey(_ key: Key) -> Bool {
         switch key {
         case .ctrl("j"), .ctrlDown:
-            let visibleH = height - 1
+            let visibleH = max(0, height - 1)
             if scrollY + visibleH < lines.count {
                 scrollY += visibleH
                 dirty = true
             }
         case .ctrl("k"), .ctrlUp:
-            let visibleH = height - 1
+            let visibleH = max(0, height - 1)
             scrollY = max(0, scrollY - visibleH)
             dirty = true
         default: return false
