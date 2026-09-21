@@ -748,6 +748,9 @@ class Application: WindowDelegate {
             if editor.visible { closeCurrentTab(force: force) }
             return
         }
+        // Closing the command window while git waits for a credential —
+        // cancel the operation instead of leaving it hanging forever.
+        if target === command { command.cancelPendingCredential() }
         popWindow(target)
     }
 

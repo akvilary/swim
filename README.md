@@ -116,6 +116,7 @@ Sources/Swim/
 │   ├── Input.swift          # Key parsing
 │   ├── SyntaxTokenizer.swift # Built-in highlighting
 │   ├── Shell.swift          # Subprocess runner (git, which)
+│   ├── InteractiveShell.swift # Interactive subprocess (credential prompts)
 │   └── BackgroundTask.swift # Background job with thread-safe result
 ├── Window/
 │   ├── EditorWindow.swift       # Editor with modes

@@ -35,25 +35,30 @@ class StatusBarWindow: Window {
 
         let modeLabel: String
         let modeBgColor: Color
-        switch modeText {
-        case "NORMAL":
-            modeLabel = " NORMAL "
-            modeBgColor = Theme.blue
-        case "INSERT":
-            modeLabel = " INSERT "
-            modeBgColor = Theme.green
-        case "VISUAL":
-            modeLabel = " VISUAL "
-            modeBgColor = Theme.magenta
-        case "VISUAL LINE":
-            modeLabel = " V-LINE "
-            modeBgColor = Theme.magenta
-        case "COMMAND":
-            modeLabel = " COMMAND "
+        if let custom = inCommand ? source?.commandModeLabel() : nil {
+            modeLabel = " \(custom) "
             modeBgColor = Theme.orange
-        default:
-            modeLabel = " \(modeText) "
-            modeBgColor = Theme.blue
+        } else {
+            switch modeText {
+            case "NORMAL":
+                modeLabel = " NORMAL "
+                modeBgColor = Theme.blue
+            case "INSERT":
+                modeLabel = " INSERT "
+                modeBgColor = Theme.green
+            case "VISUAL":
+                modeLabel = " VISUAL "
+                modeBgColor = Theme.magenta
+            case "VISUAL LINE":
+                modeLabel = " V-LINE "
+                modeBgColor = Theme.magenta
+            case "COMMAND":
+                modeLabel = " COMMAND "
+                modeBgColor = Theme.orange
+            default:
+                modeLabel = " \(modeText) "
+                modeBgColor = Theme.blue
+            }
         }
 
         clear()

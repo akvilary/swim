@@ -138,6 +138,12 @@ class Window {
         return true
     }
 
+    /// Optional replacement for the status-bar COMMAND label while this
+    /// window owns the command line — e.g. the command window collecting
+    /// a credential shows LOGIN / PASSWORD instead. Nil — the standard
+    /// COMMAND label.
+    func commandModeLabel() -> String? { nil }
+
     /// Executes a command typed in this window's command line. The base
     /// implementation covers the window-management commands shared by
     /// every window; editors override it to add file commands.
