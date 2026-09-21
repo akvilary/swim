@@ -11,7 +11,6 @@ class Application: WindowDelegate {
     private let spaces = Spaces()
     private var running = true
     private var lspClients: [String: LSPClient] = [:]
-    private var lspVersion: Int = 0
     private var pendingTokenRefresh: (path: String, earliest: TimeInterval)?
     private lazy var renderer = Renderer(terminal: terminal)
 
@@ -268,6 +267,23 @@ class Application: WindowDelegate {
                 let path = pathFromUri(pending.uri)
                 guard let target = editor.findBuffer(forNormalizedPath: path) else { continue }
                 if editor.applySemanticTokens(pending.tokens, to: target) {
+                    spaces.current.update()
+                    render()
+                }
+            }
+            for pending in client.takePendingDiagnostics() {
+                // A publish tagged with a version older than what we last
+                // sent describes superseded content — drop it instead of
+                // flashing stale underlines at the user.
+                if let version = pending.version,
+                   let lastSent = client.lastSentVersion(for: pending.uri),
+                   version < lastSent {
+                    continue
+                }
+                let path = pathFromUri(pending.uri)
+                guard let target = editor.findBuffer(forNormalizedPath: path) else { continue }
+                if editor.applyDiagnostics(pending.diagnostics, to: target) {
+                    updateStatusBar()
                     spaces.current.update()
                     render()
                 }
@@ -1036,6 +1052,15 @@ class Application: WindowDelegate {
         let modeSource = commandModeWindow ?? focused ?? editor
         let statsSource = (focused is EditorWindow) ? (focused as! EditorWindow) : editor
         statusBar.commandSource = modeSource
+        if focused is EditorWindow || focused == nil {
+            if let diag = editor.cursorDiagnostic() {
+                statusBar.diagnosticMessage = (text: diag.message, severity: diag.severity)
+            } else {
+                statusBar.diagnosticMessage = nil
+            }
+        } else {
+            statusBar.diagnosticMessage = nil
+        }
         statusBar.cursorLine = statsSource.cursorLine
         statusBar.cursorCol = statsSource.cursorCol
         statusBar.totalLines = statsSource.buffer?.lineCount ?? 0
@@ -1230,8 +1255,7 @@ class Application: WindowDelegate {
         guard let path = fresh.filePath,
               let key = lspClientKey(for: path),
               let client = lspClients[key], client.isReady else { return }
-        lspVersion += 1
-        client.reloadDocument(uri: "file://\(path)", version: lspVersion,
+        client.reloadDocument(uri: "file://\(path)",
                               text: fresh.buffer.getAllText())
     }
 
@@ -1312,9 +1336,7 @@ class Application: WindowDelegate {
         }
         let changes = editor.takeLSPPendingChanges()
         guard !changes.isEmpty else { return }
-        lspVersion += 1
-        let uri = "file://\(path)"
-        client.changeDocument(uri: uri, version: lspVersion, changes: changes)
+        client.changeDocument(uri: "file://\(path)", changes: changes)
         // Positions in the cached semantic tokens are now stale — schedule a
         // debounced semanticTokens/full re-request for this document.
         pendingTokenRefresh = (path: path, earliest: Date().timeIntervalSince1970 + 0.3)

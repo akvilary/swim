@@ -14,6 +14,20 @@ struct LSPTextChange {
     let text: String
 }
 
+/// One entry of a `textDocument/publishDiagnostics` notification, in raw
+/// server coordinates (UTF-16); converted to grapheme indices per render
+/// like semantic tokens. `unnecessary` is the LSP tag 1 (Unnecessary) —
+/// pyright marks unused imports with it.
+struct LSPDiagnostic {
+    let startLine: Int
+    let startChar: Int
+    let endLine: Int
+    let endChar: Int
+    let severity: Int
+    let unnecessary: Bool
+    let message: String
+}
+
 struct LSPDefinition {
     let uri: String
     let line: Int

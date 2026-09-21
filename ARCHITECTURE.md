@@ -39,7 +39,7 @@ main.swift
 
 **Рендеринг:** `Window.update()` заполняет cell-буфер → `Renderer` сравнивает с предыдущим кадром → `Terminal` отправляет ANSI-escape → `flush()` в stdout
 
-**Подсветка синтаксиса:** `LSPClient` получает токены от sourcekit-lsp ИЛИ `SyntaxTokenizer` генерирует их → `EditorWindow.semanticTokens` → маппинг на цвета через `Theme`
+**Подсветка синтаксиса:** `LSPClient` получает токены от LSP-сервера ИЛИ `SyntaxTokenizer` генерирует их → `EditorWindow.semanticTokens` → маппинг на цвета через `Theme`; диагностика сервера (`publishDiagnostics`) — гуттер/подчёркивание/статус-бар (см. LSPClient)
 
 **Межоконная коммуникация:** окна отправляют события в `Application` через протокол `WindowDelegate` (`openFile`, `openFileAtLine`, `handleEditorCommand`, `runGitCommand`, `gitCommandFinished`, `requestCommitMessage`, `requestCommit`, `reportError`, `requestRender`, `updatePreview`, `bufferClosed`, `fileSaved`, `fileChangedOnDisk`, `activeFileChanged`, `requestGoToDefinition`, `requestGoBack`)
 
@@ -303,7 +303,7 @@ pieces: [
 
 Центральный компонент — vim-подобный модальный редактор.
 
-**Вкладки (`BufferManager`):** каждый файл открыт в своей вкладке — `EditorBuffer` хранит пофайловое состояние (PieceTable, курсор, scroll, undo/redo стеки, LSP pending changes, semantic tokens, markdown cache, mode). EditorWindow пробрасывает свои свойства к `tabs.active` вычисляемыми аксессорами — внешний интерфейс не изменился. Пути нормализуются в абсолютные (`BufferManager.normalize`) — дедуп вкладок и матчинг LSP uri стабильны.
+**Вкладки (`BufferManager`):** каждый файл открыт в своей вкладке — `EditorBuffer` хранит пофайловое состояние (PieceTable, курсор, scroll, undo/redo стеки, LSP pending changes, semantic tokens, diagnostics, markdown cache, mode). EditorWindow пробрасывает свои свойства к `tabs.active` вычисляемыми аксессорами — внешний интерфейс не изменился. Пути нормализуются в абсолютные (`BufferManager.normalize`) — дедуп вкладок и матчинг LSP uri стабильны.
 
 - Открытие файла — новая вкладка или переключение к существующей (дедуп по пути)
 - `gt` / `gT` — следующая/предыдущая вкладка (wrap-around), `:bd` / `:bd!` — закрыть, `:e file` — заменить текущую (vim)
@@ -505,17 +505,20 @@ askpass вызывается git'ом с промптом в `$1`; промпт 
 **Протокол:** JSON-RPC 2.0 поверх stdin/stdout с framing `Content-Length: N\r\n\r\n`.
 
 **Жизненный цикл:**
-1. `start()` — запускает sourcekit-lsp как подпроцесс через `Process`
-2. `sendInitialize()` — отправляет `initialize` с capabilities (semantic tokens full/delta)
-3. `handleInitializeResponse()` — извлекает token legend, отправляет `initialized`, сбрасывает отложенный `didOpen` (если документ открыли до завершения инициализации)
-4. `openDocument()` — отправляет `textDocument/didOpen` + запрашивает semantic tokens
-5. `changeDocument(changes:)` — инкрементальный `textDocument/didChange`: список range-based изменений вместо полного текста
-6. `handleSemanticTokensResponse()` — парсит LSP semtok protocol (кортежи по 5 int: deltaLine, deltaStart, length, tokenType, tokenModifiers) → `[SemanticToken]`
-7. `Application.pollLSP()` — периодически проверяет `pendingTokens` (чтение под NSLock) и переносит в `EditorWindow`
+1. `start()` — запускает сервер как подпроцесс через `Process`
+2. `sendInitialize()` — отправляет `initialize` с capabilities (semantic tokens full/delta, `publishDiagnostics`)
+3. `handleInitializeResponse()` — извлекает token legend, отправляет `initialized`, переигрывает отложенные `didOpen` (массив с дедупом по uri — открытие второго файла до инициализации не глотает первый; переоткрытие заменяет текст)
+4. `openDocument()` — отправляет `textDocument/didOpen` (версию назначает клиент) + запрашивает semantic tokens
+5. `changeDocument(changes:)` / `reloadDocument(text:)` — инкрементальный / полный `textDocument/didChange`; версии документов принадлежат клиенту (`documentVersions`): пер-документные, строго возрастающие, переживают переоткрытие таба — поздний `publishDiagnostics` от прошлой инкарнации не проходит гард
+6. `handleSemanticTokensResponse()` — парсит LSP semtok protocol (кортежи по 5 int) → `[SemanticToken]`
+7. `handleMessage()` на `publishDiagnostics` — декодирует `LSPDiagnostic` (range, severity, tags) в `diagnosticsMailbox`
+8. `Application.pollLSP()` — дрейнит mailboxes на каждом тике цикла; для диагностики сверяет `version` публикации с `lastSentVersion(uri)` и отбрасывает устаревшие, актуальные кладёт в `EditorBuffer.diagnostics` через `applyDiagnostics`
 
-**Асинхронность:** Чтение из stdout LSP-сервера через `DispatchSourceRead` на отдельной очереди. Запись в stdin — через `queue.async`. `pendingTokens` защищён `NSLock` (запись из очереди клиента, чтение из main).
+**Асинхронность (single-owner confinement):** вся протокольная мутабельность (`buffer`, `pendingRequests`, legend, `initialized`, `documentVersions`, очередь отложенных didOpen) принадлежит серийной очереди клиента; кадры сериализуются на вызывающем потоке и покидают очередь цельными `Data` — FIFO `Content-Length`-кадров гарантирован в обе стороны, словари не пересекают границу потоков. Регистрация callback'а и запись запроса — один серийный блок: ответ физически не может быть разобран раньше регистрации (раньше регистрация шла из main и гонялась с `removeValue` читателя). Main-loop читает только три `Locked`-ячейки (`tokensMailbox`, `definitionMailbox`, `diagnosticsMailbox` — SwimCore-примитив, лока нельзя «забыть») и зеркало версий; `alive` — единственный сознательно нелоченный word-sized флаг. Actor'ы отвергнуты: потребитель синхронный (event loop редактора), синхронное ожидание актора — deadlock, а `Task`-на-чанк не гарантирует FIFO кадров.
 
-**Инкрементальная синхронизация:** Каждая правка буфера записывается как `(offset, replaced, inserted)` (хуки в `recordAction`/`applyInverse`/`applyForward` — покрывают правки, `:%s` и undo/redo). `EditorWindow.trackLSPChange()` конвертирует byte-offset в LSP-позиции `(line, character)` в UTF-16 code units (`PieceTable.utf16Col()` — проход по кешированным `[Character]` строки). `Application.notifyLSPChange()` отправляет накопленные изменения одним `didChange`; для файлов без LSP-сервера очередь сбрасывается.
+**Диагностика:** `EditorWindow.rebuildLSPIndexes()` (те же события, что и `tokenIndex`: применение токенов, активация таба, `bufferReloaded` при in-place reload) конвертирует сырые UTF-16 диапазоны в построчные графем-спаны `diagnosticsIndex`. Рендер: номер строки в гуттере красится худшей severity строки (красный/оранжевый/жёлтый), спаны подчёркиваются (SGR 4), диагностики с тегом Unnecessary (неиспользуемые импорты) рендерятся серым вместо подчёркивания — стандартная конвенция. Статус-бар показывает `cursorDiagnostic()`: чистый запрос `diagnostic(at:col:)` выбирает спан под курсором (нуль-широкие нормализованы до единичной ширины), затем дистанцию, severity, позицию — вторая проблема на строке показывается при наведении именно на неё.
+
+**Инкрементальная синхронизация:** Каждая правка буфера записывается как `(offset, replaced, inserted)` (хуки в `recordAction`/`applyInverse`/`applyForward` — покрывают правки, `:%s` и undo/redo). `EditorWindow.trackLSPChange()` конвертирует byte-offset в LSP-позиции `(line, character)` в UTF-16 code units (`PieceTable.utf16Col()` — проход по кешированным `[Character]` строки) и инвалидирует межстрочные состояния строк от строки правки (якорь — строка правки из offset, не курсор: undo/redo правит вдали от курсора). `Application.notifyLSPChange()` отправляет накопленные изменения одним `didChange`; для файлов без LSP-сервера очередь сбрасывается.
 
 **Кодировки:** Внутренне буфер хранится в UTF-8 байтах + кеш графем `[Character]` на строку. LSP работает в UTF-16 (протокольный дефолт): исходящие позиции конвертируются при записи изменения, входящие позиции токенов конвертируются UTF-16 → графемы через префикс-суммы при построении `tokenIndex` (корректно для emoji/CJK).
 
@@ -523,11 +526,12 @@ askpass вызывается git'ом с промптом в `$1`; промпт 
 
 ---
 
-### LSP/LSPProtocol.swift — Типы данных LSP
+### Core/SemanticToken.swift — Типы данных LSP
 
-Определяет Codable-структуры для LSP протокола:
-- `SemanticToken` — разделяемый тип токена (используется и LSPClient, и SyntaxTokenizer)
-- Позиции, диапазоны, capabilities, запросы/ответы
+Определяет разделяемые value-типы протокола:
+- `SemanticToken` — токен (используется и LSPClient, и SyntaxTokenizer)
+- `LSPTextChange` — инкрементальное изменение (line/char в UTF-16)
+- `LSPDiagnostic` — запись `publishDiagnostics` (range в UTF-16, severity, тег Unnecessary)
 
 LSPClient использует сырые `[String: Any]` словари для JSON вместо Codable-типов для простоты.
 

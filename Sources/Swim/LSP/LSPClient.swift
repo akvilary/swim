@@ -1,100 +1,119 @@
 import Foundation
+import SwimCore
 
-class LSPClient {
+/// One language-server process over stdio JSON-RPC.
+///
+/// Thread model (single-owner confinement):
+/// - The serial `queue` owns ALL protocol state: the byte buffer, the
+///   pending-response table, the semantic-token legend, `initialized`,
+///   the queued pre-init didOpen and the per-document version map.
+///   Frames leave as whole `Data` writes on that queue only — FIFO of
+///   `Content-Length` frames is guaranteed in both directions.
+/// - The main loop never touches that state; it drains three `Locked`
+///   mailboxes (tokens, definition, diagnostics) written by the reader
+///   and reads `lastSentVersion` from a `Locked` mirror.
+/// - Message dictionaries are built and serialized on the calling
+///   thread, so only `Data`/`String`/value types cross into `queue`
+///   closures; a response can only be parsed after the same serial
+///   block that registers its callback and writes its request.
+/// - `@unchecked Sendable` is the honest annotation for this discipline:
+///   the reference is deliberately shared across threads, the mutable
+///   state is not (queue-confined or behind `Locked`). `alive` is the
+///   one unlocked cross-thread flag — a word-sized Bool, tear-free on
+///   every supported platform.
+final class LSPClient: @unchecked Sendable {
     private var process: Process?
     private var inputPipe: Pipe?
-    private var outputPipe: Pipe?
-    private var nextId: Int = 1
-    private var pendingRequests: [Int: (Data) -> Void] = [:]
-    private var tokenTypes: [String] = []
-    private var tokenModifiers: [String] = []
-    private var initialized = false
-    private var buffer = Data()
     private var readSource: DispatchSourceRead?
     private let queue = DispatchQueue(label: "lsp.client")
     private var alive = false
 
-    var onSemanticTokens: (([SemanticToken]) -> Void)?
-    var onDiagnostics: ((String, [Any]) -> Void)?
+    // --- Queue-confined protocol state ---
+    private var pendingRequests: [Int: (Data) -> Void] = [:]
+    private var buffer = Data()
+    private var tokenTypes: [String] = []
+    private var tokenModifiers: [String] = []
+    private var initialized = false
+    /// didOpens requested before initialize completed, replayed after.
+    /// An array with per-URI dedup (latest text wins): opening a second
+    /// file during startup must not swallow the first one's session.
+    private var pendingDidOpens: [(uri: String, languageId: String, text: String)] = []
+    /// Last document version SENT per URI. Versions are per-document and
+    /// only increase, across re-opens — a tab closed and re-opened never
+    /// restarts at 0, so a late publishDiagnostics from its previous
+    /// incarnation cannot pass the staleness guard.
+    private var documentVersions: [String: Int] = [:]
 
-    private let tokensLock = NSLock()
-    private var _pendingTokens: (uri: String, tokens: [SemanticToken])?
-    var pendingTokens: (uri: String, tokens: [SemanticToken])? {
-        get {
-            tokensLock.lock()
-            defer { tokensLock.unlock() }
-            return _pendingTokens
-        }
-        set {
-            tokensLock.lock()
-            _pendingTokens = newValue
-            tokensLock.unlock()
-        }
-    }
-    var hasPendingTokens: Bool { pendingTokens != nil }
+    // --- Cross-thread cells ---
+    private let nextIdCell = Locked<Int>(1)
+    private let tokensMailbox = Locked<(uri: String, tokens: [SemanticToken])?>(nil)
+    private let definitionMailbox = Locked<LSPDefinitionResult?>(nil)
+    /// Latest publishDiagnostics per URI. Per-URI coalescing keeps the
+    /// newest batch for each file; a burst of publishes for several open
+    /// tabs is never dropped.
+    private let diagnosticsMailbox = Locked<[String: (version: Int?, diagnostics: [LSPDiagnostic])]>([:])
+    /// Main-readable copy of documentVersions for staleness guards.
+    private let sentVersions = Locked<[String: Int]>([:])
+
+    init() {}
 
     func takePendingTokens() -> (uri: String, tokens: [SemanticToken])? {
-        tokensLock.lock()
-        defer { tokensLock.unlock() }
-        let pending = _pendingTokens
-        _pendingTokens = nil
-        return pending
-    }
-
-    private let definitionLock = NSLock()
-    private var _pendingDefinition: LSPDefinitionResult?
-    var pendingDefinition: LSPDefinitionResult? {
-        get {
-            definitionLock.lock()
-            defer { definitionLock.unlock() }
-            return _pendingDefinition
-        }
-        set {
-            definitionLock.lock()
-            _pendingDefinition = newValue
-            definitionLock.unlock()
+        tokensMailbox.withLock { slot in
+            let pending = slot
+            slot = nil
+            return pending
         }
     }
-    var hasPendingDefinition: Bool { pendingDefinition != nil }
 
     func takePendingDefinition() -> LSPDefinitionResult? {
-        definitionLock.lock()
-        defer { definitionLock.unlock() }
-        let pending = _pendingDefinition
-        _pendingDefinition = nil
-        return pending
+        definitionMailbox.withLock { slot in
+            let pending = slot
+            slot = nil
+            return pending
+        }
+    }
+
+    func takePendingDiagnostics() -> [(uri: String, version: Int?, diagnostics: [LSPDiagnostic])] {
+        diagnosticsMailbox.withLock { boxes in
+            let all = boxes
+            boxes.removeAll()
+            return all.map { (uri: $0.key, version: $0.value.version, diagnostics: $0.value.diagnostics) }
+        }
+    }
+
+    /// The last didChange/didOpen version sent for the document — a
+    /// publishDiagnostics with a smaller version describes content that
+    /// was already superseded and must be dropped.
+    func lastSentVersion(for uri: String) -> Int? {
+        sentVersions.withLock { $0[uri] }
     }
 
     var isReady: Bool { initialized && alive }
     var isAlive: Bool { alive }
-
-    private var pendingDidOpen: (uri: String, languageId: String, text: String)?
 
     func start(executable: String, arguments: [String] = [], rootUri: String?, initializationOptions: [String: Any]? = nil) {
         guard FileManager.default.fileExists(atPath: executable) else { return }
         guard FileManager.default.isExecutableFile(atPath: executable) else { return }
 
         let process = Process()
-        inputPipe = Pipe()
-        outputPipe = Pipe()
+        let input = Pipe()
+        let output = Pipe()
 
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        process.standardInput = inputPipe
-        process.standardOutput = outputPipe
+        process.standardInput = input
+        process.standardOutput = output
         process.standardError = FileHandle.nullDevice
 
-        guard let outputPipe = outputPipe else { return }
-
-        let source = DispatchSource.makeReadSource(fileDescriptor: outputPipe.fileHandleForReading.fileDescriptor, queue: queue)
-        nonisolated(unsafe) let weakSelf = self
-        source.setEventHandler { [weak weakSelf] in
-            let data = outputPipe.fileHandleForReading.availableData
+        let source = DispatchSource.makeReadSource(fileDescriptor: output.fileHandleForReading.fileDescriptor, queue: queue)
+        source.setEventHandler { [weak self] in
+            let data = output.fileHandleForReading.availableData
             if data.isEmpty { return }
-            weakSelf?.handleData(data)
+            self?.handleData(data)
         }
         source.resume()
         readSource = source
+        inputPipe = input
 
         do {
             try process.run()
@@ -128,7 +147,8 @@ class LSPClient {
                     "tokenTypes": [] as [String],
                     "tokenModifiers": [] as [String],
                     "formats": ["relative"] as [String]
-                ] as [String: Any]
+                ] as [String: Any],
+                "publishDiagnostics": true
             ] as [String: Any]
         ]
 
@@ -152,6 +172,7 @@ class LSPClient {
         }
     }
 
+    /// Must run on `queue` (protocol state).
     private func handleInitializeResponse(_ data: Data) {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = json["result"] as? [String: Any] else { return }
@@ -166,104 +187,119 @@ class LSPClient {
 
         sendNotification(method: "initialized", params: ["capabilities": [:] as [String: Any]])
 
-        if let pending = pendingDidOpen {
-            pendingDidOpen = nil
-            openDocument(uri: pending.uri, languageId: pending.languageId, text: pending.text)
+        let replay = pendingDidOpens
+        pendingDidOpens.removeAll()
+        for doc in replay {
+            openDocument(uri: doc.uri, languageId: doc.languageId, text: doc.text)
         }
     }
 
     func openDocument(uri: String, languageId: String, text: String) {
-        guard initialized else {
-            pendingDidOpen = (uri: uri, languageId: languageId, text: text)
-            return
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard self.initialized else {
+                // Not initialized yet: stash for replay after initialize —
+                // decided ON the queue, so a response being processed right
+                // now cannot swallow the stash or lose the didOpen. A
+                // re-open of the same URI replaces the stashed text.
+                self.pendingDidOpens.removeAll { $0.uri == uri }
+                self.pendingDidOpens.append((uri: uri, languageId: languageId, text: text))
+                return
+            }
+            let version = self.nextVersion(uri)
+            guard let frame = Self.frame(method: "textDocument/didOpen", params: [
+                "textDocument": [
+                    "uri": uri,
+                    "languageId": languageId,
+                    "version": version,
+                    "text": text
+                ] as [String: Any]
+            ]) else { return }
+            self.write(frame)
+            self.requestSemanticTokens(uri: uri)
         }
-        let params: [String: Any] = [
-            "textDocument": [
-                "uri": uri,
-                "languageId": languageId,
-                "version": 0,
-                "text": text
-            ] as [String: Any]
-        ]
-        sendNotification(method: "textDocument/didOpen", params: params)
-        requestSemanticTokens(uri: uri)
     }
 
-    func changeDocument(uri: String, version: Int, changes: [LSPTextChange]) {
-        guard initialized else { return }
-        let contentChanges: [[String: Any]] = changes.map { change in
-            [
-                "range": [
-                    "start": ["line": change.startLine, "character": change.startChar] as [String: Any],
-                    "end": ["line": change.endLine, "character": change.endChar]
+    func changeDocument(uri: String, changes: [LSPTextChange]) {
+        queue.async { [weak self] in
+            guard let self, self.initialized else { return }
+            let version = self.nextVersion(uri)
+            let contentChanges: [[String: Any]] = changes.map { change in
+                [
+                    "range": [
+                        "start": ["line": change.startLine, "character": change.startChar] as [String: Any],
+                        "end": ["line": change.endLine, "character": change.endChar]
+                    ] as [String: Any],
+                    "text": change.text
+                ] as [String: Any]
+            }
+            guard let frame = Self.frame(method: "textDocument/didChange", params: [
+                "textDocument": [
+                    "uri": uri,
+                    "version": version
                 ] as [String: Any],
-                "text": change.text
-            ] as [String: Any]
+                "contentChanges": contentChanges
+            ] as [String: Any]) else { return }
+            self.write(frame)
         }
-        let params: [String: Any] = [
-            "textDocument": [
-                "uri": uri,
-                "version": version
-            ] as [String: Any],
-            "contentChanges": contentChanges
-        ]
-        sendNotification(method: "textDocument/didChange", params: params)
     }
 
     /// Full-sync didChange after an external rewrite (e.g. a git discard
     /// from the panel reloaded the buffer): a contentChange without a
     /// range replaces the whole document, per the LSP spec. Cached
     /// semantic tokens are stale — re-request them.
-    func reloadDocument(uri: String, version: Int, text: String) {
-        guard initialized else { return }
-        let params: [String: Any] = [
-            "textDocument": [
-                "uri": uri,
-                "version": version
-            ] as [String: Any],
-            "contentChanges": [["text": text] as [String: Any]]
-        ]
-        sendNotification(method: "textDocument/didChange", params: params)
-        requestSemanticTokens(uri: uri)
+    func reloadDocument(uri: String, text: String) {
+        queue.async { [weak self] in
+            guard let self, self.initialized else { return }
+            let version = self.nextVersion(uri)
+            guard let frame = Self.frame(method: "textDocument/didChange", params: [
+                "textDocument": [
+                    "uri": uri,
+                    "version": version
+                ] as [String: Any],
+                "contentChanges": [["text": text] as [String: Any]]
+            ] as [String: Any]) else { return }
+            self.write(frame)
+            self.requestSemanticTokens(uri: uri)
+        }
+    }
+
+    /// Must run on `queue`. Advances and mirrors the per-document version.
+    private func nextVersion(_ uri: String) -> Int {
+        let version = (documentVersions[uri] ?? 0) + 1
+        documentVersions[uri] = version
+        sentVersions.withLock { $0[uri] = version }
+        return version
     }
 
     func requestSemanticTokens(uri: String) {
-        guard initialized else { return }
-        let params: [String: Any] = [
-            "textDocument": ["uri": uri] as [String: Any]
-        ]
-        sendRequest(method: "textDocument/semanticTokens/full", params: params) { [weak self] data in
+        sendRequest(method: "textDocument/semanticTokens/full",
+                    params: ["textDocument": ["uri": uri] as [String: Any]]) { [weak self] data in
             self?.handleSemanticTokensResponse(data, uri: uri)
         }
     }
 
     func closeDocument(uri: String) {
-        guard initialized else { return }
-        let params: [String: Any] = [
-            "textDocument": ["uri": uri] as [String: Any]
-        ]
-        sendNotification(method: "textDocument/didClose", params: params)
+        sendNotification(method: "textDocument/didClose",
+                         params: ["textDocument": ["uri": uri] as [String: Any]])
     }
 
     func requestDefinition(uri: String, line: Int, character: Int) {
-        guard initialized else { return }
-        let params: [String: Any] = [
-            "textDocument": ["uri": uri] as [String: Any],
-            "position": ["line": line, "character": character] as [String: Any]
-        ]
-        sendRequest(method: "textDocument/definition", params: params) { [weak self] data in
+        sendRequest(method: "textDocument/definition",
+                    params: [
+                        "textDocument": ["uri": uri] as [String: Any],
+                        "position": ["line": line, "character": character] as [String: Any]
+                    ]) { [weak self] data in
             self?.handleDefinitionResponse(data)
         }
     }
 
     /// Handles Location | Location[] | LocationLink[] | null result shapes.
+    /// Must run on `queue`.
     private func handleDefinitionResponse(_ data: Data) {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            pendingDefinition = .notFound
-            return
-        }
-        guard let result = json["result"], !(result is NSNull) else {
-            pendingDefinition = .notFound
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = json["result"], !(result is NSNull) else {
+            definitionMailbox.withLock { $0 = .notFound }
             return
         }
         var location = result as? [String: Any]
@@ -278,12 +314,13 @@ class LSPClient {
               let start = range["start"] as? [String: Any],
               let line = start["line"] as? Int,
               let character = start["character"] as? Int else {
-            pendingDefinition = .notFound
+            definitionMailbox.withLock { $0 = .notFound }
             return
         }
-        pendingDefinition = .found(LSPDefinition(uri: uri, line: line, charUtf16: character))
+        definitionMailbox.withLock { $0 = .found(LSPDefinition(uri: uri, line: line, charUtf16: character)) }
     }
 
+    /// Must run on `queue`.
     private func handleSemanticTokensResponse(_ data: Data, uri: String) {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = json["result"] as? [String: Any],
@@ -326,45 +363,50 @@ class LSPClient {
             i += 5
         }
 
-        pendingTokens = (uri: uri, tokens: tokens)
+        tokensMailbox.withLock { $0 = (uri: uri, tokens: tokens) }
     }
 
-    private func sendRequest(method: String, params: [String: Any], callback: @escaping (Data) -> Void) {
-        let id = nextId
-        nextId += 1
-        pendingRequests[id] = callback
+    /// Serializes one JSON-RPC message with its `Content-Length` frame on
+    /// the calling thread — dictionaries never cross into queue closures.
+    private static func frame(id: Int? = nil, method: String, params: [String: Any]) -> Data? {
+        var message: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": params]
+        if let id { message["id"] = id }
+        guard let data = try? JSONSerialization.data(withJSONObject: message) else { return nil }
+        var frame = "Content-Length: \(data.count)\r\n\r\n".data(using: .ascii)!
+        frame.append(data)
+        return frame
+    }
 
-        let message: [String: Any] = [
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params
-        ]
-
-        sendMessage(message)
+    /// Builds and serializes on the caller, registers the callback and
+    /// writes on `queue` — one serial block, so the response can only be
+    /// parsed after both (the pre-fix code registered from the main
+    /// thread, racing the reader's removeValue and risking dictionary
+    /// corruption).
+    private func sendRequest(method: String, params: [String: Any], callback: @escaping @Sendable (Data) -> Void) {
+        let id = nextIdCell.withLock { cell in
+            let id = cell
+            cell += 1
+            return id
+        }
+        guard let frame = Self.frame(id: id, method: method, params: params) else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.pendingRequests[id] = callback
+            self.write(frame)
+        }
     }
 
     private func sendNotification(method: String, params: [String: Any]) {
-        let message: [String: Any] = [
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params
-        ]
-        sendMessage(message)
+        guard let frame = Self.frame(method: method, params: params) else { return }
+        queue.async { [weak self] in
+            self?.write(frame)
+        }
     }
 
-    private func sendMessage(_ message: [String: Any]) {
-        guard alive, let inputPipe = inputPipe,
-              let data = try? JSONSerialization.data(withJSONObject: message) else { return }
-
-        let header = "Content-Length: \(data.count)\r\n\r\n"
-        let headerData = header.data(using: .ascii)!
-        let pipe = inputPipe
-
-        queue.async {
-            pipe.fileHandleForWriting.write(headerData)
-            pipe.fileHandleForWriting.write(data)
-        }
+    /// Must run on `queue`: whole-frame writes keep frames from interleaving.
+    private func write(_ frame: Data) {
+        guard alive, let inputPipe else { return }
+        inputPipe.fileHandleForWriting.write(frame)
     }
 
     private func handleData(_ data: Data) {
@@ -407,6 +449,7 @@ class LSPClient {
         }
     }
 
+    /// Must run on `queue`.
     private func handleMessage(_ data: Data) {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
 
@@ -416,16 +459,32 @@ class LSPClient {
             }
         }
 
-        if let method = json["method"] as? String, let params = json["params"] as? [String: Any] {
-            switch method {
-            case "textDocument/publishDiagnostics":
-                if let uri = params["uri"] as? String,
-                   let diagnostics = params["diagnostics"] as? [Any] {
-                    onDiagnostics?(uri, diagnostics)
-                }
-            default:
-                break
-            }
+        if let method = json["method"] as? String, let params = json["params"] as? [String: Any],
+           method == "textDocument/publishDiagnostics",
+           let uri = params["uri"] as? String {
+            let version = params["version"] as? Int
+            let decoded = (params["diagnostics"] as? [Any] ?? []).compactMap(Self.decodeDiagnostic)
+            diagnosticsMailbox.withLock { $0[uri] = (version, decoded) }
         }
+    }
+
+    private static func decodeDiagnostic(_ raw: Any) -> LSPDiagnostic? {
+        guard let dict = raw as? [String: Any],
+              let range = dict["range"] as? [String: Any],
+              let start = range["start"] as? [String: Any],
+              let startLine = start["line"] as? Int,
+              let startChar = start["character"] as? Int,
+              let end = range["end"] as? [String: Any],
+              let endLine = end["line"] as? Int,
+              let endChar = end["character"] as? Int else { return nil }
+        return LSPDiagnostic(
+            startLine: startLine,
+            startChar: startChar,
+            endLine: endLine,
+            endChar: endChar,
+            severity: dict["severity"] as? Int ?? 1,
+            unnecessary: (dict["tags"] as? [Int])?.contains(1) ?? false,
+            message: dict["message"] as? String ?? ""
+        )
     }
 }

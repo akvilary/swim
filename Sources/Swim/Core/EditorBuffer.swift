@@ -21,6 +21,7 @@ final class EditorBuffer {
     var redoStack: [(offset: Int, deleted: String, inserted: String)] = []
     var lspPendingChanges: [LSPTextChange] = []
     var semanticTokens: [SemanticToken] = []
+    var diagnostics: [LSPDiagnostic] = []
     var markdownCache = SyntaxTokenizer.MarkdownCache()
     /// State of multi-line strings before each line; built lazily for the
     /// visible viewport, truncated on edits below the cursor.

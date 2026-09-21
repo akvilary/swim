@@ -58,6 +58,7 @@ class EditorWindow: Window {
         set { tabs.active.lspPendingChanges = newValue }
     }
     var semanticTokens: [SemanticToken] { tabs.active.semanticTokens }
+    var lspDiagnostics: [LSPDiagnostic] { tabs.active.diagnostics }
     private var markdownCache: SyntaxTokenizer.MarkdownCache {
         get { tabs.active.markdownCache }
         set { tabs.active.markdownCache = newValue }
@@ -86,11 +87,28 @@ class EditorWindow: Window {
     /// cap would render stale converted tokens against the new content).
     private var tokenIndex: [Int: [SemanticToken]] = [:]
 
+    /// One diagnostic clipped to a single line, in grapheme indices.
+    /// `unnecessary` diagnostics (LSP tag 1 — unused imports) render as
+    /// greyed text; the rest underline their range.
+    private struct DiagnosticSpan {
+        let startChar: Int
+        let endChar: Int
+        let severity: Int
+        let unnecessary: Bool
+        let message: String
+    }
+
+    /// Converted diagnostic spans of the ACTIVE tab, by line. Same
+    /// invariant as tokenIndex: rebuilt together with it by
+    /// rebuildLSPIndexes, never read for any other tab's content.
+    private var diagnosticsIndex: [Int: [DiagnosticSpan]] = [:]
+
     var lastError: String?
     var tabCount: Int { tabs.count }
 
-    private func rebuildTokenIndex() {
+    private func rebuildLSPIndexes() {
         tokenIndex.removeAll(keepingCapacity: true)
+        diagnosticsIndex.removeAll(keepingCapacity: true)
         guard let buf = buffer else { return }
 
         // LSP servers classify boolean/null literals as keywords; they are
@@ -173,6 +191,45 @@ class EditorWindow: Window {
                 ))
             }
             tokenIndex[line] = converted
+        }
+
+        // Diagnostics: raw UTF-16 server ranges → per-line grapheme spans.
+        // A range crossing lines contributes a span to every line it
+        // touches (start/end clipped to that line); zero-length spans
+        // stay gutter-only (startChar == endChar never underlines).
+        for diag in lspDiagnostics {
+            let firstLine = max(0, min(diag.startLine, diag.endLine))
+            let lastLine = max(diag.startLine, diag.endLine)
+            guard firstLine < buf.lineCount else { continue }
+            for line in firstLine...min(lastLine, buf.lineCount - 1) {
+                let chars = buf.getLineChars(line)
+                var units = 0
+                var prefix = [Int](repeating: 0, count: chars.count + 1)
+                for (i, c) in chars.enumerated() {
+                    units += c.isASCII ? 1 : c.utf16.count
+                    prefix[i + 1] = units
+                }
+                func grapheme(ofUtf16 target: Int) -> Int {
+                    var lo = 0
+                    var hi = chars.count + 1
+                    while lo < hi {
+                        let mid = (lo + hi) / 2
+                        if prefix[mid] <= target { lo = mid + 1 } else { hi = mid }
+                    }
+                    return max(0, lo - 1)
+                }
+                let start = line == diag.startLine ? grapheme(ofUtf16: diag.startChar) : 0
+                let end = line == diag.endLine
+                    ? min(grapheme(ofUtf16: diag.endChar), chars.count)
+                    : chars.count
+                diagnosticsIndex[line, default: []].append(DiagnosticSpan(
+                    startChar: min(start, chars.count),
+                    endChar: max(min(start, chars.count), min(end, chars.count)),
+                    severity: diag.severity,
+                    unnecessary: diag.unnecessary,
+                    message: diag.message
+                ))
+            }
         }
     }
 
@@ -273,7 +330,7 @@ class EditorWindow: Window {
     func applySemanticTokens(_ tokens: [SemanticToken], to target: EditorBuffer) -> Bool {
         target.semanticTokens = tokens
         guard target === tabs.active else { return false }
-        rebuildTokenIndex()
+        rebuildLSPIndexes()
         dirty = true
         return true
     }
@@ -284,10 +341,57 @@ class EditorWindow: Window {
     /// for files at/above the 50000-line cap the empty `semanticTokens`
     /// gate does NOT force the builtin path, so stale tokens would render
     /// against the new text until the LSP answers. Non-active tabs need
-    /// nothing — activation rebuilds.
+    /// nothing — activation rebuilds. (The fresh buffer arrives with
+    /// empty diagnostics too; the server re-publishes for the new
+    /// content, and version-guarded applies keep it monotone.)
     func bufferReloaded(_ buffer: EditorBuffer) {
         guard buffer === tabs.active else { return }
-        rebuildTokenIndex()
+        rebuildLSPIndexes()
+    }
+
+    /// Routes a diagnostics batch to the owning tab — the exact shape of
+    /// applySemanticTokens (a publish is all-or-nothing per file, so the
+    /// array REPLACES the previous batch; an empty array clears).
+    @discardableResult
+    func applyDiagnostics(_ diagnostics: [LSPDiagnostic], to target: EditorBuffer) -> Bool {
+        target.diagnostics = diagnostics
+        guard target === tabs.active else { return false }
+        rebuildLSPIndexes()
+        dirty = true
+        return true
+    }
+
+    /// The diagnostic nearest a position (line, grapheme column):
+    /// a span containing the position wins — zero-length spans are
+    /// normalized to one-grapheme width so a position sitting exactly on
+    /// them matches and both neighbors are one step away; then column
+    /// distance to the span; then severity (lower = more severe); then
+    /// span start. Ties are resolved deterministically by server order.
+    /// Pure query over diagnosticsIndex — no cursor state involved.
+    func diagnostic(at line: Int, col: Int) -> (message: String, severity: Int)? {
+        let spans = diagnosticsIndex[line] ?? []
+        guard !spans.isEmpty else { return nil }
+        func distance(_ s: DiagnosticSpan) -> Int {
+            let start = s.startChar
+            let end = max(s.endChar, s.startChar + 1)
+            if col >= start && col < end { return 0 }
+            return col < start ? start - col : col - end + 1
+        }
+        guard let best = spans.min(by: { lhs, rhs in
+            let dl = distance(lhs), dr = distance(rhs)
+            if dl != dr { return dl < dr }
+            if lhs.severity != rhs.severity { return lhs.severity < rhs.severity }
+            return lhs.startChar < rhs.startChar
+        }) else { return nil }
+        return (message: best.message, severity: best.severity)
+    }
+
+    /// The diagnostic at the cursor — what the status bar shows. The
+    /// gutter keeps showing the line's WORST severity; this answers the
+    /// pointed question, so a hint under the cursor outranks an error
+    /// elsewhere on the line.
+    func cursorDiagnostic() -> (message: String, severity: Int)? {
+        diagnostic(at: cursorLine, col: cursorCol)
     }
 
     func tabInfos() -> [(name: String, active: Bool, modified: Bool)] {
@@ -299,7 +403,7 @@ class EditorWindow: Window {
     private var lastActiveFilePath: String?
 
     private func activateCurrentTab() {
-        rebuildTokenIndex()
+        rebuildLSPIndexes()
         guard let buf = buffer else { return }
         if cursorLine >= buf.lineCount { cursorLine = max(0, buf.lineCount - 1) }
         cursorCol = min(cursorCol, buf.lineCharLength(line: cursorLine))
@@ -1279,14 +1383,28 @@ class EditorWindow: Window {
 
             var colOffset = displayColForChar(line: lineNum, charCol: visStart) - scrollX
             var tokenIdx = 0
+            let diagSpans = diagnosticsIndex[lineNum] ?? []
+            func spanStyle(at col: Int) -> (underline: Bool, grey: Bool) {
+                var underline = false
+                var grey = false
+                for span in diagSpans where col >= span.startChar && col < span.endChar {
+                    if span.unnecessary { grey = true } else { underline = true }
+                }
+                return (underline, grey)
+            }
             for i in visStart..<chars.count {
                 if colOffset >= textWidth { break }
                 let absCol = i
                 while tokenIdx < tokens.count && tokens[tokenIdx].startChar + tokens[tokenIdx].length <= absCol {
                     tokenIdx += 1
                 }
+                let style = spanStyle(at: absCol)
                 let tokenColor: Color
-                if tokenIdx < tokens.count && absCol >= tokens[tokenIdx].startChar {
+                if style.grey {
+                    // LSP Unnecessary tag (unused imports): the standard
+                    // greyed-out rendering, not an underline.
+                    tokenColor = Theme.comment
+                } else if tokenIdx < tokens.count && absCol >= tokens[tokenIdx].startChar {
                     tokenColor = colorForTokenType(tokens[tokenIdx].type)
                 } else {
                     tokenColor = Theme.fg
@@ -1306,12 +1424,15 @@ class EditorWindow: Window {
                     guard w > 0 else { continue }
                     let cellX = lnWidth + colOffset
                     if cellX < width {
-                        setCell(row + contentTop, cellX, Cell.colored(chars[i], fg: tokenColor, bg: Theme.bg))
+                        var cell = Cell.colored(chars[i], fg: tokenColor, bg: Theme.bg)
+                        cell.underline = style.underline
+                        setCell(row + contentTop, cellX, cell)
                         if w == 2, cellX + 1 < width {
                             var cont = Cell.blank
                             cont.fg = tokenColor
                             cont.bg = Theme.bg
                             cont.wideContinuation = true
+                            cont.underline = style.underline
                             setCell(row + contentTop, cellX + 1, cont)
                         }
                     }
@@ -1330,7 +1451,15 @@ class EditorWindow: Window {
         for row in 0..<contentHeight {
             let lineNum = scrollY + row
             let number = lineNum < lineCount ? lineNum + 1 : nil
-            let fg: Color = lineNum == cursorLine ? Theme.fg : Theme.comment
+            let fg: Color
+            if let worst = (diagnosticsIndex[lineNum] ?? []).map(\.severity).min() {
+                // Diagnostic gutter: red for errors, orange for warnings,
+                // yellow for info/hints — wins over the cursor-line color;
+                // the cursor itself still shows position.
+                fg = worst <= 1 ? Theme.red : (worst == 2 ? Theme.orange : Theme.yellow)
+            } else {
+                fg = lineNum == cursorLine ? Theme.fg : Theme.comment
+            }
             drawLineNumberRow(row + contentTop, number: number, lnWidth: lnWidth, fg: fg, bg: Theme.bg)
         }
     }

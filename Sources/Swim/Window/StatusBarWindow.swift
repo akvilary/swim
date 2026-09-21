@@ -23,6 +23,11 @@ class StatusBarWindow: Window {
 
     var errorMessage: String?
 
+    /// Diagnostic of the editor's cursor line (message + LSP severity:
+    /// 1 error, 2 warning, 3 info, 4 hint). Shown in the center block
+    /// below transient errors and the command line, above branch info.
+    var diagnosticMessage: (text: String, severity: Int)?
+
     override func update() {
         commandCaretScreenCol = nil
         guard height > 0 else { return }
@@ -89,6 +94,10 @@ class StatusBarWindow: Window {
             centerBold = false
             let caret = modeLabel.count + 1 + prefix.count + source.commandCursorPos
             if caret < width { commandCaretScreenCol = caret }
+        } else if let diag = diagnosticMessage {
+            let fg = diag.severity <= 1 ? Theme.red : (diag.severity == 2 ? Theme.orange : Theme.yellow)
+            centerParts = [(" \(diag.text) ", fg: fg)]
+            centerBold = true
         } else if let branch = branch {
             var parts: [(text: String, fg: Color)] = [(" \(branch)", fg: Theme.fgDark)]
             if branchAdded > 0 { parts.append((" +\(branchAdded)", fg: Theme.green)) }
