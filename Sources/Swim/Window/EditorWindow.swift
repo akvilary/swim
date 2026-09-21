@@ -701,18 +701,22 @@ class EditorWindow: Window {
 
     private func trackLSPChange(offset: Int, replaced: String, inserted: String) {
         guard let buf = buffer else { return }
-        // The edit invalidates multi-line string state from its line on;
-        // states before the cursor line stay valid. removeSubrange goes to
-        // the stored property directly — through the computed accessor it
-        // would COW-copy the whole array per keystroke.
+        let (line, byteCol) = buf.offsetToLineCol(offset)
+        // The edit rewrites line `line` itself, so its end-state entry and
+        // every later one are stale; entries strictly above the edit are
+        // untouched by construction and survive. The anchor is the edit
+        // line derived from `offset` — NOT the cursor line: undo/redo and
+        // other offset-addressed edits can rewrite lines far from where
+        // the cursor sits now. removeSubrange goes to the stored property
+        // directly — through the computed accessor it would COW-copy the
+        // whole array per keystroke.
         let activeTab = tabs.active
         if !activeTab.mlStringStates.isEmpty {
-            let keep = min(activeTab.mlStringStates.count, cursorLine + 1)
+            let keep = min(activeTab.mlStringStates.count, line)
             if keep < activeTab.mlStringStates.count {
                 activeTab.mlStringStates.removeSubrange(keep...)
             }
         }
-        let (line, byteCol) = buf.offsetToLineCol(offset)
         let startChar = buf.utf16Col(line: line, byteCol: byteCol)
         var endLine = line
         var endChar: Int
