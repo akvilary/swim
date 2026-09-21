@@ -51,7 +51,10 @@ class Space {
     }
 
     func focusable() -> [Window] {
-        visibleWindows.filter { !($0 is StatusBarWindow) && !($0 is TabBarWindow) }
+        // A window with zero rows is squeezed out of the layout (the
+        // panels took its space) — it renders nothing, so focusing it
+        // would send keys into the void.
+        visibleWindows.filter { !($0 is StatusBarWindow) && !($0 is TabBarWindow) && $0.height > 0 }
     }
 }
 

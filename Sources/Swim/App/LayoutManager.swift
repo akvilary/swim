@@ -59,26 +59,52 @@ struct LayoutManager {
             }
         }
 
+        // Single invariant: everything lives strictly above the status
+        // bar (its row is untouchable, whatever the window count). The
+        // bottom stack keeps its desired heights while they fit and
+        // shrinks waterfall-style only on a true overflow — h/2 + h/2
+        // alone overflows every terminal <= 50 rows, and stacking
+        // top-down used to run the last window past the status row,
+        // covering it. The editor/explorer area gets the remainder and
+        // may legitimately be zero rows: the panels then start from the
+        // very top of the screen instead of leaving a dead sliver.
+        let availH = h - statusH
         var gitH = 0
         var cmdH = 0
         var termH = 0
         if showGit { gitH = halfScreen == .git ? h / 2 : min(25, h / 2) }
         if showCommand { cmdH = halfScreen == .command ? h / 2 : min(25, h / 2) }
         if showTerminal { termH = halfScreen == .terminal ? h / 2 : min(25, h / 2) }
+        var heights = [gitH, cmdH, termH]
+        if heights.reduce(0, +) > availH {
+            let shownIdx = heights.indices.filter { heights[$0] > 0 }
+            var remaining = availH
+            for (pos, idx) in shownIdx.enumerated() {
+                // Fair share of what is left among the windows still to
+                // size; never below one row, never more than remaining.
+                let fair = max(1, remaining / (shownIdx.count - pos))
+                heights[idx] = min(heights[idx], fair)
+                remaining -= heights[idx]
+            }
+        }
+        gitH = heights[0]
+        cmdH = heights[1]
+        termH = heights[2]
 
-        let tabH = showTabBar ? 1 : 0
-        let editorH = max(1, h - statusH - gitH - cmdH - termH - tabH)
-        let explorerH = max(1, h - statusH - gitH - cmdH - termH)
+        let topH = max(0, availH - gitH - cmdH - termH)
+        let tabH = showTabBar ? min(1, topH) : 0
+        let editorH = max(0, topH - tabH)
+        let explorerH = topH
 
         let explorer = WindowLayout(x: 0, y: 0, width: explorerW, height: explorerH)
-        let tabbar = showTabBar ? WindowLayout(x: editorX, y: 0, width: editorW, height: 1) : zero
+        let tabbar = WindowLayout(x: editorX, y: 0, width: editorW, height: tabH)
         let editor = WindowLayout(x: editorX, y: tabH, width: editorW, height: editorH)
 
-        var bottomY = explorerH
+        var bottomY = topH
         let git = WindowLayout(x: 0, y: bottomY, width: w, height: gitH)
-        if showGit { bottomY += gitH }
+        bottomY += gitH
         let command = WindowLayout(x: 0, y: bottomY, width: w, height: cmdH)
-        if showCommand { bottomY += cmdH }
+        bottomY += cmdH
         let terminal = WindowLayout(x: 0, y: bottomY, width: w, height: termH)
 
         let status = WindowLayout(x: 0, y: h - statusH, width: w, height: statusH)

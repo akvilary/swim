@@ -171,8 +171,11 @@ class Window {
     func resize(x: Int, y: Int, width: Int, height: Int) {
         self.x = x
         self.y = y
-        self.width = max(1, width)
-        self.height = max(1, height)
+        // Zero is legitimate: a squeezed-out window (the layout gave its
+        // rows to the panels) draws nothing — every cell/draw/caret path
+        // is bounds-guarded. Never negative.
+        self.width = max(0, width)
+        self.height = max(0, height)
         self.cells = Array(repeating: .blank, count: self.width * self.height)
         self.dirty = true
     }
