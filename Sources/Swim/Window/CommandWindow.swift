@@ -102,6 +102,12 @@ class CommandWindow: Window {
         return width >= 45 ? kind.statusLabel : kind.statusLabelNarrow
     }
 
+    /// The password is never shown — asterisks of the same length keep
+    /// the caret honest; the login stays visible as usual.
+    override func masksCommandLine() -> Bool {
+        inputKind == .password
+    }
+
     override func update() {
         clear()
 

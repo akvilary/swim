@@ -80,7 +80,12 @@ class StatusBarWindow: Window {
             // doubles as the marker for that repurposed surface.
             let isCredential = source.commandModeLabel() != nil
             let prefix = (commandText.hasPrefix("/") || isCredential) ? "" : ":"
-            centerParts = [(" \(prefix)\(commandText)", fg: Theme.fg)]
+            // Masked input renders asterisks of the same Character count,
+            // so the caret math over the real buffer stays exact.
+            let display = source.masksCommandLine()
+                ? String(repeating: "*", count: commandText.count)
+                : commandText
+            centerParts = [(" \(prefix)\(display)", fg: Theme.fg)]
             centerBold = false
             let caret = modeLabel.count + 1 + prefix.count + source.commandCursorPos
             if caret < width { commandCaretScreenCol = caret }

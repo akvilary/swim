@@ -145,6 +145,12 @@ class Window {
     /// surface is a credential input, not a ":" command.
     func commandModeLabel() -> String? { nil }
 
+    /// Whether the command line displays its content masked — one
+    /// asterisk per character, the same length, so the caret position
+    /// stays exact. The buffer itself keeps the real text (editing and
+    /// submit work unchanged); only the status-bar rendering masks.
+    func masksCommandLine() -> Bool { false }
+
     /// Executes a command typed in this window's command line. The base
     /// implementation covers the window-management commands shared by
     /// every window; editors override it to add file commands.
