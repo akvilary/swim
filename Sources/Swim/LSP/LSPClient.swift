@@ -38,6 +38,11 @@ final class LSPClient: @unchecked Sendable {
     /// An array with per-URI dedup (latest text wins): opening a second
     /// file during startup must not swallow the first one's session.
     private var pendingDidOpens: [(uri: String, languageId: String, text: String)] = []
+    /// A workspace/didChangeConfiguration frame requested before
+    /// initialize completed — sent right before the didOpen replay, so
+    /// replayed documents are analyzed under the final settings. Single
+    /// slot, last write wins (settings are all-or-nothing per server).
+    private var pendingConfiguration: Data?
     /// Last document version SENT per URI. Versions are per-document and
     /// only increase, across re-opens — a tab closed and re-opened never
     /// restarts at 0, so a late publishDiagnostics from its previous
@@ -91,7 +96,7 @@ final class LSPClient: @unchecked Sendable {
     var isReady: Bool { initialized && alive }
     var isAlive: Bool { alive }
 
-    func start(executable: String, arguments: [String] = [], rootUri: String?, initializationOptions: [String: Any]? = nil) {
+    func start(executable: String, arguments: [String] = [], rootUri: String?) {
         guard FileManager.default.fileExists(atPath: executable) else { return }
         guard FileManager.default.isExecutableFile(atPath: executable) else { return }
 
@@ -127,7 +132,7 @@ final class LSPClient: @unchecked Sendable {
             try process.run()
             self.process = process
             self.alive = true
-            sendInitialize(rootUri: rootUri, initializationOptions: initializationOptions)
+            sendInitialize(rootUri: rootUri)
         } catch {
             self.process = nil
         }
@@ -141,7 +146,7 @@ final class LSPClient: @unchecked Sendable {
         }
     }
 
-    private func sendInitialize(rootUri: String?, initializationOptions: [String: Any]?) {
+    private func sendInitialize(rootUri: String?) {
         // LSP 3.16: client semanticTokens capabilities require the
         // `requests` object; `full`/`delta` live inside it. Putting them at
         // the top level (server-provider shape) makes sourcekit-lsp 6.2+
@@ -174,9 +179,6 @@ final class LSPClient: @unchecked Sendable {
             let name = (uri as NSString).lastPathComponent
             params["workspaceFolders"] = [["uri": uri, "name": name.isEmpty ? "workspace" : name]]
         }
-        if let options = initializationOptions {
-            params["initializationOptions"] = options
-        }
 
         sendRequest(method: "initialize", params: params) { [weak self] data in
             self?.handleInitializeResponse(data)
@@ -198,10 +200,33 @@ final class LSPClient: @unchecked Sendable {
 
         sendNotification(method: "initialized", params: ["capabilities": [:] as [String: Any]])
 
+        if let config = pendingConfiguration {
+            pendingConfiguration = nil
+            write(config)
+        }
+
         let replay = pendingDidOpens
         pendingDidOpens.removeAll()
         for doc in replay {
             openDocument(uri: doc.uri, languageId: doc.languageId, text: doc.text)
+        }
+    }
+
+    /// Pushes workspace settings (e.g. `{"pyright": {...}}`) via
+    /// workspace/didChangeConfiguration — the only settings channel
+    /// basedpyright actually reads: its initializationOptions carries
+    /// nothing but disablePullDiagnostics. Safe before initialize: the
+    /// frame is queued and replayed once the handshake completes.
+    func applyWorkspaceSettings(_ sections: [String: Any]) {
+        guard let frame = Self.frame(method: "workspace/didChangeConfiguration",
+                                     params: ["settings": sections]) else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard self.initialized else {
+                self.pendingConfiguration = frame
+                return
+            }
+            self.write(frame)
         }
     }
 

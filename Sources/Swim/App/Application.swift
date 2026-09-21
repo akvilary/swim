@@ -490,12 +490,10 @@ class Application: WindowDelegate {
 
         if let path = findExecutable(paths: basedPyrightPaths, command: "basedpyright-langserver") {
             let client = LSPClient()
-            client.start(
-                executable: path,
-                arguments: ["--stdio"],
-                rootUri: "file://\(rootPath)",
-                initializationOptions: pythonInitializationOptions(rootPath: rootPath)
-            )
+            client.start(executable: path, arguments: ["--stdio"], rootUri: "file://\(rootPath)")
+            if let settings = pythonWorkspaceSettings(rootPath: rootPath) {
+                client.applyWorkspaceSettings(settings)
+            }
             lspClients["python"] = client
         }
 
@@ -509,31 +507,25 @@ class Application: WindowDelegate {
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
     }
 
-    /// Builds basedpyright initializationOptions:
-    /// - diagnosticMode openFilesOnly — basedpyright (unlike pyright) analyzes
-    ///   the whole workspace by default, burning a CPU core for the entire
-    ///   session on large monorepos; we don't display diagnostics yet and
-    ///   definitions work with open-files-only analysis.
-    /// - extraPaths from pytest's `[tool.pytest.ini_options].pythonpath`.
-    /// Returns nil when the server has its own config ([tool.basedpyright],
-    /// [tool.pyright] or pyrightconfig.json) — that config must win.
-    private func pythonInitializationOptions(rootPath: String) -> [String: Any]? {
-        let pyprojectPath = rootPath + "/pyproject.toml"
-        guard let text = try? String(contentsOfFile: pyprojectPath, encoding: .utf8) else {
-            return ["settings": [["uri": "file://\(rootPath)",
-                                  "settings": ["diagnosticMode": "openFilesOnly"]]]]
+    /// Builds basedpyright workspace settings, pushed via
+    /// workspace/didChangeConfiguration (the only settings channel
+    /// basedpyright reads — its initializationOptions carries nothing but
+    /// disablePullDiagnostics). The baseline matches pyright's defaults:
+    /// basedpyright alone defaults typeCheckingMode to "all", whose
+    /// reportUnknown*/annotation rules flood the diagnostics swim now
+    /// renders; openFilesOnly keeps large monorepos from burning a CPU
+    /// core analyzing files the user never opened. Returns nil when the
+    /// server has its own config ([tool.basedpyright], [tool.pyright] or
+    /// pyrightconfig.json) — that config must win. extraPaths is NOT
+    /// forwarded: basedpyright accepts it only from the config file, so
+    /// projects needing search paths write them into pyproject.toml.
+    private func pythonWorkspaceSettings(rootPath: String) -> [String: Any]? {
+        if let text = try? String(contentsOfFile: rootPath + "/pyproject.toml", encoding: .utf8) {
+            guard !Self.tomlHasSection(text, "tool.basedpyright"),
+                  !Self.tomlHasSection(text, "tool.pyright"),
+                  !FileManager.default.fileExists(atPath: rootPath + "/pyrightconfig.json") else { return nil }
         }
-        guard !Self.tomlHasSection(text, "tool.basedpyright"),
-              !Self.tomlHasSection(text, "tool.pyright"),
-              !FileManager.default.fileExists(atPath: rootPath + "/pyrightconfig.json") else { return nil }
-
-        var settings: [String: Any] = ["diagnosticMode": "openFilesOnly"]
-        let extra = Self.tomlStringArray(in: text, section: "tool.pytest.ini_options", key: "pythonpath")
-        if !extra.isEmpty {
-            let absolute = extra.map { $0.hasPrefix("/") ? $0 : rootPath + "/" + $0 }
-            settings["extraPaths"] = absolute
-        }
-        return ["settings": [["uri": "file://\(rootPath)", "settings": settings]]]
+        return ["pyright": ["typeCheckingMode": "standard", "diagnosticMode": "openFilesOnly"]]
     }
 
     /// True when the TOML text contains the `[section]` header.
@@ -545,60 +537,6 @@ class Application: WindowDelegate {
         }
     }
 
-    /// Extracts a string-array value of `key` from a `[section]` of TOML text
-    /// (pyproject-lite: quoted strings, # comments, multi-line arrays).
-    private static func tomlStringArray(in text: String, section: String, key: String) -> [String] {
-        func parseArray(_ s: String) -> [String] {
-            guard let open = s.firstIndex(of: "["), let close = s.lastIndex(of: "]"), open < close else { return [] }
-            return s[s.index(after: open)..<close]
-                .split(separator: ",")
-                .compactMap { item -> String? in
-                    var t = item.trimmingCharacters(in: .whitespaces)
-                    if let hash = t.firstIndex(of: "#") {
-                        t = String(t[..<hash]).trimmingCharacters(in: .whitespaces)
-                    }
-                    guard t.count >= 2 else { return nil }
-                    let first = t.first, last = t.last
-                    if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
-                        return String(t.dropFirst().dropLast())
-                    }
-                    return nil
-                }
-        }
-
-        var inSection = false
-        var collecting = false
-        var buffer = ""
-        var result = [String]()
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("[") && line.hasSuffix("]") {
-                inSection = line.dropFirst().dropLast().trimmingCharacters(in: .whitespaces) == section
-                continue
-            }
-            guard inSection else { continue }
-            if collecting {
-                buffer += " " + line
-                if line.contains("]") {
-                    collecting = false
-                    result.append(contentsOf: parseArray(buffer))
-                    buffer = ""
-                }
-                continue
-            }
-            if line.hasPrefix("#") { continue }
-            guard let eq = line.firstIndex(of: "=") else { continue }
-            guard line[..<eq].trimmingCharacters(in: .whitespaces) == key else { continue }
-            let value = String(line[line.index(after: eq)...])
-            if value.contains("]") {
-                result.append(contentsOf: parseArray(value))
-            } else {
-                buffer = value
-                collecting = true
-            }
-        }
-        return result
-    }
 
     private func findExecutable(paths: [String], command: String) -> String? {
         for path in paths {
