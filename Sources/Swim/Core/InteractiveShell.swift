@@ -4,6 +4,7 @@
 @preconcurrency import Darwin
 #endif
 import Foundation
+import Synchronization
 
 /// The credential kind a pending askpass prompt asks for.
 enum CredentialKind {
@@ -21,112 +22,168 @@ enum CredentialKind {
 }
 
 /// A credential prompt surfaced by an `InteractiveShell` session.
-struct CredentialPrompt {
+struct CredentialPrompt: Sendable {
     let kind: CredentialKind
     let text: String
 }
 
-/// A subprocess with an open stdin and a live reader thread — the shape
-/// `git pull`/`push` need when the remote asks for credentials. Prompting
-/// is routed through a generated askpass helper (GIT_ASKPASS / SSH_ASKPASS):
+/// A subprocess with a live reader thread — the shape `git pull`/`push`
+/// need when the remote asks for credentials. Prompting is routed
+/// through a generated askpass helper (GIT_ASKPASS / SSH_ASKPASS):
 ///
 ///     #!/bin/sh
-///     printf '%s\n' "$1" >&2      # the prompt — detected in stderr
-///     IFS= read -r ans || exit 1  # blocks on the session's stdin pipe
-///     printf '%s\n' "$ans"        # the answer git reads from stdout
+///     printf '%s\n' "$1" >&2                        # prompt -> stderr
+///     IFS= read -r ans < "$SWIM_CRED_FIFO" || exit 1 # answer channel
+///     printf '%s\n' "$ans"                          # -> git (stdout)
 ///
-/// Every byte stays in pipes: the password never touches disk, and the
-/// raw-mode terminal stays swim's (git's own /dev/tty prompting never
-/// engages because askpass takes precedence). The reader thread watches
-/// both pipes non-blocking, arms a `CredentialPrompt` when it sees an
-/// askpass line, and the UI answers through `answer(_:)`. Cancelling
-/// closes stdin (the helper's read fails) and SIGTERMs the process —
-/// the operation dies instead of hanging with nobody to answer it.
-final class InteractiveShell: @unchecked Sendable {
-    private let lock = NSLock()
-    private var process: Process?
-    private var stdinPipe: Pipe?
-    private var prompt: CredentialPrompt?
-    private var cancelled = false
-    private var done = false
-    private var resultValue: Shell.Result?
+/// The prompt reaches swim through stderr (inherited by every helper
+/// child), but the ANSWER cannot ride the session's stdin: for HTTP(S)
+/// remotes git asks credentials inside the git-remote-https transport
+/// helper, whose stdin is the protocol pipe to the parent git process —
+/// an askpass inheriting it reads protocol junk, and a write to the
+/// nobody-reads session stdin hits EPIPE. ssh's askpass gets /dev/null
+/// instead of stdin for the same reason. The answer channel is therefore
+/// a per-session FIFO named in `SWIM_CRED_FIFO`, opened O_RDWR eagerly:
+/// the open never blocks, a written line buffers until the asking
+/// helper consumes it, and writes cannot EPIPE while the session holds
+/// the fd (it is a reader itself). The password never touches disk.
+///
+/// Concurrency: the session object is main-thread-confined — it owns
+/// the Process and the FIFO descriptor with plain stored properties,
+/// enforced by NOT being Sendable. The only cross-thread state is the
+/// `Mutex<Mailbox>` (reader -> UI direction: prompt, output, done).
+/// The reader thread captures exclusively Sendable values — the mutex
+/// value, raw descriptors, the FIFO path — never the session itself,
+/// so it always runs to completion no matter the session's lifetime.
+/// Cancelling closes the FIFO (every blocked helper read fails, which
+/// also releases the descriptors they inherited) and SIGTERMs the
+/// process — the operation dies instead of hanging.
+final class InteractiveShell {
+    /// Reader -> UI state behind a `Mutex`; a separate Sendable object
+    /// so the reader thread can hold it without touching the
+    /// (non-Sendable, main-thread-confined) session itself.
+    private final class Mailbox: Sendable {
+        struct State: Sendable {
+            var prompt: CredentialPrompt?
+            var cancelled = false
+            var done = false
+            var stdout: [UInt8] = []
+            var stderr: [UInt8] = []
+        }
 
-    var isFinished: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return done
+        let mutex = Mutex(State())
     }
 
-    var wasCancelled: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return cancelled
-    }
+    private let mailbox = Mailbox()
 
-    var isAwaitingInput: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return prompt != nil
-    }
+    // Main-thread-confined state.
+    private let process = Process()
+    private var fifoFd: Int32 = -1
+    private var started = false
+    private var ranSuccessfully = false
+
+    var isFinished: Bool { mailbox.mutex.withLock { $0.done } }
+
+    var wasCancelled: Bool { mailbox.mutex.withLock { $0.cancelled } }
+
+    var isAwaitingInput: Bool { mailbox.mutex.withLock { $0.prompt != nil } }
 
     /// The pending prompt, if the process is blocked on one.
     func currentPrompt() -> CredentialPrompt? {
-        lock.lock(); defer { lock.unlock() }
-        return prompt
+        mailbox.mutex.withLock { $0.prompt }
     }
 
-    /// Submits the typed credential — one line into the process stdin.
+    /// Submits the typed credential — one line into the FIFO; the
+    /// asking helper consumes it. EINTR-safe partial-write loop; EPIPE
+    /// is impossible while the session holds the O_RDWR descriptor.
     func answer(_ text: String) {
-        lock.lock()
-        let pending = prompt
-        prompt = nil
-        let pipe = stdinPipe
-        lock.unlock()
-        guard pending != nil, let pipe else { return }
-        try? pipe.fileHandleForWriting.write(contentsOf: Data((text + "\n").utf8))
+        let wasPending = mailbox.mutex.withLock { state -> Bool in
+            guard state.prompt != nil else { return false }
+            state.prompt = nil
+            return true
+        }
+        guard wasPending, fifoFd >= 0 else { return }
+        let bytes = Array((text + "\n").utf8)
+        bytes.withUnsafeBufferPointer { ptr in
+            var offset = 0
+            while offset < bytes.count {
+                let n = write(fifoFd, ptr.baseAddress! + offset, bytes.count - offset)
+                if n > 0 {
+                    offset += n
+                } else if errno != EINTR {
+                    break
+                }
+            }
+        }
     }
 
-    /// Aborts the operation: closes stdin (the askpass read fails, so
-    /// helper children holding inherited descriptors exit too) and
+    /// Aborts the operation: closes the FIFO (every helper child blocked
+    /// on its read fails — releasing the descriptors they inherited) and
     /// terminates the process itself.
     func cancel() {
-        lock.lock()
-        cancelled = true
-        prompt = nil
-        let pipe = stdinPipe
-        stdinPipe = nil
-        let proc = process
-        lock.unlock()
-        // Close through the FileHandle itself, not a raw close(fd): the
-        // Pipe object stays alive (held by process.standardInput) until
-        // the session is discarded, and its deinit closes its fd again —
-        // a raw close would free the fd number for reuse, and the later
-        // deinit could then close an unrelated descriptor (e.g. the next
-        // session's pipe). FileHandle.close() marks the object closed.
-        if let pipe { try? pipe.fileHandleForWriting.close() }
-        if proc?.isRunning == true { proc?.terminate() }
+        mailbox.mutex.withLock { state in
+            state.cancelled = true
+            state.prompt = nil
+        }
+        if fifoFd >= 0 {
+            close(fifoFd)
+            fifoFd = -1
+        }
+        if ranSuccessfully, process.isRunning {
+            process.terminate()
+        }
     }
 
-    /// One-shot final result, `BackgroundTask.consume` semantics.
+    /// One-shot final result, `BackgroundTask.consume` semantics. The
+    /// reader signals completion after both pipes EOF; the exit status
+    /// is reaped here, on the owning thread, through the Process (the
+    /// reader must not touch it — non-Sendable — and its internal
+    /// helper already owns the waitpid; by now the process is gone and
+    /// this returns immediately).
     func consumeResult() -> Shell.Result? {
-        lock.lock(); defer { lock.unlock() }
-        guard done else { return nil }
-        done = false
-        let result = resultValue
-        resultValue = nil
-        return result
+        guard mailbox.mutex.withLock({ $0.done }) else { return nil }
+        if ranSuccessfully { process.waitUntilExit() }
+        return mailbox.mutex.withLock { state -> Shell.Result? in
+            guard state.done else { return nil }
+            state.done = false
+            let result = Shell.Result(
+                stdout: String(decoding: state.stdout, as: UTF8.self),
+                stderr: String(decoding: state.stderr, as: UTF8.self),
+                exitCode: ranSuccessfully ? process.terminationStatus : -1
+            )
+            state.stdout = []
+            state.stderr = []
+            return result
+        }
     }
 
     func start(executable: String, args: [String], workDir: String?) {
-        let process = Process()
+        guard !started else { return }
+        started = true
+
         let outPipe = Pipe()
         let errPipe = Pipe()
-        let inPipe = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = args
         if let workDir { process.currentDirectoryURL = URL(fileURLWithPath: workDir) }
         process.standardOutput = outPipe
         process.standardError = errPipe
-        process.standardInput = inPipe
+        // Not the answer channel (see class docs) — a closed pipe so the
+        // child can never swallow swim's tty stdin instead.
+        process.standardInput = Pipe()
         var env = ProcessInfo.processInfo.environment
+        var fifoPath: String? = nil
         if let askpass = Self.askpassHelperPath {
+            let path = FileManager.default.temporaryDirectory
+                .appendingPathComponent("swim-cred-\(getpid())-\(UUID().uuidString).fifo").path
+            if mkfifo(path, 0o600) == 0 {
+                let fd = open(path, O_RDWR)
+                if fd >= 0 {
+                    fifoFd = fd
+                    fifoPath = path
+                    env["SWIM_CRED_FIFO"] = path
+                }
+            }
             env["GIT_ASKPASS"] = askpass
             env["SSH_ASKPASS"] = askpass
             // OpenSSH >= 8.4: use askpass even though a tty is attached
@@ -135,40 +192,38 @@ final class InteractiveShell: @unchecked Sendable {
         }
         process.environment = env
 
-        lock.lock()
-        self.process = process
-        self.stdinPipe = inPipe
-        self.prompt = nil
-        self.cancelled = false
-        self.done = false
-        self.resultValue = nil
-        lock.unlock()
-
         do {
             try process.run()
         } catch {
-            lock.lock()
-            resultValue = Shell.Result(stdout: "", stderr: error.localizedDescription, exitCode: -1)
-            done = true
-            lock.unlock()
+            ranSuccessfully = false
+            mailbox.mutex.withLock { state in
+                state.stdout = []
+                state.stderr = Array(error.localizedDescription.utf8)
+                state.done = true
+            }
             return
         }
+        ranSuccessfully = true
 
         let outFd = outPipe.fileHandleForReading.fileDescriptor
         let errFd = errPipe.fileHandleForReading.fileDescriptor
         Self.setNonBlocking(outFd)
         Self.setNonBlocking(errFd)
-        Thread { [weak self] in
-            self?.readLoop(outFd: outFd, errFd: errFd)
+        // The closure captures Sendable locals only — not self, no vars.
+        let box = mailbox
+        let fifoPathToSend = fifoPath
+        Thread {
+            Self.readAndCollect(box: box, outFd: outFd, errFd: errFd, fifoPath: fifoPathToSend)
         }.start()
     }
 
-    /// Drains both pipes until EOF, arming prompts seen in stderr; only
-    /// then waits for the process and computes the result. Non-blocking
-    /// reads on both descriptors in one thread avoid the classic
-    /// two-pipe deadlock (a child blocked writing the pipe nobody reads).
-    private func readLoop(outFd: Int32, errFd: Int32) {
-        guard let process else { return }
+    /// Drains both pipes until EOF, arming prompts seen in stderr, then
+    /// publishes the output. Non-blocking reads on both descriptors in
+    /// one thread avoid the classic two-pipe deadlock (a child blocked
+    /// writing the pipe nobody reads). Sendable-only parameters: the
+    /// thread must not capture the session (non-Sendable) — the loop
+    /// then cannot be cut short by the session's deallocation.
+    private static func readAndCollect(box: Mailbox, outFd: Int32, errFd: Int32, fifoPath: String?) {
         var outBuf = [UInt8]()
         var errBuf = [UInt8]()
         var outEOF = false
@@ -178,14 +233,14 @@ final class InteractiveShell: @unchecked Sendable {
         while !(outEOF && errEOF) {
             var progressed = false
             if !outEOF {
-                switch Self.readChunk(fd: outFd, into: &outBuf) {
+                switch readChunk(fd: outFd, into: &outBuf) {
                 case .bytes: progressed = true
                 case .eof: outEOF = true; progressed = true
                 case .again: break
                 }
             }
             if !errEOF {
-                switch Self.readChunk(fd: errFd, into: &errBuf) {
+                switch readChunk(fd: errFd, into: &errBuf) {
                 case .bytes: progressed = true
                 case .eof: errEOF = true; progressed = true
                 case .again: break
@@ -193,28 +248,24 @@ final class InteractiveShell: @unchecked Sendable {
             }
             if scanned < errBuf.count {
                 let before = scanned
-                let (found, newScanned) = Self.scanPrompt(in: errBuf, from: scanned)
+                let (found, newScanned) = scanPrompt(in: errBuf, from: scanned)
                 scanned = newScanned
                 if scanned > before { progressed = true }
                 if let found {
-                    lock.lock()
-                    if prompt == nil { prompt = found }
-                    lock.unlock()
+                    box.mutex.withLock { state in
+                        if state.prompt == nil { state.prompt = found }
+                    }
                 }
             }
             if !progressed { usleep(10000) }
         }
 
-        process.waitUntilExit()
-        let result = Shell.Result(
-            stdout: String(decoding: outBuf, as: UTF8.self),
-            stderr: String(decoding: errBuf, as: UTF8.self),
-            exitCode: process.terminationStatus
-        )
-        lock.lock()
-        resultValue = result
-        done = true
-        lock.unlock()
+        if let fifoPath { unlink(fifoPath) }
+        box.mutex.withLock { state in
+            state.stdout = outBuf
+            state.stderr = errBuf
+            state.done = true
+        }
     }
 
     // MARK: - Reader primitives
@@ -283,7 +334,7 @@ final class InteractiveShell: @unchecked Sendable {
     /// temp dir. Nil if the filesystem refused — credential routing then
     /// degrades to git's non-interactive default.
     private static let askpassHelperPath: String? = {
-        let script = "#!/bin/sh\nprintf '%s\\n' \"$1\" >&2\nIFS= read -r ans || exit 1\nprintf '%s\\n' \"$ans\"\n"
+        let script = "#!/bin/sh\nprintf '%s\\n' \"$1\" >&2\n[ -n \"$SWIM_CRED_FIFO\" ] || exit 1\nIFS= read -r ans < \"$SWIM_CRED_FIFO\" || exit 1\nprintf '%s\\n' \"$ans\"\n"
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("swim-askpass-\(getuid()).sh")
         do {

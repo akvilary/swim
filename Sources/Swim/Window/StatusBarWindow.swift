@@ -76,11 +76,13 @@ class StatusBarWindow: Window {
             centerBold = true
         } else if inCommand, let source = source {
             let commandText = source.commandBuffer
-            let prefix = commandText.hasPrefix("/") ? "" : ":"
+            // A credential input is not a ":" command — the label hook
+            // doubles as the marker for that repurposed surface.
+            let isCredential = source.commandModeLabel() != nil
+            let prefix = (commandText.hasPrefix("/") || isCredential) ? "" : ":"
             centerParts = [(" \(prefix)\(commandText)", fg: Theme.fg)]
             centerBold = false
-            let prefixLen = commandText.hasPrefix("/") ? 0 : 1
-            let caret = modeLabel.count + 1 + prefixLen + source.commandCursorPos
+            let caret = modeLabel.count + 1 + prefix.count + source.commandCursorPos
             if caret < width { commandCaretScreenCol = caret }
         } else if let branch = branch {
             var parts: [(text: String, fg: Color)] = [(" \(branch)", fg: Theme.fgDark)]

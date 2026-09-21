@@ -70,7 +70,7 @@ Sources/Swim/                           — Executable-таргет (завис�
 │   ├── SyntaxTokenizer.swift     — Встроенная подсветка синтаксиса
 │   ├── SemanticToken.swift       — Разделяемый тип токена
 │   ├── Shell.swift               — Запуск подпроцессов (git, which)
-│   ├── InteractiveShell.swift    — Интерактивный подпроцесс с открытым stdin (credential-промпты pull/push)
+│   ├── InteractiveShell.swift    — Интерактивный подпроцесс + credential-промпты pull/push (FIFO-канал askpass)
 │   └── BackgroundTask.swift      — Фоновая задача с потокобезопасным результатом
 ├── Window/
 │   ├── Window.swift              — Базовый класс окна (cell-буфер, режимы WindowMode, командная строка, плашка HeaderPlate)
@@ -413,24 +413,26 @@ Diff подсвачивается: зелёный — добавления, кр
 
 ### Core/InteractiveShell.swift — Интерактивный подпроцесс (credential'ы pull/push)
 
-`InteractiveShell` — подпроцесс с открытым stdin и живым reader-потоком: форма, которую требуют `git pull`/`push`, когда remote просит учётные. Заменяет `BackgroundTask` в CommandWindow (но не в остальных окнах — тем промпты не нужны).
+`InteractiveShell` — подпроцесс с живым reader-потоком: форма, которую требуют `git pull`/`push`, когда remote просит учётные. Заменяет `BackgroundTask` в CommandWindow (но не в остальных окнах — тем промпты не нужны).
 
 **Механика (GIT_ASKPASS):** сессия ставит `GIT_ASKPASS`/`SSH_ASKPASS` на генерируемый один раз per-user хелпер (`/tmp/swim-askpass-<uid>.sh`, режим 0700):
 
 ```sh
 #!/bin/sh
-printf '%s\n' "$1" >&2      # промпт — swim детектит его в stderr
-IFS= read -r ans || exit 1  # блокируется на stdin-пайпе сессии
-printf '%s\n' "$ans"        # ответ, который git читает из stdout
+printf '%s\n' "$1" >&2                          # промпт — swim детектит его в stderr
+IFS= read -r ans < "$SWIM_CRED_FIFO" || exit 1  # ответ — из per-session FIFO сессии
+printf '%s\n' "$ans"                            # ответ, который git читает из stdout
 ```
 
-askpass вызывается git'ом с промптом в `$1`, наследует stdin/stderr сессии — все байты остаются в пайпах: пароль не касается диска и `/dev/tty` (raw-терминал остаётся у swim, own tty-промпт git'а не включается — askpass приоритетнее). `SSH_ASKPASS_REQUIRE=force` — OpenSSH ≥ 8.4 спрашивает пароль через хелпер даже при tty (основной поддерживаемый сценарий — HTTPS: login → password; ssh-пассфраза — бонус на новых ssh).
+askpass вызывается git'ом с промптом в `$1`; промпт доезжает до swim через наследуемый stderr каждого хелпера, но **ответ не может ехать по stdin сессии**: для HTTP(S) remote учётные спрашивает transport-хелпер `git-remote-https`, чей stdin — протокольный пайп к родительскому git'у (унаследовавший его askpass читает мусор протокола, а запись в никем не читаемый stdin сессии ловит EPIPE); askpass у ssh получает `/dev/null`. Поэтому канал ответов — per-session FIFO (`SWIM_CRED_FIFO`, имя `/tmp/swim-cred-<pid>-<uuid>.fifo`, 0600, unlink по EOF'ам), открытый сессией O_RDWR заранее: open не блокируется, записанная строка буферизуется до прихода читателя, EPIPE невозможен, пока сессия держит дескриптор (она сама reader). Пароль не касается диска и `/dev/tty` (raw-терминал остаётся у swim, own tty-промпт git'а не включается — askpass приоритетнее). `SSH_ASKPASS_REQUIRE=force` — OpenSSH ≥ 8.4 спрашивает пароль через хелпер даже при tty; ssh-сценарий работает полностью (stdin хелперу больше не нужен).
 
-**Reader-поток:** не-блокирующее чтение обоих пайпов в одном потоке (последовательное блокирующее — классический дедлок двух пайпов, два потока — больше координации); EOF на обоих → `waitUntilExit` → результат (`Shell.Result`, `consume()` как у BackgroundTask). Промпты детектятся по полным строкам stderr: `Username for '…'` → login, `Password for '…'` / суффикс `password:` / `Enter passphrase` → password; строки `fatal:`/`error:` исключены — провал auth не перевзводит промпт.
+**Reader-поток:** не-блокирующее чтение обоих пайпов в одном потоке (последовательное блокирующее — классический дедлок двух пайпов, два потока — больше координации); EOF на обоих → unlink FIFO → вывод публикуется в mailbox; код выхода собирает владеющий поток в `consumeResult` (процесс к этому моменту мёртв, `waitUntilExit` мгновенный — reader не трогает Process, тот не-Sendable, и его внутренний реапер владеет waitpid). Промпты детектятся по полным строкам stderr: `Username for '…'` → login, `Password for '…'` / суффикс `password:` / `Enter passphrase` → password; строки с префиксами `fatal:`/`error:`/`remote:`/`warning:`/`hint:` исключены — провал auth не перевзводит промпт, а sideband-вывод remote не может подсунуть поддельный (реальный askpass-эхо приходит без префикса).
 
-**UI-контракт (CommandWindow):** промпт → `enterCommandMode()` окна; лейбл режима в статус-баре через переопределяемый хук `Window.commandModeLabel()` — `LOGIN`, затем `PASSWORD` (`PASS` на узких, < 45 колонок), тот же оранжевый бейдж. Плашка: `⠏ git push — waiting for password`. Enter отправляет строку в stdin процесса (`answer`), **Esc — отмена всей операции** (`cancel()`): stdin закрывается (askpass-рид падает, его наследованные дескрипторы освобождаются) + SIGTERM процессу — операция умирает, а не виснет; финальная плашка «cancelled». Той же отменой страхуются закрытие окна (`Application.closeWindow` → `cancelPendingCredential`) и повторный запуск команды поверх висящего промпта. Закрытие stdin идёт через `FileHandle.close()` (не raw `close(fd)`): Pipe жив, пока жив Process, и его деаллокация закрывает fd повторно — raw-close освободил бы номер под переиспользование, и повторное закрытие могло бы попасть в чужой дескриптор.
+**Concurrency-модель (без `@unchecked`/`nonisolated(unsafe)`):** объект сессии не Sendable и main-thread-confined — владеет `Process` и FIFO-дескриптором обычными stored-свойствами, компилятор это гарантирует. Единственное межпоточное состояние — `Mailbox`: маленький Sendable-класс с `Synchronization.Mutex<State>` (prompt/cancelled/done/stdout/stderr). Reader-поток захватывает только Sendable-значения — ссылку на Mailbox, сырые fd, путь FIFO, ни `self`, ни `Process` — поэтому цикл чтения не может оборваться dealloc'ом сессии и всегда дорабатывает до реапа/unlink.
 
-**Известные ограничения:** ввод пароля отображается в командной строке открытым текстом (общая поверхность без маскировки); промпт всплывает только в текущем space (poll идёт по `spaces.current` — как у всех фоновых задач: задержка до возврата из search space, не дедлок); ssh-сценарий требует OpenSSH ≥ 8.4, основной — HTTPS.
+**UI-контракт (CommandWindow):** промпт → `enterCommandMode()` окна; лейбл режима в статус-баре через переопределяемый хук `Window.commandModeLabel()` — `LOGIN`, затем `PASSWORD` (`PASS` на узких, < 45 колонок), тот же оранжевый бейдж; ненулевой хук также убирает префикс `:` — поверхность вводит credential, а не `:`-команду. Плашка: `⠏ git push — waiting for password`. Enter отправляет строку в FIFO (`answer`), **Esc — отмена всей операции** (`cancel()`): FIFO закрывается (каждый заблокированный askpass-рид падает, освобождая наследованные дескрипторы) + SIGTERM процессу — операция умирает, а не виснет; финальная плашка «cancelled». Той же отменой страхуются закрытие окна (`Application.closeWindow` → `cancelPendingCredential`) и повторный запуск команды поверх висящего промпта; закрытие окна при обычном (без промпта) прогоне процесс не трогает — прежнее поведение.
+
+**Известные ограничения:** ввод пароля отображается в командной строке открытым текстом (общая поверхность без маскировки); промпт всплывает только в текущем space (poll идёт по `spaces.current` — как у всех фоновых задач: задержка до возврата из search space, не дедлок).
 
 ---
 
