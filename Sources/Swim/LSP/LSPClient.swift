@@ -162,7 +162,10 @@ final class LSPClient: @unchecked Sendable {
 
         var params: [String: Any] = [
             "processId": ProcessInfo.processInfo.processIdentifier,
-            "capabilities": capabilities
+            "capabilities": capabilities,
+            // Diagnostics language: pin English regardless of the system
+            // locale (a French terminal got French pyright messages).
+            "locale": "en"
         ]
         if let uri = rootUri {
             params["rootUri"] = uri
