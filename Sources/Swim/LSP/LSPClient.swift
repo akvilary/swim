@@ -108,7 +108,15 @@ final class LSPClient: @unchecked Sendable {
         let source = DispatchSource.makeReadSource(fileDescriptor: output.fileHandleForReading.fileDescriptor, queue: queue)
         source.setEventHandler { [weak self] in
             let data = output.fileHandleForReading.availableData
-            if data.isEmpty { return }
+            if data.isEmpty {
+                // EOF: the server exited. Marking dead here is what makes
+                // isAlive false — without it a crashed server stays
+                // alive-forever, isReady never recovers, and the main
+                // loop's dead-client removal never fires. Idempotent with
+                // stop(), which sets alive=false before cancelling.
+                self?.alive = false
+                return
+            }
             self?.handleData(data)
         }
         source.resume()
