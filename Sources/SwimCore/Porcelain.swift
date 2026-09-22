@@ -45,13 +45,13 @@ public enum Porcelain {
 }
 
 /// The three user-facing classes of a changed file, used for the git
-/// coloring (explorer names, editor gutter): `added` — new to git
-/// (untracked `??` or a staged add `A` with a clean worktree), `staged`
-/// — every change sits in the index, `unstaged` — at least one
-/// working-tree change. Precedence: ANY worktree column change outranks
-/// the index (orange) — the unstaged edit is the state the user would
-/// save next; a fully-staged change of a tracked file is teal; additions
-/// are green. Nil for shapes with nothing to color.
+/// coloring (explorer names, editor gutter): `added` — untracked (`??`)
+/// only, green; `staged` — every change sits in the index (a staged add
+/// `A` included — it is staged, the same color as the panel's A);
+/// `unstaged` — at least one working-tree change. Precedence: ANY
+/// worktree column change outranks the index (orange) — the unstaged
+/// edit is the state the user would save next. Nil for shapes with
+/// nothing to color.
 public enum GitChangeClass: Equatable {
     case added
     case staged
@@ -60,7 +60,6 @@ public enum GitChangeClass: Equatable {
     public static func classify(x: Character, y: Character) -> GitChangeClass? {
         if x == "?" && y == "?" { return .added }
         if y != " " && y != "?" { return .unstaged }
-        if x == "A" { return .added }
         if x != " " { return .staged }
         return nil
     }

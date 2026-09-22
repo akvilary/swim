@@ -289,12 +289,10 @@ class Application: WindowDelegate {
                 : filePath.hasPrefix(root + "/") ? String(filePath.dropFirst(root.count + 1)) : nil
             else { return stats }
 
-            let isNewFile: Bool
-            if let xy = openXY {
-                isNewFile = xy.x == "A" || (xy.x == "?" && xy.y == "?")
-            } else {
-                isNewFile = false
-            }
+            // Green in its entirety only when untracked — a staged add
+            // is staged through and through (the cached diff covers the
+            // whole file), AM keeps its unstaged hunks on the staged base.
+            let isNewFile = openXY != nil && openXY!.x == "?" && openXY!.y == "?"
             stats.fileIsNew = isNewFile
 
             // Untracked files never appear in `git diff` — for the open
@@ -306,9 +304,10 @@ class Application: WindowDelegate {
             }
 
             // Line-level hunks for the gutter. Unstaged (working tree vs
-            // index) is always fetched — a staged-new file can carry
-            // worktree edits on top (AM). Staged hunks matter only for a
-            // tracked file; a new file is green in its entirety.
+            // index) is always fetched — a staged add can carry worktree
+            // edits on top (AM). Staged hunks are fetched for everything
+            // tracked-or-staged; only an untracked file is green in its
+            // entirety.
             let spec = ":(top,literal)" + rel
             stats.fileUnstaged = HunkLines.changedLines(
                 Shell.git(["diff", "--unified=0", "--", spec], workDir: dir)

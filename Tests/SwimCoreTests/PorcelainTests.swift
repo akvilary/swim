@@ -50,10 +50,11 @@ struct PorcelainTests {
 
     @Test func classifyPrecedence() {
         // Any worktree change (Y) outranks the index: MM/AM → unstaged.
-        // Untracked and staged adds are additions; a fully staged change
-        // of a tracked file is staged; nothing-to-color shapes are nil.
+        // Untracked is the only green class; a staged add counts as
+        // staged (the panel's A letter wears stagedColor too); a fully
+        // staged change is staged; nothing-to-color shapes are nil.
         #expect(GitChangeClass.classify(x: "?", y: "?") == .added)
-        #expect(GitChangeClass.classify(x: "A", y: " ") == .added)
+        #expect(GitChangeClass.classify(x: "A", y: " ") == .staged)
         #expect(GitChangeClass.classify(x: "M", y: " ") == .staged)
         #expect(GitChangeClass.classify(x: "R", y: " ") == .staged)
         #expect(GitChangeClass.classify(x: "D", y: " ") == .staged)

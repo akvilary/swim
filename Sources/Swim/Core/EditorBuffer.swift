@@ -5,9 +5,10 @@ import Foundation
 /// Application (`git diff --unified=0` against the index and `--cached`
 /// against HEAD): `unstaged` — lines changed in the working tree
 /// (orange numbers), `staged` — lines changed in the index only
-/// (teal), `isNewFile` — the file is absent from HEAD (untracked or a
-/// staged add), so every line counts as added (green). Indices are
-/// 0-based, of the on-disk content the diff was computed against.
+/// (stagedColor; a staged add covers the whole file), `isNewFile` — the
+/// file is untracked (`??`), so every line counts as added (green).
+/// Indices are 0-based, of the on-disk content the diff was computed
+/// against.
 struct GitLineStatus {
     var isNewFile = false
     var staged: Set<Int> = []
