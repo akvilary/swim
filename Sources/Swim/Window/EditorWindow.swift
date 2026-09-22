@@ -1481,23 +1481,27 @@ class EditorWindow: Window {
                 }
             }
             // Diagnostics no longer paint the number — a marker sits in
-            // the trailing gutter cell instead: ● red for errors, orange
+            // the trailing gutter cell instead: • red for errors, orange
             // for warnings, yellow for info/hints. An error AND a
-            // warning stack as one two-color cell (▀: fg paints the top
-            // half, bg the bottom) so the row never grows wider.
+            // warning on one line collapse into one small square (▪,
+            // half the cell) in the worst severity's color — two
+            // differently-colored marks in one cell are impossible below
+            // the full-cell fg/bg split (an fg/bg half-fill floods the
+            // whole cell), so the shape difference carries the "more
+            // than one problem" signal.
             var mark: (char: Character, fg: Color, bg: Color)?
             let diags = diagnosticsIndex[lineNum] ?? []
             if !diags.isEmpty {
                 let hasError = diags.contains { $0.severity <= 1 }
                 let hasWarning = diags.contains { $0.severity == 2 }
                 if hasError && hasWarning {
-                    mark = ("▀", Theme.red, Theme.orange)
+                    mark = ("▪", Theme.red, Theme.bg)
                 } else if hasError {
-                    mark = ("●", Theme.red, Theme.bg)
+                    mark = ("•", Theme.red, Theme.bg)
                 } else if hasWarning {
-                    mark = ("●", Theme.orange, Theme.bg)
+                    mark = ("•", Theme.orange, Theme.bg)
                 } else {
-                    mark = ("●", Theme.yellow, Theme.bg)
+                    mark = ("•", Theme.yellow, Theme.bg)
                 }
             }
             drawLineNumberRow(row + contentTop, number: number, lnWidth: lnWidth, fg: fg, bg: Theme.bg, mark: mark)
