@@ -1466,18 +1466,19 @@ class EditorWindow: Window {
         for row in 0..<contentHeight {
             let lineNum = scrollY + row
             let number = lineNum < lineCount ? lineNum + 1 : nil
-            // Git gutter: unstaged (orange) > new file (green) > staged
-            // (teal) — a line touched in both trees shows the unstaged
-            // state, the one the next save would write; uncolored lines
-            // keep the plain gutter colors.
+            // Git gutter: unstaged (Theme.unstagedColor) > new file
+            // (green) > staged (Theme.stagedColor) — a line touched in
+            // both trees shows the unstaged state, the one the next
+            // save would write; uncolored lines keep the plain gutter
+            // colors.
             var fg = lineNum == cursorLine ? Theme.fg : Theme.comment
             if let git {
                 if git.unstaged.contains(lineNum) {
-                    fg = Theme.orange
+                    fg = Theme.unstagedColor
                 } else if git.isNewFile {
                     fg = Theme.green
                 } else if git.staged.contains(lineNum) {
-                    fg = Theme.teal
+                    fg = Theme.stagedColor
                 }
             }
             // Diagnostics no longer paint the number — a marker sits in

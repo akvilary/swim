@@ -2,14 +2,16 @@ import Foundation
 import SwimCore
 
 /// Presentation side of the SwimCore `GitChangeClass`: the color a file
-/// name gets in the tree (added — green, staged — teal, unstaged —
-/// orange). Directories are never marked, files only.
+/// name gets in the tree — the shared git-decoration palette
+/// (`Theme.stagedColor` / `Theme.unstagedColor`, green for additions),
+/// the same constants as the editor gutter and the panel letters.
+/// Directories are never marked, files only.
 extension GitChangeClass {
     var color: Color {
         switch self {
         case .added: return Theme.green
-        case .staged: return Theme.teal
-        case .unstaged: return Theme.orange
+        case .staged: return Theme.stagedColor
+        case .unstaged: return Theme.unstagedColor
         }
     }
 }
@@ -67,8 +69,8 @@ class FileExplorerWindow: Window {
             let fg: Color = isSelected ? Theme.fg : Theme.fgDark
             let iconFg: Color = entry.isDirectory ? Theme.blue : fg
             // Git name coloring, files only: a new/untracked file is
-            // green, a fully staged change teal, any unstaged change
-            // orange. The mark wins over the selection text color — the
+            // green, a fully staged change blue, any unstaged change
+            // teal. The mark wins over the selection text color — the
             // row background already marks the selection; directories
             // and clean files keep the base colors.
             let nameFg: Color

@@ -14,6 +14,18 @@ struct GitFileStatus {
     let staged: Bool
     /// Original path for staged renames/copies (`R`/`C`); nil otherwise.
     let origPath: String?
+
+    /// The panel row letter: staged rows speak `A` (everything in the
+    /// index is added to the next commit) — except a staged DELETION,
+    /// which keeps `D`: an "A" on a removed file would be a lie;
+    /// unstaged rows show their real worktree letter (`M`/`D`);
+    /// untracked keeps the classic `?`. One source of truth for the
+    /// rendered row and the `yy` yank text.
+    var sectionLetter: Character {
+        if status == "?" { return "?" }
+        if staged { return status == "D" ? "D" : "A" }
+        return Character(status)
+    }
 }
 
 struct GitCommit {
@@ -60,7 +72,7 @@ private enum StatusItem {
 
     var visibleText: String {
         switch self {
-        case .file(let f): return " \(f.status) \(f.filePath)"
+        case .file(let f): return " \(f.sectionLetter) \(f.filePath)"
         case .commit(let c): return " \(c.hash.prefix(7)) \(c.message)"
         }
     }
@@ -236,7 +248,7 @@ class GitPanelWindow: Window {
             row += 1
             for (itemIdx, item) in section.items.enumerated() {
                 if row >= contentTop && row < height {
-                    drawItemRow(item, row: row, selected: isSelectedItem(sectionIdx, itemIdx))
+                    drawItemRow(item, row: row, selected: isSelectedItem(sectionIdx, itemIdx), section: section.kind)
                 }
                 row += 1
             }
@@ -247,14 +259,14 @@ class GitPanelWindow: Window {
         }
     }
 
-    private func drawItemRow(_ item: StatusItem, row: Int, selected: Bool) {
+    private func drawItemRow(_ item: StatusItem, row: Int, selected: Bool, section: StatusSection) {
         let bg: Color = selected
             ? (mode == .visualLine ? Theme.visualBg : Theme.bgHighlight)
             : Theme.bgDark
         switch item {
         case .file(let file):
-            let statusText = " \(file.status) "
-            drawLine(statusText, row: row, col: 0, fg: statusColorFor(file.status), bg: bg, bold: true)
+            let statusText = " \(file.sectionLetter) "
+            drawLine(statusText, row: row, col: 0, fg: statusColorFor(file, in: section), bg: bg, bold: true)
             let name = file.filePath.prefix(max(0, width - statusText.count))
             drawLine(String(name), row: row, col: statusText.count, fg: selected ? Theme.fg : Theme.fgDark, bg: bg)
         case .commit(let commit):
@@ -357,14 +369,17 @@ class GitPanelWindow: Window {
         drawLine(" \(text)", row: screenRow, fg: Theme.blue, bold: true)
     }
 
-    private func statusColorFor(_ status: String) -> Color {
-        switch status {
-        case "M": return Theme.yellow
-        case "A": return Theme.green
-        case "D": return Theme.red
-        case "R": return Theme.magenta
-        case "?": return Theme.comment
-        default: return Theme.fgDark
+    /// Letter color follows the shared decoration palette — the
+    /// `Theme.*Color` constants, the same ones as the editor gutter and
+    /// the explorer names: staged additions stagedColor (teal),
+    /// worktree changes unstagedColor (orange), untracked the classic
+    /// muted `?`, with `D` in deleteColor on both sides — a deletion
+    /// reads on its own.
+    private func statusColorFor(_ file: GitFileStatus, in section: StatusSection) -> Color {
+        switch section {
+        case .staged: return file.status == "D" ? Theme.deleteColor : Theme.stagedColor
+        case .unstaged: return file.status == "D" ? Theme.deleteColor : Theme.unstagedColor
+        case .untracked, .commits: return Theme.comment
         }
     }
 

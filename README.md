@@ -13,9 +13,9 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
   - Semantic tokens via LSP (sourcekit-lsp)
   - Built-in tokenizer for Swift, C, C++, Python, Rust, Go, JS/TS
   - Fast JSON highlighting
-- **File explorer** (`Ctrl+E`) — sidebar with directory tree; file names colored by git status (new — green, fully staged — teal, unstaged changes — orange)
+- **File explorer** (`Ctrl+E`) — sidebar with directory tree; file names colored by git status (new — green, fully staged — blue, unstaged changes — teal)
 - **Git panel** (`Ctrl+G`) — staged/unstaged files, commits, diff with color highlighting
-- **Git gutter** — editor line numbers colored by line status (added lines/files — green, staged — teal, unstaged — orange); diagnostics show as severity-colored circles after the line number (error + warning stack in one cell)
+- **Git gutter** — editor line numbers colored by line status (added lines/files — green, staged — blue, unstaged — teal); diagnostics show as severity-colored circles after the line number (error + warning stack in one cell)
 - **Project search** (`Ctrl+F`) — recursive file search with grouped results
 - **Built-in terminal** (`Ctrl+T`) — run shell commands inside the editor: the prompt is the last line of the scrollback, arrows scroll the output, `Ctrl+Left/Right` recalls commands, `Tab` completes paths; `cd` and `clear` are handled by the window itself
 - **Full UTF-8 support** — Cyrillic, CJK, emoji
