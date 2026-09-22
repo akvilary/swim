@@ -361,6 +361,20 @@ class EditorWindow: Window {
         return true
     }
 
+    /// Applies a background-computed line-level git status to the tab
+    /// that owns `path` (the fetch runs for the file active at request
+    /// time; a tab switch mid-fetch still lands the result on its
+    /// buffer). Returns true when the active tab was updated (caller
+    /// must re-render).
+    @discardableResult
+    func applyGitLineStatus(_ status: GitLineStatus?, for path: String) -> Bool {
+        guard let target = findBuffer(forNormalizedPath: path) else { return false }
+        target.gitStatus = status
+        guard target === tabs.active else { return false }
+        dirty = true
+        return true
+    }
+
     /// The diagnostic nearest a position (line, grapheme column):
     /// a span containing the position wins — zero-length spans are
     /// normalized to one-grapheme width so a position sitting exactly on
@@ -1448,19 +1462,45 @@ class EditorWindow: Window {
 
     private func drawLineNumbers(lnWidth: Int, lineCount: Int) {
         guard height > 0 else { return }
+        let git = tabs.active.gitStatus
         for row in 0..<contentHeight {
             let lineNum = scrollY + row
             let number = lineNum < lineCount ? lineNum + 1 : nil
-            let fg: Color
-            if let worst = (diagnosticsIndex[lineNum] ?? []).map(\.severity).min() {
-                // Diagnostic gutter: red for errors, orange for warnings,
-                // yellow for info/hints — wins over the cursor-line color;
-                // the cursor itself still shows position.
-                fg = worst <= 1 ? Theme.red : (worst == 2 ? Theme.orange : Theme.yellow)
-            } else {
-                fg = lineNum == cursorLine ? Theme.fg : Theme.comment
+            // Git gutter: unstaged (orange) > new file (green) > staged
+            // (teal) — a line touched in both trees shows the unstaged
+            // state, the one the next save would write; uncolored lines
+            // keep the plain gutter colors.
+            var fg = lineNum == cursorLine ? Theme.fg : Theme.comment
+            if let git {
+                if git.unstaged.contains(lineNum) {
+                    fg = Theme.orange
+                } else if git.isNewFile {
+                    fg = Theme.green
+                } else if git.staged.contains(lineNum) {
+                    fg = Theme.teal
+                }
             }
-            drawLineNumberRow(row + contentTop, number: number, lnWidth: lnWidth, fg: fg, bg: Theme.bg)
+            // Diagnostics no longer paint the number — a marker sits in
+            // the trailing gutter cell instead: ● red for errors, orange
+            // for warnings, yellow for info/hints. An error AND a
+            // warning stack as one two-color cell (▀: fg paints the top
+            // half, bg the bottom) so the row never grows wider.
+            var mark: (char: Character, fg: Color, bg: Color)?
+            let diags = diagnosticsIndex[lineNum] ?? []
+            if !diags.isEmpty {
+                let hasError = diags.contains { $0.severity <= 1 }
+                let hasWarning = diags.contains { $0.severity == 2 }
+                if hasError && hasWarning {
+                    mark = ("▀", Theme.red, Theme.orange)
+                } else if hasError {
+                    mark = ("●", Theme.red, Theme.bg)
+                } else if hasWarning {
+                    mark = ("●", Theme.orange, Theme.bg)
+                } else {
+                    mark = ("●", Theme.yellow, Theme.bg)
+                }
+            }
+            drawLineNumberRow(row + contentTop, number: number, lnWidth: lnWidth, fg: fg, bg: Theme.bg, mark: mark)
         }
     }
 

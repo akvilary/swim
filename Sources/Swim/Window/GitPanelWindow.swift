@@ -562,6 +562,7 @@ class GitPanelWindow: Window {
             break
         }
         refresh()
+        delegate?.gitWorktreeChanged()
     }
 
     private func runDiff(for path: String, staged: Bool, untracked: Bool) {
@@ -694,6 +695,7 @@ class GitPanelWindow: Window {
         }
 
         refresh()
+        delegate?.gitWorktreeChanged()
         runDiff(for: diffPath, staged: diffStaged, untracked: diffUntracked)
     }
 
@@ -763,6 +765,7 @@ class GitPanelWindow: Window {
             break
         }
         refresh()
+        delegate?.gitWorktreeChanged()
         dirty = true
     }
 
@@ -797,6 +800,7 @@ class GitPanelWindow: Window {
         }
 
         refresh()
+        delegate?.gitWorktreeChanged()
         runDiff(for: diffPath, staged: diffStaged, untracked: diffUntracked)
     }
 
@@ -956,24 +960,25 @@ class GitPanelWindow: Window {
         }
     }
 
-    /// Parses `git status --porcelain -z`: NUL-terminated `XY <path>` entries
-    /// with raw (unescaped) paths; rename/copy entries carry the original
-    /// path as an extra NUL field right after.
+    /// Parses `git status --porcelain -z` through the shared SwimCore
+    /// `Porcelain` parser (NUL fields, raw paths, rename/copy orig-path
+    /// consumption) into the panel's staged/unstaged/untracked lists.
     private func parseStatus(_ output: String) {
         stagedFiles = []; unstagedFiles = []; untrackedFiles = []
-        var fields = output.split(separator: "\0", omittingEmptySubsequences: true).makeIterator()
-        while let entry = fields.next() {
-            guard entry.count >= 3 else { continue }
-            let indexStatus = entry[entry.index(entry.startIndex, offsetBy: 0)]
-            let workStatus = entry[entry.index(entry.startIndex, offsetBy: 1)]
-            let filePath = String(entry.dropFirst(3))
-            var origPath: String? = nil
-            if indexStatus == "R" || indexStatus == "C" || workStatus == "R" {
-                origPath = fields.next().map(String.init)
+        for entry in Porcelain.parse(output) {
+            if entry.x != " " && entry.x != "?" {
+                stagedFiles.append(GitFileStatus(
+                    status: String(entry.x), filePath: entry.path, staged: true,
+                    origPath: entry.x == "R" || entry.x == "C" ? entry.origPath : nil))
             }
-            if indexStatus != " " && indexStatus != "?" { stagedFiles.append(GitFileStatus(status: String(indexStatus), filePath: filePath, staged: true, origPath: indexStatus == "R" || indexStatus == "C" ? origPath : nil)) }
-            if workStatus != " " && workStatus != "?" { unstagedFiles.append(GitFileStatus(status: String(workStatus), filePath: filePath, staged: false, origPath: nil)) }
-            if indexStatus == "?" && workStatus == "?" { untrackedFiles.append(GitFileStatus(status: "?", filePath: filePath, staged: false, origPath: nil)) }
+            if entry.y != " " && entry.y != "?" {
+                unstagedFiles.append(GitFileStatus(
+                    status: String(entry.y), filePath: entry.path, staged: false, origPath: nil))
+            }
+            if entry.x == "?" && entry.y == "?" {
+                untrackedFiles.append(GitFileStatus(
+                    status: "?", filePath: entry.path, staged: false, origPath: nil))
+            }
         }
     }
 

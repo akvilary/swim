@@ -1,4 +1,18 @@
 import Foundation
+import SwimCore
+
+/// Presentation side of the SwimCore `GitChangeClass`: the color a file
+/// name gets in the tree (added — green, staged — teal, unstaged —
+/// orange). Directories are never marked, files only.
+extension GitChangeClass {
+    var color: Color {
+        switch self {
+        case .added: return Theme.green
+        case .staged: return Theme.teal
+        case .unstaged: return Theme.orange
+        }
+    }
+}
 
 struct FileEntry {
     let name: String
@@ -31,6 +45,12 @@ class FileExplorerWindow: Window {
     /// toggle re-flattens in memory — the model always carries all
     /// entries with their flags.
     private var showAllEntries = false
+    /// Git name-coloring marks by absolute path (SwimCore
+    /// `GitChangeClass`, classified by the shared porcelain parser),
+    /// delivered by the Application's background status fetch in the
+    /// tree's own coordinate system. Keyed by path, not entry identity:
+    /// the dict survives rescans and lazy child loads untouched.
+    private var gitMarks: [String: GitChangeClass] = [:]
 
     override func update() {
         clear()
@@ -45,7 +65,20 @@ class FileExplorerWindow: Window {
             let isSelected = idx == selectedIndex
             let bg: Color = isSelected ? Theme.bgHighlight : Theme.bgDark
             let fg: Color = isSelected ? Theme.fg : Theme.fgDark
-            let nameFg: Color = entry.isDirectory ? Theme.blue : fg
+            let iconFg: Color = entry.isDirectory ? Theme.blue : fg
+            // Git name coloring, files only: a new/untracked file is
+            // green, a fully staged change teal, any unstaged change
+            // orange. The mark wins over the selection text color — the
+            // row background already marks the selection; directories
+            // and clean files keep the base colors.
+            let nameFg: Color
+            if entry.isDirectory {
+                nameFg = Theme.blue
+            } else if let mark = gitMarks[entry.path] {
+                nameFg = mark.color
+            } else {
+                nameFg = fg
+            }
 
             let icon: String
             if entry.isDirectory {
@@ -58,17 +91,17 @@ class FileExplorerWindow: Window {
             for _ in 0..<(depth * 2) {
                 content.append(Cell.colored(" ", fg: fg, bg: bg))
             }
-            content.append(Cell.colored(" ", fg: nameFg, bg: bg))
+            content.append(Cell.colored(" ", fg: iconFg, bg: bg))
             for c in icon {
                 let w = c.displayWidth
-                content.append(Cell.colored(c, fg: nameFg, bg: bg, bold: entry.isDirectory))
+                content.append(Cell.colored(c, fg: iconFg, bg: bg, bold: entry.isDirectory))
                 if w == 2 {
-                    var cont = Cell.colored(" ", fg: nameFg, bg: bg)
+                    var cont = Cell.colored(" ", fg: iconFg, bg: bg)
                     cont.wideContinuation = true
                     content.append(cont)
                 }
             }
-            content.append(Cell.colored(" ", fg: nameFg, bg: bg))
+            content.append(Cell.colored(" ", fg: iconFg, bg: bg))
             for c in entry.name {
                 content.append(Cell.colored(c, fg: nameFg, bg: bg, bold: entry.isDirectory))
             }
@@ -118,6 +151,19 @@ class FileExplorerWindow: Window {
         horizontalOffset = 0
         flattenEntries()
         dirty = true
+    }
+
+    /// Receives the git name-coloring marks from the Application's
+    /// background status fetch. Returns true when they changed (caller
+    /// re-renders); the tree model is untouched — coloring is a pure
+    /// lookup at draw time, so lazy child loads and rescans pick the
+    /// marks up for free.
+    @discardableResult
+    func setGitMarks(_ marks: [String: GitChangeClass]) -> Bool {
+        guard marks != gitMarks else { return false }
+        gitMarks = marks
+        dirty = true
+        return true
     }
 
     /// Reveals a file opened from outside the explorer (search result,
@@ -541,6 +587,9 @@ class FileExplorerWindow: Window {
         }
         reloadPreservingExpansion()
         reveal(path: absolute)
+        // A new file is untracked git state — refresh the git-driven
+        // decorations (explorer marks, editor gutter).
+        delegate?.gitWorktreeChanged()
     }
 
     /// Deletes the entry described by a path relative to the tree root —
@@ -567,6 +616,8 @@ class FileExplorerWindow: Window {
             selectedIndex = max(0, flatEntries.count - 1)
         }
         ensureVisible()
+        // A deleted file leaves git state — refresh the decorations.
+        delegate?.gitWorktreeChanged()
     }
 
     /// `rename <new-path>` renames the entry captured by `r` — its
@@ -617,6 +668,8 @@ class FileExplorerWindow: Window {
         }
         reloadPreservingExpansion()
         reveal(path: new)
+        // A rename is delete+add as far as git is concerned.
+        delegate?.gitWorktreeChanged()
     }
 
     /// `:fe reset` — full rescan of the tree from disk with expansion and

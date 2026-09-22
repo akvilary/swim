@@ -1,6 +1,19 @@
 import SwimCore
 import Foundation
 
+/// Line-level git status of one file, computed in the background by the
+/// Application (`git diff --unified=0` against the index and `--cached`
+/// against HEAD): `unstaged` — lines changed in the working tree
+/// (orange numbers), `staged` — lines changed in the index only
+/// (teal), `isNewFile` — the file is absent from HEAD (untracked or a
+/// staged add), so every line counts as added (green). Indices are
+/// 0-based, of the on-disk content the diff was computed against.
+struct GitLineStatus {
+    var isNewFile = false
+    var staged: Set<Int> = []
+    var unstaged: Set<Int> = []
+}
+
 /// Per-file editor state. One tab == one EditorBuffer.
 final class EditorBuffer {
     let buffer: PieceTable
@@ -30,6 +43,11 @@ final class EditorBuffer {
     /// compares against it to detect disk rewrites (a git pull merge, a
     /// command run in the embedded terminal). Nil = unknown.
     var fileMtime: TimeInterval? = nil
+    /// Line-level git status for the gutter number coloring (nil — not
+    /// fetched / not in a repository). Stored per tab so it survives tab
+    /// switches; refreshed by the background fetch each time the file is
+    /// saved, opened or the worktree changes through the git panel.
+    var gitStatus: GitLineStatus?
 
     init(buffer: PieceTable, filePath: String? = nil) {
         self.buffer = buffer

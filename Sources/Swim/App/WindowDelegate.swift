@@ -14,6 +14,11 @@ protocol WindowDelegate: AnyObject {
     func updatePreview(path: String?, highlightLine: Int)
     func bufferClosed(_ buffer: EditorBuffer)
     func fileSaved()
+    /// A git-panel action (stage/unstage/discard) or an explorer FS edit
+    /// (create/delete/rename) changed the worktree — the git-driven
+    /// decorations (status bar stats, editor gutter lines, explorer
+    /// name marks) should refetch.
+    func gitWorktreeChanged()
     /// A git-panel operation rewrote a working-tree file (a discard of
     /// the whole file or a hunk): any clean editor tab for it should be
     /// reloaded from disk.

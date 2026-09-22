@@ -240,22 +240,32 @@ class Window {
     }
 
     /// One line-number gutter row in the editor style: the number
-    /// right-aligned within `lnWidth` with one trailing space (nil — the
-    /// blank gutter). The shared painting primitive behind the editor
-    /// gutter and the git-diff gutter, so both look identical; callers
-    /// own the width, the row and the colors.
-    func drawLineNumberRow(_ row: Int, number: Int?, lnWidth: Int, fg: Color, bg: Color) {
+    /// right-aligned within the first `lnWidth - 1` cells and one
+    /// trailing slot — a plain space, or the caller's mark (the editor's
+    /// diagnostic circles). Nil number — the blank gutter. The shared
+    /// painting primitive behind the editor gutter and the git-diff
+    /// gutter, so both look identical; callers own the width, the row
+    /// and the colors (a mark carries its own fg/bg — e.g. the stacked
+    /// two-color error+warning cell paints its bottom half through bg).
+    func drawLineNumberRow(_ row: Int, number: Int?, lnWidth: Int, fg: Color, bg: Color,
+                           mark: (char: Character, fg: Color, bg: Color)? = nil) {
         guard row >= 0 && row < height else { return }
         if let number {
             let numStr = String(number)
-            let padded = String(repeating: " ", count: max(0, lnWidth - numStr.count - 1)) + numStr + " "
-            for (i, c) in padded.enumerated() where i < lnWidth {
+            let padded = String(repeating: " ", count: max(0, lnWidth - numStr.count - 1)) + numStr
+            for (i, c) in padded.enumerated() where i < lnWidth - 1 {
                 setCell(row, i, Cell.colored(c, fg: fg, bg: bg))
             }
         } else {
-            for i in 0..<min(lnWidth, width) {
+            for i in 0..<min(lnWidth - 1, width) {
                 setCell(row, i, Cell.colored(" ", fg: fg, bg: bg))
             }
+        }
+        guard lnWidth >= 1, lnWidth - 1 < width else { return }
+        if let mark {
+            setCell(row, lnWidth - 1, Cell.colored(mark.char, fg: mark.fg, bg: mark.bg))
+        } else {
+            setCell(row, lnWidth - 1, Cell.colored(" ", fg: fg, bg: bg))
         }
     }
 

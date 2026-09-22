@@ -5,6 +5,7 @@
 #endif
 @preconcurrency
 import Foundation
+import SwimCore
 
 class Application: WindowDelegate {
     private let terminal = Terminal.shared
@@ -17,12 +18,26 @@ class Application: WindowDelegate {
     /// Git info for the status bar: branch + added/deleted lines of the
     /// working tree (git diff HEAD --numstat) and of the open file —
     /// fetched in the background on file save / open / tab switch.
+    /// The same fetch feeds the git-driven decorations: line-level
+    /// status of the open file (editor gutter numbers) and the
+    /// per-file marks of the explorer (name coloring).
     private struct GitStats {
         var branch: String?
         var added = 0
         var deleted = 0
         var fileAdded = 0
         var fileDeleted = 0
+        /// The file the line-level status below was computed for (the
+        /// active file at request time); the result is applied to its
+        /// tab even if the user switched away mid-fetch.
+        var filePath: String?
+        var fileIsNew = false
+        var fileStaged: Set<Int> = []
+        var fileUnstaged: Set<Int> = []
+        /// Explorer name marks by absolute path (the explorer's own view
+        /// of the tree), classified by the shared SwimCore
+        /// `GitChangeClass`.
+        var marks: [String: GitChangeClass] = [:]
     }
     private let gitStatsTask = BackgroundTask<GitStats>()
     /// Fetches are serialized through a single state: a request arriving
@@ -196,7 +211,7 @@ class Application: WindowDelegate {
 
             let rootResult = Shell.git(["rev-parse", "--show-toplevel"], workDir: dir)
             let root = rootResult.exitCode == 0
-                ? rootResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                ? BufferManager.normalize(rootResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
                 : dir
 
             let numstat = Shell.git(["diff", "HEAD", "--numstat"], workDir: dir)
@@ -213,15 +228,95 @@ class Application: WindowDelegate {
                 }
             }
 
-            // Untracked files never appear in `git diff HEAD` — for the open
-            // file show its whole content as additions.
-            if let filePath, stats.fileAdded == 0, stats.fileDeleted == 0 {
-                let status = Shell.git(["status", "--porcelain", "--", filePath], workDir: dir)
-                if status.stdout.hasPrefix("??"),
-                   let text = try? String(contentsOfFile: filePath, encoding: .utf8),
-                   !text.isEmpty {
-                    stats.fileAdded = text.split(separator: "\n", omittingEmptySubsequences: false).count
+            // Full status through the shared SwimCore parser: feeds the
+            // explorer name marks (every changed file) and the open
+            // file's XY class. Porcelain paths are repo-root-relative;
+            // `--untracked-files=all` lists each file inside an
+            // untracked directory instead of the collapsed `?? dir/`
+            // entry — the tree shows files, not the directory mark.
+            let porcelain = Shell.git(["status", "--porcelain", "-z", "--untracked-files=all"],
+                                      workDir: dir).stdout
+
+            // Two coordinate systems meet here: git reports repo-root-
+            // relative paths (root — as git resolves it, possibly past a
+            // symlinked cwd), while the explorer tree and editor paths
+            // live in the user's view of `dir`. Marks are keyed in the
+            // explorer's view — dir + the path's remainder below dir —
+            // so both a subdirectory root and a symlinked root resolve;
+            // the fallback (dir not under root) keys by the repo path.
+            let realRoot = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
+            let realDir = URL(fileURLWithPath: dir).resolvingSymlinksInPath().path
+            let realFile = filePath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+            let subRel: String?
+            if realDir == realRoot {
+                subRel = ""
+            } else if realDir.hasPrefix(realRoot + "/") {
+                subRel = String(realDir.dropFirst(realRoot.count))
+            } else {
+                subRel = nil
+            }
+
+            var openXY: (x: Character, y: Character)?
+            for entry in Porcelain.parse(porcelain) {
+                let key: String?
+                if let subRel {
+                    if subRel.isEmpty {
+                        key = dir + "/" + entry.path
+                    } else if entry.path.hasPrefix(subRel.dropFirst() + "/") {
+                        key = dir + "/" + String(entry.path.dropFirst(subRel.count))
+                    } else {
+                        key = nil  // elsewhere in the repo — not in the tree
+                    }
+                } else {
+                    key = root + "/" + entry.path
                 }
+                if let filePath, let realFile,
+                   root + "/" + entry.path == filePath || realRoot + "/" + entry.path == realFile {
+                    openXY = (entry.x, entry.y)
+                }
+                if let key, let cls = entry.changeClass {
+                    stats.marks[key] = cls
+                }
+            }
+
+            guard let filePath, let realFile else { return stats }
+            stats.filePath = filePath
+            // Pathspec relative to the repo root, resolved through
+            // symlinks first (git's root is the resolved one); the
+            // view-relative fallback covers roots git reports verbatim.
+            guard let rel = realFile.hasPrefix(realRoot + "/")
+                ? String(realFile.dropFirst(realRoot.count + 1))
+                : filePath.hasPrefix(root + "/") ? String(filePath.dropFirst(root.count + 1)) : nil
+            else { return stats }
+
+            let isNewFile: Bool
+            if let xy = openXY {
+                isNewFile = xy.x == "A" || (xy.x == "?" && xy.y == "?")
+            } else {
+                isNewFile = false
+            }
+            stats.fileIsNew = isNewFile
+
+            // Untracked files never appear in `git diff` — for the open
+            // file show its whole content as additions.
+            if let xy = openXY, xy.x == "?" && xy.y == "?",
+               let text = try? String(contentsOfFile: filePath, encoding: .utf8),
+               !text.isEmpty {
+                stats.fileAdded = text.split(separator: "\n", omittingEmptySubsequences: false).count
+            }
+
+            // Line-level hunks for the gutter. Unstaged (working tree vs
+            // index) is always fetched — a staged-new file can carry
+            // worktree edits on top (AM). Staged hunks matter only for a
+            // tracked file; a new file is green in its entirety.
+            let spec = ":(top,literal)" + rel
+            stats.fileUnstaged = HunkLines.changedLines(
+                Shell.git(["diff", "--unified=0", "--", spec], workDir: dir)
+                    .stdout.split(separator: "\n", omittingEmptySubsequences: false))
+            if !isNewFile {
+                stats.fileStaged = HunkLines.changedLines(
+                    Shell.git(["diff", "--cached", "--unified=0", "--", spec], workDir: dir)
+                        .stdout.split(separator: "\n", omittingEmptySubsequences: false))
             }
             return stats
         }
@@ -232,6 +327,7 @@ class Application: WindowDelegate {
         let refetchQueued = gitStatsState == .runningQueued
         gitStatsState = .idle
 
+        var anyChange = false
         if statusBar.branch != stats.branch
             || statusBar.branchAdded != stats.added
             || statusBar.branchDeleted != stats.deleted
@@ -243,6 +339,25 @@ class Application: WindowDelegate {
             statusBar.fileAdded = stats.fileAdded
             statusBar.fileDeleted = stats.fileDeleted
             statusBar.dirty = true
+            anyChange = true
+        }
+
+        // Editor git gutter: the fetch ran for one file; the result
+        // lands on its tab even when the user switched away mid-fetch
+        // (the switch itself started a fresh fetch for the new file).
+        if let path = stats.filePath {
+            let status = GitLineStatus(isNewFile: stats.fileIsNew,
+                                       staged: stats.fileStaged,
+                                       unstaged: stats.fileUnstaged)
+            if editor.applyGitLineStatus(status, for: path) {
+                anyChange = true
+            }
+        }
+        if fileExplorer.setGitMarks(stats.marks) {
+            anyChange = true
+        }
+
+        if anyChange {
             spaces.current.update()
             render()
         }
@@ -785,6 +900,10 @@ class Application: WindowDelegate {
             // would show stale content on reopen — return to the list.
             gitPanel.closeDiffView()
             gitPanel.refresh()
+            // Opening the panel signals interest in git state — the
+            // decorations (gutter lines, explorer marks) may be stale
+            // after changes made outside swim.
+            fetchGitStats()
             focus(gitPanel)
         } else {
             popWindow(gitPanel)
@@ -1120,6 +1239,14 @@ class Application: WindowDelegate {
         fetchGitStats()
     }
 
+    /// A stage/unstage/discard from the git panel or a create/delete/
+    /// rename in the explorer changed the worktree — refetch the
+    /// git-driven decorations (status bar stats, editor gutter lines,
+    /// explorer name marks).
+    func gitWorktreeChanged() {
+        fetchGitStats()
+    }
+
     func requestClose(_ window: Window) {
         closeWindow(window)
     }
@@ -1138,8 +1265,11 @@ class Application: WindowDelegate {
 
     /// Any finished git command (pull, push, commit) may have changed the
     /// repository — refresh the panel so the status list stays truthful,
-    /// and sweep clean tabs: a pull merge may have rewritten their files.
+    /// refetch the git-driven decorations (a commit clears the staged
+    /// marks/lines), and sweep clean tabs: a pull merge may have
+    /// rewritten their files.
     func gitCommandFinished(_ label: String) {
+        fetchGitStats()
         gitPanel.refresh()
         for fresh in editor.tabs.reloadChangedOnDisk() {
             applyBufferReload(fresh)
