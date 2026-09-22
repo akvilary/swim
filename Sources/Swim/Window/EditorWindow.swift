@@ -59,7 +59,7 @@ class EditorWindow: Window {
     }
     var semanticTokens: [SemanticToken] { tabs.active.semanticTokens }
     var lspDiagnostics: [LSPDiagnostic] { tabs.active.diagnostics }
-    private var markdownCache: SyntaxTokenizer.MarkdownCache {
+    private var markdownCache: MarkdownTokenizer.Cache {
         get { tabs.active.markdownCache }
         set { tabs.active.markdownCache = newValue }
     }
@@ -1326,7 +1326,7 @@ class EditorWindow: Window {
         let useBuiltinTokens = semanticTokens.isEmpty && buf.lineCount < 50000
         let fileExt = (filePath as NSString?)?.pathExtension ?? ""
         let isJSON = fileExt == "json"
-        let isMD = SyntaxTokenizer.isMarkdown(fileExt)
+        let isMD = MarkdownTokenizer.isMarkdown(fileExt)
         let builtinKeywords = !isMD && !isJSON && buf.lineCount < 50000
             ? SyntaxTokenizer.keywords(for: fileExt)
             : nil
@@ -1348,7 +1348,7 @@ class EditorWindow: Window {
 
         var mdTokenIndex: [Int: [SemanticToken]]?
         if useBuiltinTokens && isMD {
-            let mdTokens = SyntaxTokenizer.tokenizeMarkdownVisible(buffer: buf, scrollY: scrollY, height: contentHeight, cache: &markdownCache)
+            let mdTokens = MarkdownTokenizer.tokenizeVisible(buffer: buf, scrollY: scrollY, height: contentHeight, cache: &markdownCache)
             var idx = [Int: [SemanticToken]]()
             idx.reserveCapacity(height)
             for t in mdTokens {
@@ -1368,19 +1368,17 @@ class EditorWindow: Window {
                 // LSP semantic tokens cover only semantic entities — keywords,
                 // strings and numbers are left untokenized (basedpyright) or
                 // untyped (sourcekit-lsp). Layer the syntactic tokenizer
-                // underneath: builtin tokens fill the gaps between LSP ones.
+                // underneath: builtin tokens fill the gaps between LSP ones
+                // (merge rules — including f-string interpolation handling —
+                // live in SyntaxTokenizer.mergeWithLSP, covered by tests).
                 let lsp = semanticTokensFor(line: lineNum)
                 let initial = lineNum > 0 && lineNum - 1 < mlStringStates.count ? mlStringStates[lineNum - 1] : .none
-                let builtin = SyntaxTokenizer.tokenize(chars: chars, lineNum: lineNum,
-                                                        keywords: builtinKeywords ?? [],
-                                                        syntax: langSyntax, initialState: initial,
-                                                        literals: builtinLiterals ?? []).tokens
-                let merged = builtin.filter { b in
-                    !lsp.contains { l in
-                        b.startChar < l.startChar + l.length && l.startChar < b.startChar + b.length
-                    }
-                } + lsp
-                tokens = merged.sorted { $0.startChar < $1.startChar }
+                tokens = SyntaxTokenizer.mergeWithLSP(
+                    builtin: SyntaxTokenizer.tokenize(chars: chars, lineNum: lineNum,
+                                                      keywords: builtinKeywords ?? [],
+                                                      syntax: langSyntax, initialState: initial,
+                                                      literals: builtinLiterals ?? []).tokens,
+                    lsp: lsp)
             } else if !useBuiltinTokens {
                 tokens = semanticTokensFor(line: lineNum)
             } else if let md = mdTokenIndex {

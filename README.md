@@ -100,7 +100,10 @@ swim <file>       # Open file
 ```
 Sources/SwimCore/
 ├── PieceTable.swift        # Text buffer (unit-tested)
-└── DiffGutter.swift        # Pure diff gutter parser (unit-tested)
+├── DiffGutter.swift        # Pure diff gutter parser (unit-tested)
+├── SyntaxTokenizer.swift   # Built-in highlighting + LSP token merge (unit-tested)
+├── MarkdownTokenizer.swift # Markdown highlighting with viewport cache (unit-tested)
+└── SemanticToken.swift     # Shared token/LSP value types (Sendable)
 Sources/Swim/
 ├── main.swift              # Entry point
 ├── App/
@@ -115,7 +118,6 @@ Sources/Swim/
 │   ├── Terminal.swift       # Low-level terminal I/O
 │   ├── EditorBuffer.swift   # Buffer state + tab manager
 │   ├── Input.swift          # Key parsing
-│   ├── SyntaxTokenizer.swift # Built-in highlighting
 │   ├── Shell.swift          # Subprocess runner (git, which)
 │   ├── InteractiveShell.swift # Interactive subprocess (credential prompts)
 │   └── BackgroundTask.swift # Background job with thread-safe result

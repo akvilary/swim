@@ -19,8 +19,10 @@ main.swift
         ├── windowStack (z-порядок открытых окон; вершина = сфокусированное)
         ├── EditorWindow (основной редактор)
         │     ├── PieceTable (текстовый буфер)
-        │     ├── SyntaxTokenizer (fallback-подсветка)
-        │     └── SemanticToken[] (LSP-подсветка)
+        │     ├── SyntaxTokenizer.tokenize (синтаксический слой: keywords/strings/numbers)
+        │     ├── SyntaxTokenizer.mergeWithLSP (послойный мердж: LSP поверх builtin)
+        │     ├── MarkdownTokenizer (viewport-подсветка Markdown с инкрементальным кэшем)
+        │     └── SemanticToken[] (LSP-подсветка, конвертированная в grapheme-индексы)
         ├── CommitWindow (редактор сообщения коммита — тонкая надстройка над EditorWindow)
         ├── FileExplorerWindow (файловое дерево)
         ├── GitPanelWindow (git status/commits/diff/commit)
@@ -39,7 +41,7 @@ main.swift
 
 **Рендеринг:** `Window.update()` заполняет cell-буфер → `Renderer` сравнивает с предыдущим кадром → `Terminal` отправляет ANSI-escape → `flush()` в stdout
 
-**Подсветка синтаксиса:** `LSPClient` получает токены от LSP-сервера ИЛИ `SyntaxTokenizer` генерирует их → `EditorWindow.semanticTokens` → маппинг на цвета через `Theme`; диагностика сервера (`publishDiagnostics`) — гуттер/подчёркивание/статус-бар (см. LSPClient)
+**Подсветка синтаксиса:** `SyntaxTokenizer.tokenize()` даёт синтаксический слой (keywords/strings/numbers) всегда, а при наличии LSP-токенов `mergeWithLSP` кладёт их поверх (builtin заполняет промежутки; строки поглощают вложенные LSP-токены интерполяций) → `EditorWindow.semanticTokens` → маппинг на цвета через `Theme`; диагностика сервера (`publishDiagnostics`) — гуттер/подчёркивание/статус-бар (см. LSPClient)
 
 **Межоконная коммуникация:** окна отправляют события в `Application` через протокол `WindowDelegate` (`openFile`, `openFileAtLine`, `handleEditorCommand`, `runGitCommand`, `gitCommandFinished`, `requestCommitMessage`, `requestCommit`, `reportError`, `requestRender`, `updatePreview`, `bufferClosed`, `fileSaved`, `gitWorktreeChanged`, `fileChangedOnDisk`, `activeFileChanged`, `requestGoToDefinition`, `requestGoBack`)
 
@@ -53,6 +55,9 @@ Sources/SwimCore/                       — Библиотечный тарге�
 ├── DiffGutter.swift                    — Парсер номеров строк diff-гуттера (unified diff счётчики; тестируется Tests/SwimCoreTests)
 ├── HunkLines.swift                     — Парсер диапазонов строк hunk'ов unified diff -u0 (новые номера для git-гуттера редактора; тестируется Tests/SwimCoreTests)
 ├── Porcelain.swift                     — Парсер `status --porcelain -z` (NUL-поля, rename/copy orig) + классификация GitChangeClass (общая для git-панели и декораций; тестируется)
+├── SyntaxTokenizer.swift              — Встроенная подсветка синтаксиса + `mergeWithLSP` (builtin-токены слоем под LSP; тестируется)
+├── MarkdownTokenizer.swift           — Markdown-подсветка с viewport-кэшем (инкрементальный скан fenced-блоков; тестируется)
+├── SemanticToken.swift               — Разделяемые value-типы LSP-протокола (`SemanticToken`, `LSPTextChange`, `LSPDiagnostic`, `LSPDefinition`; Sendable)
 
 Sources/Swim/                           — Executable-таргет (зависит от SwimCore)
 ├── main.swift                    — Точка входа
@@ -69,8 +74,6 @@ Sources/Swim/                           — Executable-таргет (завис�
 │   ├── PieceTable.swift          — Структура данных текстового буфера
 │   ├── EditorBuffer.swift        — Состояние одного буфера + BufferManager (вкладки)
 │   ├── Input.swift               — Парсинг клавиш
-│   ├── SyntaxTokenizer.swift     — Встроенная подсветка синтаксиса
-│   ├── SemanticToken.swift       — Разделяемый тип токена
 │   ├── Shell.swift               — Запуск подпроцессов (git, which)
 │   ├── InteractiveShell.swift    — Интерактивный подпроцесс + credential-промпты pull/push (FIFO-канал askpass)
 │   └── BackgroundTask.swift      — Фоновая задача с потокобезопасным результатом
@@ -248,19 +251,22 @@ pieces: [
 
 ---
 
-### Core/SyntaxTokenizer.swift — Встроенная подсветка
+### SwimCore/SyntaxTokenizer.swift — Встроенная подсветка
 
-Линейный токенизатор для 6 языков: Swift, C, Python, Rust, Go, JavaScript/TypeScript.
+Линейный токенизатор с пер-языковыми профилями: полный набор (keywords + строки + комментарии) для Swift, C, C++, C#, Python, Rust, Go, JavaScript/TypeScript, Dart; comment-only профиль для shell, YAML/TOML, Ruby; JSON — отдельным посимвольным проходом (Markdown выделен в `MarkdownTokenizer`).
 
-**`SyntaxToken`** — токен с полями `line`, `startChar`, `length`, `type`, `modifiers`.
+**`SemanticToken`** — токен с полями `line`, `startChar` (grapheme-индекс), `length`, `type`, `modifiers`.
 
-**`tokenize(line:lineNum:keywords:)`** — парсит одну строку:
-- `//` — однострочный комментарий
+**`tokenize(chars:lineNum:keywords:syntax:initialState:literals:)`** — парсит одну строку:
+- Однострочный комментарий по профилю языка (`//` или `#`; shell — только на границе слова)
 - `/* */` — блочный комментарий (в пределах строки)
-- `"..."` / `'...'` — строки с поддержкой escape-символов
+- Многострочные строки по правилам профиля (`"""`, `'''`, `` ` ``, `@"`, rust-`"`); незакрытый опенер возвращает `endState .active(ruleIndex:)` — следующий вызов продолжает строку с колонки 0
+- `"..."` / `'...'` — строки с поддержкой escape-символов; в Python f/r/b/u-префикс (`f"x"`, `rb'…'`) — часть строкового токена (требуется непосредственная примыкаемость кавычки: `f "x"` — идентификатор + строка). Escape учитывается и в raw-литералах — как в CPython, raw-строка не может заканчиваться обратным слешем
 - Числа (включая hex-цифры)
-- Идентификаторы → классифицируются как keyword/type/function/variable
+- Идентификаторы → классифицируются как keyword/literal/type/function/variable (+ soft keywords `match`/`case` в statement-позиции)
 - Операторы (`+-*/=<>!&|^~%?:@#`)
+
+**`mergeWithLSP(builtin:lsp:)`** — послойный мердж одной строки: builtin-токены заполняют промежутки между LSP-токенами (LSP авторитетен на пересечениях), кроме строковых спанов — LSP-токены, вложенные в builtin-строку (интерполяции f-строк от pyright), поглощаются ею; частичное пересечение по-прежнему вытесняет builtin-токен. Результат отсортирован по `startChar`, без пересечений. Тестируется Tests/SwimCoreTests.
 
 Для файлов >50K строк встроенная подсветка отключается (флаг `useBuiltinTokens`).
 
@@ -268,6 +274,12 @@ pieces: [
 - Строки в кавычках → зелёный (`Theme.green`)
 - `{`, `}`, `[`, `]`, `,`, `:` → белый (`Theme.fg`)
 - Всё остальное → оранжевый (`Theme.orange`)
+
+---
+
+### SwimCore/MarkdownTokenizer.swift — Markdown-подсветка
+
+Потоковый проход по структуре документа (не по-строчный, как кодовый токенизатор): состояние fenced-блоков живёт между строками. `MarkdownTokenizer.Cache` — непрозрачный вне модуля viewport-кэш: помнит позицию последнего рендера и состояние блоков на ней, скролл в пределах 200 строк продолжает скан инкрементально, иначе — с нуля. `isMarkdown(ext:)` — маршрутизация расширений. Тестируется Tests/SwimCoreTests (в т.ч. эквивалентность «тёплого» кэша холодному скану).
 
 ---
 
@@ -343,7 +355,7 @@ pieces: [
 2. Номера строк в левой колонке (ширина: `max(4, digitCount + 2)`), последняя клетка гуттера — слот диагностики (см. ниже)
 3. Для каждой видимой строки:
    - JSON → быстрый посимвольный рендеринг (без токенов)
-   - LSP токены доступны → `semanticTokensFor(line:)`
+   - LSP токены доступны → `SyntaxTokenizer.mergeWithLSP(builtin:lsp:)` послойно над `semanticTokensFor(line:)`
    - Иначе → `SyntaxTokenizer.tokenize()` (только для файлов <50K строк)
 4. Подсветка визуального выделения
 5. Отрисовка курсора (reverse video в normal, underline в insert)
@@ -539,12 +551,13 @@ askpass вызывается git'ом с промптом в `$1`; промпт 
 
 ---
 
-### Core/SemanticToken.swift — Типы данных LSP
+### SwimCore/SemanticToken.swift — Типы данных LSP
 
-Определяет разделяемые value-типы протокола:
+Определяет разделяемые value-типы протокола (все Sendable — пересекают потоки через mailbox'ы LSPClient):
 - `SemanticToken` — токен (используется и LSPClient, и SyntaxTokenizer)
 - `LSPTextChange` — инкрементальное изменение (line/char в UTF-16)
 - `LSPDiagnostic` — запись `publishDiagnostics` (range в UTF-16, severity, тег Unnecessary)
+- `LSPDefinition` / `LSPDefinitionResult` — результат textDocument/definition
 
 LSPClient использует сырые `[String: Any]` словари для JSON вместо Codable-типов для простоты.
 

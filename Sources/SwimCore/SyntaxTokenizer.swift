@@ -1,5 +1,6 @@
-import SwimCore
-struct SyntaxTokenizer {
+import Foundation
+
+public struct SyntaxTokenizer {
     static let swiftKeywords: Set<String> = [
         "import", "class", "struct", "enum", "protocol", "extension",
         "func", "var", "let", "typealias", "associatedtype",
@@ -109,11 +110,7 @@ struct SyntaxTokenizer {
         "file", "allows", "scoped",
     ]
 
-    static func isMarkdown(_ ext: String) -> Bool {
-        ext == "md" || ext == "markdown" || ext == "mdx"
-    }
-
-    static func languageId(for ext: String) -> String {
+    public static func languageId(for ext: String) -> String {
         switch ext {
         case "swift": return "swift"
         case "c": return "c"
@@ -131,7 +128,7 @@ struct SyntaxTokenizer {
         }
     }
 
-    static func keywords(for ext: String) -> Set<String> {
+    public static func keywords(for ext: String) -> Set<String> {
         switch ext {
         case "swift": return swiftKeywords
         case "c", "h": return cKeywords
@@ -161,7 +158,7 @@ struct SyntaxTokenizer {
     static let jsLiterals: Set<String> = ["true", "false", "null", "undefined"]
     static let dartLiterals: Set<String> = ["true", "false", "null"]
 
-    static func valueLiterals(for ext: String) -> Set<String> {
+    public static func valueLiterals(for ext: String) -> Set<String> {
         switch ext {
         case "swift": return swiftLiterals
         case "c", "h": return cLiterals
@@ -178,13 +175,13 @@ struct SyntaxTokenizer {
 
     /// Multi-line string syntax per language (keyed by file extension — works
     /// for both LSP-backed and builtin highlighting).
-    struct MultilineStringRule {
-        let open: String
-        let close: String
-        let escapes: Bool
+    public struct MultilineStringRule: Sendable {
+        public let open: String
+        public let close: String
+        public let escapes: Bool
     }
 
-    enum MultilineStringState: Equatable {
+    public enum MultilineStringState: Equatable, Sendable {
         case none
         case active(ruleIndex: Int)
     }
@@ -193,18 +190,55 @@ struct SyntaxTokenizer {
     /// single-line comment syntax and soft keywords, resolved in one
     /// place per file extension. Languages without soft keywords keep
     /// the empty default — the tokenizer skips the check entirely.
-    struct LanguageSyntax {
-        let mlRules: [MultilineStringRule]
-        let lineComment: String
+    public struct LanguageSyntax: Sendable {
+        public let mlRules: [MultilineStringRule]
+        public let lineComment: String
         /// POSIX shell: "#" comments only where a word begins — `${#arr}`,
         /// `$#`, `x=1#c` are not comments. Python hashes comment anywhere.
-        let lineCommentAtWordStartOnly: Bool
-        var softKeywords: Set<String> = []
+        public let lineCommentAtWordStartOnly: Bool
+        public var softKeywords: Set<String> = []
+        /// Python f/r/b/u string prefixes: in `f"x"` the prefix belongs to
+        /// the string token, not an identifier.
+        public var stringPrefixes: Bool = false
 
-        static let `default` = LanguageSyntax(mlRules: [], lineComment: "//", lineCommentAtWordStartOnly: false)
+        public static let `default` = LanguageSyntax(mlRules: [], lineComment: "//", lineCommentAtWordStartOnly: false)
     }
 
-    static func syntax(for fileExt: String) -> LanguageSyntax {
+    /// Letters valid in Python string prefixes (f/r/b/u, any case, any
+    /// combination — `fr`, `rb`, …).
+    static let stringPrefixChars: Set<Character> = ["f", "F", "r", "R", "b", "B", "u", "U"]
+
+    /// Merges one line's syntactic (builtin) tokens with its LSP semantic
+    /// tokens. LSP wins on overlap — except inside builtin string tokens:
+    /// servers like pyright leave string coloring to syntax highlighting
+    /// yet still emit tokens for f-string interpolation expressions, which
+    /// would otherwise evict the string span and leave f-strings uncolored.
+    /// An LSP token nested in a string is swallowed by it — but only by a
+    /// string that survived the merge: a string evicted by a partially
+    /// overlapping LSP token must not take nested tokens with it (that
+    /// would leave a coverage hole). Partial overlaps still evict the
+    /// builtin token as before. Returns tokens sorted by startChar with
+    /// no overlaps.
+    public static func mergeWithLSP(builtin: [SemanticToken], lsp: [SemanticToken]) -> [SemanticToken] {
+        func overlaps(_ a: SemanticToken, _ b: SemanticToken) -> Bool {
+            a.startChar < b.startChar + b.length && b.startChar < a.startChar + a.length
+        }
+        func nests(_ a: SemanticToken, inside b: SemanticToken) -> Bool {
+            a.startChar >= b.startChar && a.startChar + a.length <= b.startChar + b.length
+        }
+        let surviving = builtin.filter { b in
+            !lsp.contains { l in
+                overlaps(b, l) && !(b.type == "string" && nests(l, inside: b))
+            }
+        }
+        let survivingStrings = surviving.filter { $0.type == "string" }
+        let merged = surviving + lsp.filter { l in
+            !survivingStrings.contains { s in nests(l, inside: s) }
+        }
+        return merged.sorted { $0.startChar < $1.startChar }
+    }
+
+    public static func syntax(for fileExt: String) -> LanguageSyntax {
         let syntax: LanguageSyntax
         switch fileExt {
         case "py", "pyw", "pyi":
@@ -214,7 +248,8 @@ struct SyntaxTokenizer {
                     MultilineStringRule(open: "'''", close: "'''", escapes: true),
                 ],
                 lineComment: "#", lineCommentAtWordStartOnly: false,
-                softKeywords: pythonSoftKeywords)
+                softKeywords: pythonSoftKeywords,
+                stringPrefixes: true)
         case "swift":
             syntax = LanguageSyntax(
                 mlRules: [MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true)],
@@ -247,7 +282,8 @@ struct SyntaxTokenizer {
             mlRules: syntax.mlRules.sorted { $0.open.count > $1.open.count },
             lineComment: syntax.lineComment,
             lineCommentAtWordStartOnly: syntax.lineCommentAtWordStartOnly,
-            softKeywords: syntax.softKeywords)
+            softKeywords: syntax.softKeywords,
+            stringPrefixes: syntax.stringPrefixes)
         return sorted
     }
 
@@ -277,7 +313,7 @@ struct SyntaxTokenizer {
             || c == "(" || c == "[" || c == "{" || c == "\"" || c == "'"
     }
 
-    static func tokenize(chars: [Character], lineNum: Int, keywords: Set<String>,
+    public static func tokenize(chars: [Character], lineNum: Int, keywords: Set<String>,
                           syntax: LanguageSyntax = .default,
                           initialState: MultilineStringState = .none,
                           literals: Set<String> = []) -> (tokens: [SemanticToken], endState: MultilineStringState) {
@@ -337,19 +373,32 @@ struct SyntaxTokenizer {
                 continue
             }
 
+            // Python string prefixes (f/r/b/u, any combo): a prefix-only
+            // word directly abutting a quote makes the whole literal one
+            // string token — `f"x"`, `rb'…'`, `f"""…"""`. Adjacency
+            // matters: `f "x"` keeps `f` a plain identifier.
+            var prefixEnd = i
+            if syntax.stringPrefixes, stringPrefixChars.contains(chars[i]) {
+                var p = i + 1
+                while p < len, stringPrefixChars.contains(chars[p]) { p += 1 }
+                if p < len, chars[p] == "\"" || chars[p] == "'" { prefixEnd = p }
+            }
+
             // Multi-line string openers (checked before the single-line branch
             // so """ wins over " and @" over "). Rules are per file extension:
             // python files never scan for rust-style " strings and vice versa.
             // The first-character pre-check keeps per-char cost at a compare.
+            // With a string prefix the opener sits at `prefixEnd`; the token
+            // starts at the prefix either way.
             var matchedRule: (index: Int, rule: MultilineStringRule)?
-            let c = chars[i]
+            let c = chars[prefixEnd]
             for (idx, rule) in syntax.mlRules.enumerated()
-            where rule.open.first == c && matches(rule.open, at: i) {
+            where rule.open.first == c && matches(rule.open, at: prefixEnd) {
                 matchedRule = (idx, rule)
                 break
             }
             if let m = matchedRule {
-                if let (_, after) = scanClose(m.rule, from: i + m.rule.open.count) {
+                if let (_, after) = scanClose(m.rule, from: prefixEnd + m.rule.open.count) {
                     tokens.append(SemanticToken(line: lineNum, startChar: i, length: after - i, type: "string", modifiers: 0))
                     i = after
                 } else {
@@ -359,9 +408,12 @@ struct SyntaxTokenizer {
                 continue
             }
 
-            if chars[i] == "\"" || chars[i] == "'" {
-                let quote = chars[i]
-                var end = i + 1
+            if c == "\"" || c == "'" {
+                let quote = c
+                // Escapes are honored even for raw prefixes: a backslash
+                // still escapes the quote for termination purposes (a raw
+                // literal cannot end in a backslash), matching CPython.
+                var end = prefixEnd + 1
                 while end < len {
                     if chars[end] == "\\" { end += 2; continue }
                     if chars[end] == quote { end += 1; break }
@@ -424,219 +476,7 @@ struct SyntaxTokenizer {
         return (tokens, .none)
     }
 
-    struct MarkdownCache {
-        var bufferId: Int = 0
-        var scrollY: Int = 0
-        var inCodeBlock: Bool = false
-        var lineCount: Int = 0
-    }
-
-    static func tokenizeMarkdownVisible(buffer: PieceTable, scrollY: Int, height: Int, cache: inout MarkdownCache) -> [SemanticToken] {
-        var allTokens = [SemanticToken]()
-        let bufferId = ObjectIdentifier(buffer).hashValue
-        let lineCount = buffer.lineCount
-        var inCodeBlock = false
-
-        let cacheValid = bufferId == cache.bufferId && lineCount == cache.lineCount && scrollY >= cache.scrollY && scrollY <= cache.scrollY + 200
-        var startLine: Int
-        if cacheValid {
-            startLine = cache.scrollY
-            inCodeBlock = cache.inCodeBlock
-        } else {
-            startLine = 0
-            inCodeBlock = false
-        }
-
-        for lineNum in startLine..<scrollY {
-            guard lineNum < lineCount else { break }
-            let line = buffer.getLine(lineNum)
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
-                inCodeBlock = !inCodeBlock
-            }
-        }
-
-        cache.bufferId = bufferId
-        cache.scrollY = scrollY
-        cache.inCodeBlock = inCodeBlock
-        cache.lineCount = lineCount
-
-        allTokens.reserveCapacity(height * 3)
-        for row in 0..<height {
-            let lineNum = scrollY + row
-            guard lineNum < lineCount else { break }
-            let line = buffer.getLine(lineNum)
-            let chars = buffer.getLineChars(lineNum)
-            allTokens.append(contentsOf: tokenizeMarkdownLine(line, lineChars: chars, lineNum: lineNum, inCodeBlock: &inCodeBlock))
-        }
-        return allTokens
-    }
-
-    private static func tokenizeMarkdownLine(_ line: String, lineChars chars: [Character], lineNum: Int, inCodeBlock: inout Bool) -> [SemanticToken] {
-        var tokens = [SemanticToken]()
-        let len = chars.count
-        var i = 0
-
-        while i < len && chars[i] == " " { i += 1 }
-
-        if inCodeBlock {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
-                inCodeBlock = false
-                tokens.append(SemanticToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
-                return tokens
-            }
-            tokens.append(SemanticToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
-            return tokens
-        }
-
-        if i < len && chars[i] == "#" {
-            var end = i
-            while end < len && chars[end] == "#" { end += 1 }
-            tokens.append(SemanticToken(line: lineNum, startChar: i, length: end - i, type: "keyword", modifiers: 0))
-            if end < len && chars[end] == " " {
-                tokens.append(SemanticToken(line: lineNum, startChar: end + 1, length: len - end - 1, type: "type", modifiers: 0))
-            }
-            return tokens
-        }
-
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
-            inCodeBlock = true
-            tokens.append(SemanticToken(line: lineNum, startChar: 0, length: len, type: "string", modifiers: 0))
-            return tokens
-        }
-
-        if isHorizontalRule(chars) {
-            tokens.append(SemanticToken(line: lineNum, startChar: 0, length: len, type: "comment", modifiers: 0))
-            return tokens
-        }
-
-        if i < len && chars[i] == ">" {
-            var end = i + 1
-            if end < len && chars[end] == " " { end += 1 }
-            tokens.append(SemanticToken(line: lineNum, startChar: i, length: end - i, type: "comment", modifiers: 0))
-            tokens.append(SemanticToken(line: lineNum, startChar: end, length: len - end, type: "comment", modifiers: 0))
-            return tokens
-        }
-
-        if i < len && (chars[i] == "-" || chars[i] == "*" || chars[i] == "+") {
-                let next = i + 1
-            if next < len && chars[next] == " " {
-                tokens.append(SemanticToken(line: lineNum, startChar: i, length: 1, type: "number", modifiers: 0))
-                i = next + 1
-            }
-        } else if i < len && chars[i] >= "0" && chars[i] <= "9" {
-            var numEnd = i + 1
-            while numEnd < len && chars[numEnd] >= "0" && chars[numEnd] <= "9" { numEnd += 1 }
-            if numEnd < len && (chars[numEnd] == "." || chars[numEnd] == ")") {
-                let afterDelim = numEnd + 1
-                if afterDelim < len && chars[afterDelim] == " " {
-                    tokens.append(SemanticToken(line: lineNum, startChar: i, length: afterDelim - i + 1, type: "number", modifiers: 0))
-                    i = afterDelim + 1
-                }
-            }
-        }
-
-        i = 0
-        while i < len {
-            if chars[i] == "`" {
-                var count = 0
-                let start = i
-                while i < len && chars[i] == "`" { i += 1; count += 1 }
-                while i < len {
-                    if chars[i] == "`" {
-                        var c = 0
-                        while i < len && chars[i] == "`" && c < count { i += 1; c += 1 }
-                        if c == count { break }
-                    } else {
-                        i += 1
-                    }
-                }
-                let end = min(i, len)
-                tokens.append(SemanticToken(line: lineNum, startChar: start, length: end - start, type: "string", modifiers: 0))
-                continue
-            }
-
-            if i + 1 < len && chars[i] == "*" && chars[i + 1] == "*" {
-                let start = i; i += 2
-                while i + 1 < len && !(chars[i] == "*" && chars[i + 1] == "*") { i += 1 }
-                if i + 1 < len { i += 2 }
-                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "keyword", modifiers: 0))
-                continue
-            }
-
-            if i + 1 < len && chars[i] == "_" && chars[i + 1] == "_" {
-                let start = i; i += 2
-                while i + 1 < len && !(chars[i] == "_" && chars[i + 1] == "_") { i += 1 }
-                if i + 1 < len { i += 2 }
-                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "keyword", modifiers: 0))
-                continue
-            }
-
-            if chars[i] == "*" && (i == 0 || chars[i - 1] == " ") {
-                let start = i; i += 1
-                while i < len && chars[i] != "*" && chars[i] != "\n" { i += 1 }
-                if i < len && chars[i] == "*" { i += 1 }
-                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "variable", modifiers: 0))
-                continue
-            }
-
-            if chars[i] == "_" && (i == 0 || chars[i - 1] == " ") {
-                let start = i; i += 1
-                while i < len && chars[i] != "_" && chars[i] != "\n" { i += 1 }
-                if i < len && chars[i] == "_" { i += 1 }
-                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "variable", modifiers: 0))
-                continue
-            }
-
-            if chars[i] == "[" {
-                let start = i; i += 1
-                while i < len && chars[i] != "]" { i += 1 }
-                if i < len { i += 1 }
-                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "decorator", modifiers: 0))
-                if i < len && chars[i] == "(" {
-                    let urlStart = i; i += 1
-                    while i < len && chars[i] != ")" { i += 1 }
-                    if i < len { i += 1 }
-                    tokens.append(SemanticToken(line: lineNum, startChar: urlStart, length: i - urlStart, type: "string", modifiers: 0))
-                }
-                continue
-            }
-
-            if chars[i] == "!" && i + 1 < len && chars[i + 1] == "[" {
-                let start = i; i += 2
-                while i < len && chars[i] != "]" { i += 1 }
-                if i < len { i += 1 }
-                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "decorator", modifiers: 0))
-                if i < len && chars[i] == "(" {
-                    let urlStart = i; i += 1
-                    while i < len && chars[i] != ")" { i += 1 }
-                    if i < len { i += 1 }
-                    tokens.append(SemanticToken(line: lineNum, startChar: urlStart, length: i - urlStart, type: "string", modifiers: 0))
-                }
-                continue
-            }
-
-            if chars[i] == "<" && i + 1 < len && (chars[i + 1] == "h" || chars[i + 1] == "H" || chars[i + 1] == "a" || chars[i + 1] == "A") {
-                let start = i
-                while i < len && chars[i] != ">" { i += 1 }
-                if i < len { i += 1 }
-                tokens.append(SemanticToken(line: lineNum, startChar: start, length: i - start, type: "string", modifiers: 0))
-                continue
-            }
-
-            i += 1
-        }
-
-        return tokens
-    }
-
-    static func tokenizeJSON(line: String, lineNum: Int) -> [SemanticToken] {
-        tokenizeJSON(lineChars: Array(line), lineNum: lineNum)
-    }
-
-    static func tokenizeJSON(lineChars chars: [Character], lineNum: Int) -> [SemanticToken] {
+    public static func tokenizeJSON(lineChars chars: [Character], lineNum: Int) -> [SemanticToken] {
         let len = chars.count
         var tokens = [SemanticToken]()
         var i = 0
@@ -672,21 +512,5 @@ struct SyntaxTokenizer {
         }
 
         return tokens
-    }
-
-    private static func isHorizontalRule(_ chars: [Character]) -> Bool {
-        var i = 0
-        let len = chars.count
-        while i < len && chars[i] == " " { i += 1 }
-        guard i < len else { return false }
-        let marker = chars[i]
-        guard marker == "-" || marker == "*" || marker == "_" else { return false }
-        var count = 0
-        while i < len {
-            if chars[i] == marker { count += 1 }
-            else if chars[i] != " " { return false }
-            i += 1
-        }
-        return count >= 3
     }
 }
