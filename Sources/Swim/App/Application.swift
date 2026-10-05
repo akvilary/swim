@@ -118,6 +118,10 @@ class Application: WindowDelegate {
         tabBar.visible = fileToOpen != nil
         statusBar.visible = true
         fileExplorer.loadDirectory(startDir)
+        // `swim file.swift`: point the fresh tree at the opened file. The
+        // activeFileChanged reveal fired by editor.openFile above was a
+        // no-op — the explorer was neither visible nor rooted yet.
+        revealActiveFileInExplorer()
         gitPanel.workingDirectory = startDir
 
         // Initial window stack: explorer at the bottom, editor on top of it
@@ -882,6 +886,10 @@ class Application: WindowDelegate {
         guard editor.visible || !fileExplorer.visible else { return }
         fileExplorer.visible = !fileExplorer.visible
         if fileExplorer.visible {
+            // Re-opened after being closed while another file became
+            // active (reveals skip a closed explorer) — sync the tree to
+            // the current file instead of showing a stale selection.
+            revealActiveFileInExplorer()
             focus(fileExplorer)
         } else {
             popWindow(fileExplorer)
@@ -1211,8 +1219,12 @@ class Application: WindowDelegate {
             switchToSpace("editor")
         }
         openFileInEditor(path)
-        // Show where we are: the explorer expands to and highlights the file.
-        fileExplorer.reveal(path: BufferManager.normalize(path))
+        // Show where we are. When the file changed, activeFileChanged
+        // already revealed it; this call covers the same-file case (the
+        // result lands in the already-active tab — no tab switch, no
+        // event) and is a cheap no-op otherwise: the selection
+        // re-points, the ancestors are already expanded.
+        revealActiveFileInExplorer()
         // goToPosition clamps the line to the buffer (a search index may be
         // stale after edits) and resets the column — a cursorCol carried
         // over from the previous buffer would shift scrollX.
@@ -1236,6 +1248,24 @@ class Application: WindowDelegate {
 
     func activeFileChanged() {
         fetchGitStats()
+        // A tab switch (gt/gT, Ctrl+H/L), a close, `:e` — the active
+        // file changed, keep the open explorer tree pointing at it.
+        revealActiveFileInExplorer()
+    }
+
+    /// Points the open explorer tree at the editor's active file:
+    /// `reveal` expands the ancestors and selects the node (paths
+    /// outside the tree root are ignored; a collapsed ancestor
+    /// re-expands — part of the reveal semantics). The single funnel
+    /// for every "current file" event — tab switch/open/close, `:e`,
+    /// search and `gd` jumps, startup, explorer reopen. A closed
+    /// explorer is never touched: its tree stays frozen and no reveal
+    /// work (flatten, lazy ancestor loads) happens while it cannot be
+    /// seen — toggleFileExplorer re-syncs on reopen. A [No Name] tab
+    /// has no path, nothing to reveal.
+    private func revealActiveFileInExplorer() {
+        guard fileExplorer.visible, let path = editor.filePath else { return }
+        fileExplorer.reveal(path: path)
     }
 
     /// A stage/unstage/discard from the git panel or a create/delete/
