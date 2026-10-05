@@ -151,6 +151,14 @@ final class LSPClient: @unchecked Sendable {
         // `requests` object; `full`/`delta` live inside it. Putting them at
         // the top level (server-provider shape) makes sourcekit-lsp 6.2+
         // reject initialize with "missing expected parameter: requests".
+        // Same strictness, one field over: publishDiagnostics is
+        // PublishDiagnosticsClientCapabilities — an object. A bare `true`
+        // made sourcekit-lsp reject initialize with -32602 ("Expected to
+        // decode Dictionary<String, Any> but found bool instead") while
+        // basedpyright tolerates it, which is why python worked and swift
+        // did not. tagSupport [1,2] matches the Unnecessary/Deprecated tags
+        // decodeDiagnostic reads; versionSupport makes servers echo the
+        // document version the staleness guard already compares against.
         let capabilities: [String: Any] = [
             "textDocument": [
                 "semanticTokens": [
@@ -161,7 +169,10 @@ final class LSPClient: @unchecked Sendable {
                     "tokenModifiers": [] as [String],
                     "formats": ["relative"] as [String]
                 ] as [String: Any],
-                "publishDiagnostics": true
+                "publishDiagnostics": [
+                    "tagSupport": ["valueSet": [1, 2]] as [String: Any],
+                    "versionSupport": true
+                ] as [String: Any]
             ] as [String: Any]
         ]
 
@@ -187,8 +198,17 @@ final class LSPClient: @unchecked Sendable {
 
     /// Must run on `queue` (protocol state).
     private func handleInitializeResponse(_ data: Data) {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let result = json["result"] as? [String: Any] else { return }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        guard let result = json["result"] as? [String: Any] else {
+            // A rejected handshake (error response): the server process
+            // often keeps running while never becoming initialized — a
+            // forever-uninitialized client that answers nothing and
+            // swallows every queued didOpen. Mark dead, mirroring the EOF
+            // branch; the existing machinery then reports honestly and
+            // removes the client instead of the silence that hid this.
+            if json["error"] != nil { alive = false }
+            return
+        }
 
         if let capabilities = result["capabilities"] as? [String: Any],
            let semTokensProvider = capabilities["semanticTokensProvider"] as? [String: Any],

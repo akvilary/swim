@@ -536,8 +536,8 @@ askpass вызывается git'ом с промптом в `$1`; промпт 
 
 **Жизненный цикл:**
 1. `start()` — запускает сервер как подпроцесс через `Process`
-2. `sendInitialize()` — отправляет `initialize` с capabilities (semantic tokens full/delta, `publishDiagnostics`)
-3. `handleInitializeResponse()` — извлекает token legend, отправляет `initialized`, переигрывает отложенные `didOpen` (массив с дедупом по uri — открытие второго файла до инициализации не глотает первый; переоткрытие заменяет текст)
+2. `sendInitialize()` — отправляет `initialize` с capabilities (semantic tokens full/delta, `publishDiagnostics`). sourcekit-lsp 6.2+ строго декодирует capabilities по спецификации LSP 3.16: `publishDiagnostics` обязан быть объектом `PublishDiagnosticsClientCapabilities`, а не bool (голый `true` отклонял initialize ошибкой -32602 — python работал, swift молчал; basedpyright к форме нетребователен). Объект декларирует `tagSupport: [1, 2]` (теги Unnecessary/Deprecated, которые декодирует `decodeDiagnostic`) и `versionSupport` (серверы начинают слать `version`, который гард свежести в pollLSP уже сравнивает)
+3. `handleInitializeResponse()` — извлекает token legend, отправляет `initialized`, переигрывает отложенные `didOpen` (массив с дедупом по uri — открытие второго файла до инициализации не глотает первый; переоткрытие заменяет текст). Error-ответ (отклонённый handshake) помечает клиент мёртвым (`alive = false`, как EOF-ветка): процесс сервера часто продолжает жить, никогда не инициализируясь, и молчание больше не маскируется вечно «живым» сервером
 4. `openDocument()` — отправляет `textDocument/didOpen` (версию назначает клиент) + запрашивает semantic tokens
 5. `changeDocument(changes:)` / `reloadDocument(text:)` — инкрементальный / полный `textDocument/didChange`; версии документов принадлежат клиенту (`documentVersions`): пер-документные, строго возрастающие, переживают переоткрытие таба — поздний `publishDiagnostics` от прошлой инкарнации не проходит гард
 6. `handleSemanticTokensResponse()` — парсит LSP semtok protocol (кортежи по 5 int) → `[SemanticToken]`
