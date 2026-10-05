@@ -156,21 +156,25 @@ final class LSPClient: @unchecked Sendable {
         // made sourcekit-lsp reject initialize with -32602 ("Expected to
         // decode Dictionary<String, Any> but found bool instead") while
         // basedpyright tolerates it, which is why python worked and swift
-        // did not. tagSupport [1,2] matches the Unnecessary/Deprecated tags
-        // decodeDiagnostic reads; versionSupport makes servers echo the
-        // document version the staleness guard already compares against.
+        // did not. Declare exactly what the client uses: full requests
+        // only (delta is never requested and handleSemanticTokensResponse
+        // decodes only the `data` shape), tagSupport [1] — the Unnecessary
+        // tag decodeDiagnostic renders — and versionSupport: basedpyright
+        // attaches the document version the pollLSP staleness guard
+        // compares; sourcekit-lsp omits version either way, and the guard
+        // treats a missing version as fresh.
         let capabilities: [String: Any] = [
             "textDocument": [
                 "semanticTokens": [
                     "requests": [
-                        "full": ["delta": true]
+                        "full": true
                     ] as [String: Any],
                     "tokenTypes": [] as [String],
                     "tokenModifiers": [] as [String],
                     "formats": ["relative"] as [String]
                 ] as [String: Any],
                 "publishDiagnostics": [
-                    "tagSupport": ["valueSet": [1, 2]] as [String: Any],
+                    "tagSupport": ["valueSet": [1]] as [String: Any],
                     "versionSupport": true
                 ] as [String: Any]
             ] as [String: Any]

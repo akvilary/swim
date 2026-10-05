@@ -1400,6 +1400,13 @@ class Application: WindowDelegate {
         }
         guard client.isReady else {
             if !client.isAlive {
+                // Reap before dropping the reference: a rejected-handshake
+                // server (or one that crashed after EOF) may still be a
+                // running process with open pipes. stop() cancels the read
+                // source and SIGTERMs it; without it cleanup rides on Pipe/
+                // Process deallocation side effects (stdin EOF closing the
+                // server) — works, but implicit and version-dependent.
+                client.stop()
                 lspClients.removeValue(forKey: key)
                 _ = editor.takeLSPPendingChanges()
             }
