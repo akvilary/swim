@@ -1,4 +1,5 @@
 import Foundation
+import SwimCore
 
 struct SearchResult {
     let filePath: String

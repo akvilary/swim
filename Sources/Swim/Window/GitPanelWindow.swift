@@ -6,6 +6,9 @@ private struct GitRefreshResult {
     let repoRoot: String
     let statusOutput: String
     let logOutput: String
+    /// Value of the panel's request clock when this refresh started —
+    /// orders the refresh against diff requests (see reloadOpenDiff).
+    let requestSerial: Int
 }
 
 struct GitFileStatus {
@@ -60,9 +63,11 @@ private enum StatusItem {
     case file(GitFileStatus)
     case commit(GitCommit)
 
-    /// Stable identity used to keep the selection on the same entry when
-    /// the list is rebuilt after an action (a file moves between the
-    /// staged/unstaged sections on stage/unstage/discard).
+    /// Stable entry identity, matched by the shared rebuild policy
+    /// (`SectionedListSelection`) within a single section: the
+    /// selection (and the visual anchor) follow their entry while it
+    /// stays put; a file staged/unstaged into another section leaves
+    /// the cursor behind on purpose — see rebuildStatusList.
     var identity: String {
         switch self {
         case .file(let f): return "file:" + f.filePath
@@ -145,6 +150,15 @@ class GitPanelWindow: Window {
 
     private(set) var isRefreshing: Bool = false
     private let gitTask = BackgroundTask<GitRefreshResult>()
+
+    /// Monotonic request clock, bumped on main thread by every
+    /// refresh and every diff request. Orders the two pipelines
+    /// against each other: a completing refresh must not reload a
+    /// diff that was requested LATER than the refresh began — that
+    /// diff is by definition fresher (see reloadOpenDiff).
+    private var requestSerial: Int = 0
+    /// Clock value of the latest diff request (runDiff/runDiffForCommit).
+    private var diffRequestSerial: Int = 0
 
     /// Absolute path of the repository root (git paths are always
     /// repo-root-relative, even when `workingDirectory` is a subdirectory).
@@ -581,6 +595,8 @@ class GitPanelWindow: Window {
     }
 
     private func runDiff(for path: String, staged: Bool, untracked: Bool) {
+        requestSerial &+= 1
+        diffRequestSerial = requestSerial
         let args: [String]
         var workDir = workingDirectory
         if untracked {
@@ -624,6 +640,8 @@ class GitPanelWindow: Window {
     }
 
     private func runDiffForCommit(_ hash: String) {
+        requestSerial &+= 1
+        diffRequestSerial = requestSerial
         diffPath = ""
         diffStaged = false
         diffUntracked = false
@@ -709,6 +727,10 @@ class GitPanelWindow: Window {
             }
         }
 
+        // The diff restarts immediately (loading spinner on this very
+        // keypress, hunks cleared synchronously — a double press finds
+        // nothing to act on); the completing refresh will NOT reload it
+        // again — its request clock value is older than this request.
         refresh()
         delegate?.gitWorktreeChanged()
         runDiff(for: diffPath, staged: diffStaged, untracked: diffUntracked)
@@ -814,6 +836,10 @@ class GitPanelWindow: Window {
             }
         }
 
+        // The diff restarts immediately (loading spinner on this very
+        // keypress, hunks cleared synchronously — a double press finds
+        // nothing to act on); the completing refresh will NOT reload it
+        // again — its request clock value is older than this request.
         refresh()
         delegate?.gitWorktreeChanged()
         runDiff(for: diffPath, staged: diffStaged, untracked: diffUntracked)
@@ -866,10 +892,14 @@ class GitPanelWindow: Window {
     }
 
     /// Rebuilds the status list from the data arrays — the single
-    /// composition point, called after parseStatus/parseLog. Keeps the
-    /// selection on the same entry when it still exists (a file moves
-    /// between sections on stage/unstage/discard); otherwise clamps the
-    /// (section, row) into the new list.
+    /// composition point, called after parseStatus/parseLog. Both the
+    /// selection and the visual anchor are re-resolved through one
+    /// shared pure policy (`SectionedListSelection`, SwimCore —
+    /// tested): a position follows its entry within its section and
+    /// holds its row when the entry moves away, so stage/unstage can
+    /// be repeated without the cursor chasing files across sections.
+    /// A vanished section falls back to index clamping (selection) or
+    /// collapsing onto the selection (visual anchor).
     private func rebuildStatusList() {
         let sections: [StatusList.Section] = [
             .init(kind: .staged, items: stagedFiles.map(StatusItem.file)),
@@ -878,26 +908,44 @@ class GitPanelWindow: Window {
             .init(kind: .commits, items: recentCommits.prefix(5).map(StatusItem.commit)),
         ].filter { !$0.items.isEmpty }
 
-        // Capture identities before replacing the list so the selection
-        // (and the visual anchor) survive entries moving between sections.
-        let previousIdentity = selectedItem?.identity
-        let anchorIdentity = item(at: statusVisualStart)?.identity
+        // Capture before replacing the list — the old sections are the
+        // only place where the current positions' kinds still live.
+        let selectionIdentity = selectedItem?.identity
+        let selectionKind = kind(ofSectionAt: selectedSection)
+        let anchor = statusVisualStart
+        let anchorIdentity = item(at: anchor)?.identity
+        let anchorKind = kind(ofSectionAt: anchor.section)
         statusList = StatusList(sections: sections)
 
-        if let identity = previousIdentity,
-           let found = findItem(identity) {
-            selectedSection = found.section
-            selectedRow = found.row
-        } else if !sections.isEmpty {
-            selectedSection = min(selectedSection, sections.count - 1)
-            selectedRow = min(selectedRow, sections[selectedSection].items.count - 1)
+        let resolved = sections.map {
+            SectionedListSelection.Section(key: $0.kind, identities: $0.items.map(\.identity))
         }
-        // Keep the visual range anchored to the same entry; when it is
-        // gone the range collapses onto the selection.
+        if !sections.isEmpty {
+            if let held = SectionedListSelection.resolve(
+                identity: selectionIdentity, sectionKey: selectionKind,
+                row: selectedRow, sections: resolved) {
+                selectedSection = held.section
+                selectedRow = held.row
+            } else {
+                selectedSection = min(selectedSection, sections.count - 1)
+                selectedRow = min(selectedRow, sections[selectedSection].items.count - 1)
+            }
+        }
         if mode == .visualLine {
-            statusVisualStart = anchorIdentity.flatMap(findItem) ?? selectionPosition
+            statusVisualStart = SectionedListSelection.resolve(
+                identity: anchorIdentity, sectionKey: anchorKind,
+                row: anchor.row, sections: resolved)
+                .map { StatusPos(section: $0.section, row: $0.row) } ?? selectionPosition
         }
+        // A held row can land off-screen when sections above shifted;
+        // the draw-time clamp only bounds scrollOffset, it does not
+        // track the selection.
+        ensureVisible()
         dirty = true
+    }
+
+    private func kind(ofSectionAt index: Int) -> StatusSection? {
+        statusList.sections.indices.contains(index) ? statusList.sections[index].kind : nil
     }
 
     private func item(at pos: StatusPos) -> StatusItem? {
@@ -905,15 +953,6 @@ class GitPanelWindow: Window {
         let section = statusList.sections[pos.section]
         guard section.items.indices.contains(pos.row) else { return nil }
         return section.items[pos.row]
-    }
-
-    private func findItem(_ identity: String) -> StatusPos? {
-        for (sectionIdx, section) in statusList.sections.enumerated() {
-            for (itemIdx, item) in section.items.enumerated() where item.identity == identity {
-                return StatusPos(section: sectionIdx, row: itemIdx)
-            }
-        }
-        return nil
     }
 
     /// Returns from the diff view to the status list; called when the
@@ -927,20 +966,46 @@ class GitPanelWindow: Window {
         dirty = true
     }
 
+    /// Re-requests an open FILE diff after a status refresh — the
+    /// index or worktree may have changed under it (branch switch,
+    /// pull, terminal command). Skipped when a diff was requested
+    /// later than this refresh began (the request clock orders the two
+    /// pipelines): that diff is by definition fresher — a hunk action
+    /// re-ran it right after triggering the refresh, or the user
+    /// opened one while the refresh was in flight. Commit diffs are
+    /// hash-addressed and immutable: left alone. A diff that comes
+    /// back empty (the file became clean) closes itself in poll().
+    private func reloadOpenDiff(afterRefresh serial: Int) {
+        guard showDiff, !diffPath.isEmpty, diffCommitHash.isEmpty,
+              diffRequestSerial <= serial else { return }
+        // An untracked file gone from the fresh status cannot be
+        // diffed: `--no-index` answers with an access error (not an
+        // empty diff), which the empty-diff auto-close would never
+        // catch — close the view instead of rendering the error.
+        if diffUntracked && !untrackedFiles.contains(where: { $0.filePath == diffPath }) {
+            closeDiffView()
+            return
+        }
+        runDiff(for: diffPath, staged: diffStaged, untracked: diffUntracked)
+    }
+
     func refresh() {
         guard !workingDirectory.isEmpty else { return }
         isRefreshing = true
         dirty = true
 
+        requestSerial &+= 1
+        let serial = requestSerial
         let workDir = workingDirectory
-        gitTask.start { [workDir] in
+        gitTask.start { [workDir, serial] in
             GitRefreshResult(
                 branch: Shell.git(["rev-parse", "--abbrev-ref", "HEAD"], workDir: workDir).stdout.trimmingCharacters(in: .whitespacesAndNewlines),
                 repoRoot: Shell.git(["rev-parse", "--show-toplevel"], workDir: workDir).stdout.trimmingCharacters(in: .whitespacesAndNewlines),
                 // -z: NUL-separated entries with raw (unquoted, unescaped)
                 // paths — Cyrillic and other non-ASCII paths stay intact.
                 statusOutput: Shell.git(["status", "--porcelain", "-z"], workDir: workDir).stdout,
-                logOutput: Shell.git(["log", "--oneline", "-10", "--format=%h|%an|%cr|%s"], workDir: workDir).stdout
+                logOutput: Shell.git(["log", "--oneline", "-10", "--format=%h|%an|%cr|%s"], workDir: workDir).stdout,
+                requestSerial: serial
             )
         }
     }
@@ -957,6 +1022,10 @@ class GitPanelWindow: Window {
             parseStatus(result.statusOutput)
             parseLog(result.logOutput)
             rebuildStatusList()
+            // The refresh may describe a world that changed under an
+            // open diff (branch switch, pull, terminal command) —
+            // re-request it instead of showing stale lines.
+            reloadOpenDiff(afterRefresh: result.requestSerial)
             anyUpdate = true
         }
 

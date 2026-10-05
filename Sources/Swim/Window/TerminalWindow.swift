@@ -1,4 +1,5 @@
 import Foundation
+import SwimCore
 
 class TerminalWindow: Window {
     private enum LineKind {

@@ -40,16 +40,6 @@ class Application: WindowDelegate {
         var marks: [String: GitChangeClass] = [:]
     }
     private let gitStatsTask = BackgroundTask<GitStats>()
-    /// Fetches are serialized through a single state: a request arriving
-    /// while a fetch is running is coalesced into one refetch afterwards
-    /// (BackgroundTask has a single result slot — overlapping threads would
-    /// clobber each other's results before the main loop consumes them).
-    private enum GitStatsState {
-        case idle
-        case running
-        case runningQueued
-    }
-    private var gitStatsState: GitStatsState = .idle
 
     private var halfScreenWindow: Window?
     private var maximized: Window?
@@ -188,19 +178,10 @@ class Application: WindowDelegate {
         terminal.restore()
     }
 
+    /// Overlapping fetches are safe without call-site bookkeeping:
+    /// `BackgroundTask` is newest-wins (a start while a fetch runs
+    /// queues the latest request and drops the superseded result).
     private func fetchGitStats() {
-        switch gitStatsState {
-        case .idle:
-            gitStatsState = .running
-            startGitStatsFetch()
-        case .running:
-            gitStatsState = .runningQueued
-        case .runningQueued:
-            break
-        }
-    }
-
-    private func startGitStatsFetch() {
         let dir = gitPanel.workingDirectory.isEmpty
             ? FileManager.default.currentDirectoryPath
             : gitPanel.workingDirectory
@@ -327,9 +308,6 @@ class Application: WindowDelegate {
 
     private func pollGitStats() {
         guard let stats = gitStatsTask.consume() else { return }
-        let refetchQueued = gitStatsState == .runningQueued
-        gitStatsState = .idle
-
         var anyChange = false
         if statusBar.branch != stats.branch
             || statusBar.branchAdded != stats.added
@@ -363,10 +341,6 @@ class Application: WindowDelegate {
         if anyChange {
             spaces.current.update()
             render()
-        }
-
-        if refetchQueued {
-            fetchGitStats()
         }
     }
 
