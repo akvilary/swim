@@ -55,6 +55,7 @@ class Application: WindowDelegate {
     private let tabBar = TabBarWindow()
     private let fileExplorer = FileExplorerWindow()
     private let gitPanel = GitPanelWindow()
+    private let gitBranches = GitBranchesWindow()
     private let commitWindow = CommitWindow()
     private let searchResults = SearchResultsWindow()
     private let preview = PreviewWindow()
@@ -67,6 +68,7 @@ class Application: WindowDelegate {
         editorSpace.addWindow("tabBar", tabBar)
         editorSpace.addWindow("editor", editor)
         editorSpace.addWindow("gitPanel", gitPanel)
+        editorSpace.addWindow("gitBranches", gitBranches)
         editorSpace.addWindow("command", command)
         editorSpace.addWindow("commit", commitWindow)
         editorSpace.addWindow("terminal", terminalWindow)
@@ -480,6 +482,11 @@ class Application: WindowDelegate {
             gitPanel.dirty = true
             anyDirty = true
         }
+        if gitBranches.visible && gitBranches.isRefreshing {
+            gitBranches.spinnerFrame &+= 1
+            gitBranches.dirty = true
+            anyDirty = true
+        }
         if gitPanel.visible && gitPanel.isDiffLoading {
             gitPanel.diffSpinnerFrame &+= 1
             gitPanel.dirty = true
@@ -693,6 +700,21 @@ class Application: WindowDelegate {
         case .ctrl("g"):
             toggleGitPanel()
             return
+        case .ctrl("b"):
+            toggleGitBranches()
+            return
+        case .ctrl("o"):
+            // Git pull from any window (the same funnel as the git
+            // panel's old `p`): output, credentials and the finished
+            // hook all come with the command window.
+            runGitCommand(label: "git pull", args: ["pull"])
+            return
+        case .ctrl("p"):
+            runGitCommand(label: "git push", args: ["push"])
+            return
+        case .ctrl("y"):
+            copyCurrentBranchToClipboard()
+            return
         case .ctrl("f"):
             toggleSearch()
             return
@@ -850,6 +872,15 @@ class Application: WindowDelegate {
         spaces.current.updateFocusStates()
     }
 
+    /// Ctrl+Y — the current branch name to the clipboard (OSC52), from
+    /// any window. Same guards as the git panel's old `Y`: an empty
+    /// name or "not a git repo" means there is nothing to copy.
+    private func copyCurrentBranchToClipboard() {
+        let branch = gitPanel.currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !branch.isEmpty, branch != "not a git repo" else { return }
+        Terminal.shared.osc52Copy(branch)
+    }
+
     private func toggleFileExplorer() {
         if maximized != nil {
             restoreMaximized()
@@ -890,6 +921,30 @@ class Application: WindowDelegate {
             popWindow(gitPanel)
             return
         }
+        recalculateLayout()
+        spaces.markAllDirty()
+    }
+
+    /// Ctrl+B — the branch picker toggle: closes when open, otherwise
+    /// a fresh picker (empty filter, insert mode, reloaded list).
+    private func toggleGitBranches() {
+        if gitBranches.visible {
+            popWindow(gitBranches)
+            return
+        }
+        openGitBranches()
+    }
+
+    /// Opens the branch picker: fresh filter, typing surface ready,
+    /// list reloaded — a branch may have moved since the last visit.
+    private func openGitBranches() {
+        if maximized != nil { restoreMaximized() }
+        if spaces.current.id != "editor" { switchToSpace("editor") }
+        gitBranches.prepare(workingDirectory: gitPanel.workingDirectory.isEmpty
+            ? FileManager.default.currentDirectoryPath
+            : gitPanel.workingDirectory)
+        gitBranches.visible = true
+        focus(gitBranches)
         recalculateLayout()
         spaces.markAllDirty()
     }
@@ -984,6 +1039,7 @@ class Application: WindowDelegate {
         guard let window = halfScreenWindow else { return .none }
         if window === fileExplorer { return .explorer }
         if window === gitPanel { return .git }
+        if window === gitBranches { return .branches }
         if window === command || window === commitWindow { return .command }
         if window === terminalWindow { return .terminal }
         if window === searchResults { return .searchResults }
@@ -1024,6 +1080,7 @@ class Application: WindowDelegate {
             showExplorer: fileExplorer.visible,
             showEditor: editor.visible,
             showGit: gitPanel.visible,
+            showBranches: gitBranches.visible,
             showCommand: command.visible || commitWindow.visible,
             showTerminal: terminalWindow.visible,
             showTabBar: editor.visible && tabBar.visible,
@@ -1034,6 +1091,7 @@ class Application: WindowDelegate {
         tabBar.resize(x: layout.tabbar.x, y: layout.tabbar.y, width: layout.tabbar.width, height: layout.tabbar.height)
         editor.resize(x: layout.editor.x, y: layout.editor.y, width: layout.editor.width, height: layout.editor.height)
         gitPanel.resize(x: layout.git.x, y: layout.git.y, width: layout.git.width, height: layout.git.height)
+        gitBranches.resize(x: layout.branches.x, y: layout.branches.y, width: layout.branches.width, height: layout.branches.height)
         searchResults.resize(x: layout.searchResults.x, y: layout.searchResults.y, width: layout.searchResults.width, height: layout.searchResults.height)
         preview.resize(x: layout.preview.x, y: layout.preview.y, width: layout.preview.width, height: layout.preview.height)
         command.resize(x: layout.command.x, y: layout.command.y, width: layout.command.width, height: layout.command.height)
@@ -1254,13 +1312,13 @@ class Application: WindowDelegate {
         closeWindow(window)
     }
 
-    func runGitCommand(label: String, args: [String]) {
+    func runGitCommand(label: String, args: [String], then followUp: (label: String, args: [String])?) {
         if maximized != nil { restoreMaximized() }
         // The command window shares the commit editor's layout slot —
         // never show both at once (they would overdraw each other).
         if commitWindow.visible { popWindow(commitWindow) }
         command.workingDirectory = gitPanel.workingDirectory
-        command.runCommand(label, args: args)
+        command.runCommand(label, args: args, then: followUp)
         recalculateLayout()
         focus(command)
         spaces.markAllDirty()
@@ -1274,6 +1332,9 @@ class Application: WindowDelegate {
     func gitCommandFinished(_ label: String) {
         fetchGitStats()
         gitPanel.refresh()
+        // A command run while the picker stayed open (git panel focused
+        // through Tab) may have moved branches — keep the list truthful.
+        if gitBranches.visible { gitBranches.refresh() }
         for fresh in editor.tabs.reloadChangedOnDisk() {
             applyBufferReload(fresh)
         }

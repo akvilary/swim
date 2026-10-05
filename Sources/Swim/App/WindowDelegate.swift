@@ -4,7 +4,11 @@ protocol WindowDelegate: AnyObject {
     func openFile(_ path: String)
     func openFileAtLine(_ path: String, line: Int)
     func handleEditorCommand(_ cmd: String)
-    func runGitCommand(label: String, args: [String])
+    /// Runs a git command in the command window. The optional
+    /// follow-up starts automatically once the command SUCCEEDS (see
+    /// CommandWindow.runCommand(then:)) — the branch picker's
+    /// Ctrl+Enter: switch, then pull.
+    func runGitCommand(label: String, args: [String], then followUp: (label: String, args: [String])?)
     func gitCommandFinished(_ label: String)
     func terminalCommandFinished()
     func requestCommitMessage(prefill: String)
@@ -30,4 +34,13 @@ protocol WindowDelegate: AnyObject {
     func requestClose(_ window: Window)
     func requestGoToDefinition(line: Int, charUtf16: Int)
     func requestGoBack()
+}
+
+extension WindowDelegate {
+    /// Two-argument convenience for the no-follow-up callers (git
+    /// panel's pull/push, the commit flow) — protocols can't declare
+    /// default parameter values, so the default lives here.
+    func runGitCommand(label: String, args: [String]) {
+        runGitCommand(label: label, args: args, then: nil)
+    }
 }

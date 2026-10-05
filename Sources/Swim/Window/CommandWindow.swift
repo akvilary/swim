@@ -14,10 +14,15 @@ class CommandWindow: Window {
     private var inputKind: CredentialKind?
     /// The finished run was Esc-cancelled — the done plate says so.
     private var lastRunCancelled = false
+    /// A command queued to run in this window right after the current
+    /// one SUCCEEDS (the branch picker's Ctrl+Enter: switch, then
+    /// pull). Dropped on failure or Esc-cancel — the predecessor's
+    /// output stays on screen explaining why.
+    private var followUp: (label: String, args: [String])?
 
     private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-    func runCommand(_ label: String, args: [String]) {
+    func runCommand(_ label: String, args: [String], then chaining: (label: String, args: [String])? = nil) {
         // A previous run may still be blocked on a credential nobody
         // will ever answer — cancel it before starting the new one.
         session?.cancel()
@@ -27,6 +32,7 @@ class CommandWindow: Window {
         isRunning = true
         lastRunCancelled = false
         inputKind = nil
+        followUp = chaining
         visible = true
         dirty = true
 
@@ -60,8 +66,22 @@ class CommandWindow: Window {
             : result.combined.split(separator: "\n", omittingEmptySubsequences: false)
         isRunning = false
         dirty = true
-        delegate?.requestRender()
+        // Report first, chain second: the app (stats, git panel, tab
+        // sweep) must reflect the finished command before its
+        // follow-up starts rewriting the world again. The follow-up
+        // only runs while the window is still open — closing it (Esc,
+        // `:q`) abandons the chain instead of resurrecting the window
+        // unfocused mid-operation. The predecessor itself may still
+        // complete (its process was already running) — pre-existing
+        // semantics of closing a running command window.
         delegate?.gitCommandFinished(title)
+        if visible, !cancelled, result.exitCode == 0, let next = followUp {
+            followUp = nil
+            runCommand(next.label, args: next.args)
+            return
+        }
+        followUp = nil
+        delegate?.requestRender()
     }
 
     /// Called when the window is closed while the process still waits
