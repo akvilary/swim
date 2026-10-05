@@ -23,7 +23,12 @@ struct Shell {
         do {
             try process.run()
             if let stdin, let inPipe {
-                inPipe.fileHandleForWriting.write(stdin.data(using: .utf8) ?? Data())
+                // PipeWriter, not FileHandle.write: a child that fails
+                // fast (bad repo, lock conflict) before draining stdin
+                // makes the write return EPIPE — fatal through
+                // FileHandle.write (see PipeWriter).
+                PipeWriter.writeAll(stdin.data(using: .utf8) ?? Data(),
+                                    to: inPipe.fileHandleForWriting.fileDescriptor)
                 inPipe.fileHandleForWriting.closeFile()
             }
             let outData = outPipe.fileHandleForReading.readDataToEndOfFile()

@@ -76,6 +76,7 @@ Sources/Swim/                           — Executable-таргет (завис�
 │   ├── EditorBuffer.swift        — Состояние одного буфера + BufferManager (вкладки)
 │   ├── Input.swift               — Парсинг клавиш
 │   ├── Shell.swift               — Запуск подпроцессов (git, which)
+│   ├── PipeWriter.swift          — EPIPE-толерантный write(2) в пайпы детей (LSP-кадры, stdin Shell, FIFO InteractiveShell)
 │   ├── InteractiveShell.swift    — Интерактивный подпроцесс + credential-промпты pull/push (FIFO-канал askpass)
 │   └── IndentEngine.swift        — Отступы по типу файла (без зависимостей)
 ├── Window/
@@ -91,8 +92,7 @@ Sources/Swim/                           — Executable-таргет (завис�
 │   ├── TerminalWindow.swift      — Встроенный терминал
 │   └── StatusBarWindow.swift     — Строка состояния
 └── LSP/
-    ├── LSPClient.swift           — Клиент Language Server Protocol
-    └── LSPProtocol.swift         — Типы данных LSP
+    └── LSPClient.swift           — Клиент Language Server Protocol
 
 Tests/SwimCoreTests/                    — swift-testing (`swift test`): регрессионные fixture-ы чистых модулей SwimCore
 ├── DiffGutterTests.swift               — Форматы unified diff: сообщение коммита на +/-/пробел, combined merge (@@@), untracked, multi-file, \\ No newline, ширина гуттера
@@ -466,6 +466,12 @@ askpass вызывается git'ом с промптом в `$1`; промпт 
 
 ---
 
+### Core/PipeWriter.swift — EPIPE-толерантная запись в пайпы
+
+Единственная форма записи в stdin/FIFO детей (`LSPClient`-кадры, `Shell.run` stdin, `InteractiveShell.answer`): сырой `write(2)`-цикл — EINTR ретраится, частичные записи дозаписываются, любая жёсткая ошибка останавливает цикл молча и возвращается Bool'ом (`writeAll` → false). `FileHandle.write` для этого непригоден: corelibs оборачивает syscall в `try!`, любая ошибка возврата (EPIPE в первую очередь — ребёнок умер между проверкой живости и записью) фаталит весь процесс (`Foundation/FileHandle.swift:709`, проверено на main-потоке и dispatch-очереди). Истина о живости принадлежит машине состояний вызывающего: `LSPClient` помечает клиент мёртвым по недоставленному кадру (полу-открытый сервер — stdin закрыт, stdout держится — иначе вечно сидел бы isReady, молча глотая кадры), `Shell`/`InteractiveShell` владельцы своего лайвнеса и результат игнорируют. Сигнальную половину политики ставит `main.swift`: `signal(SIGPIPE, SIG_IGN)` процесс-глобально — иначе ошибка приходит сигналом (exit 141), и ни один обработчик возврата не успевает; ни Dispatch, ни Foundation-Process/Pipe этот игнор на Linux не ставят (проверено), раньше он доставался только наследованием от родительского shell'а. Дети наследуют игнор: пайплайны встроенного терминала видят EPIPE-возвраты вместо смерти сигналом — та же цена, что платит любой редактор на игнорирующем SIGPIPE рантайме.
+
+---
+
 ### Window/SearchResultsWindow.swift + PreviewWindow.swift — Поиск по проекту
 
 Пара окон пространства `search`: слева — дерево результатов, сгруппированных по директориям и файлам, справа — превью выбранного файла с подсветкой активной строки.
@@ -544,7 +550,7 @@ askpass вызывается git'ом с промптом в `$1`; промпт 
 7. `handleMessage()` на `publishDiagnostics` — декодирует `LSPDiagnostic` (range, severity, tags) в `diagnosticsMailbox`
 8. `Application.pollLSP()` — дрейнит mailboxes на каждом тике цикла; для диагностики сверяет `version` публикации с `lastSentVersion(uri)` и отбрасывает устаревшие, актуальные кладёт в `EditorBuffer.diagnostics` через `applyDiagnostics`
 
-**Асинхронность (single-owner confinement):** вся протокольная мутабельность (`buffer`, `pendingRequests`, legend, `initialized`, `documentVersions`, очередь отложенных didOpen) принадлежит серийной очереди клиента; кадры сериализуются на вызывающем потоке и покидают очередь цельными `Data` — FIFO `Content-Length`-кадров гарантирован в обе стороны, словари не пересекают границу потоков. Регистрация callback'а и запись запроса — один серийный блок: ответ физически не может быть разобран раньше регистрации (раньше регистрация шла из main и гонялась с `removeValue` читателя). Main-loop читает только три `Locked`-ячейки (`tokensMailbox`, `definitionMailbox`, `diagnosticsMailbox` — SwimCore-примитив, лока нельзя «забыть») и зеркало версий; `alive` — единственный сознательно нелоченный word-sized флаг. Actor'ы отвергнуты: потребитель синхронный (event loop редактора), синхронное ожидание актора — deadlock, а `Task`-на-чанк не гарантирует FIFO кадров.
+**Асинхронность (single-owner confinement):** вся протокольная мутабельность (`buffer`, `pendingRequests`, legend, `initialized`, `documentVersions`, очередь отложенных didOpen) принадлежит серийной очереди клиента; кадры сериализуются на вызывающем потоке и покидают очередь цельными `Data` — FIFO `Content-Length`-кадров гарантирован в обе стороны, словари не пересекают границу потоков. Запись кадра — `PipeWriter.writeAll` (EPIPE-толерантный `write(2)`): сервер, умерший между гардом `alive` и syscall'ом, не уносит редактор (через `FileHandle.write` — фатально, см. PipeWriter); смерть констатирует EOF-ветка ридера, а недоставленный кадр помечает `alive = false` сам (полу-открытый сервер не сидит isReady вечно) — следующая правка удаляет клиента через `stop()`. Мёртвому клиенту (`alive == false`) документные методы (`openDocument`/`changeDocument`/`reloadDocument`) и `sendRequest` не делают ничего — ни холостых версий `documentVersions`, ни вечных слотов `pendingRequests`. Регистрация callback'а и запись запроса — один серийный блок: ответ физически не может быть разобран раньше регистрации (раньше регистрация шла из main и гонялась с `removeValue` читателя). Main-loop читает только три `Locked`-ячейки (`tokensMailbox`, `definitionMailbox`, `diagnosticsMailbox` — SwimCore-примитив, лока нельзя «забыть») и зеркало версий; `alive` — единственный сознательно нелоченный word-sized флаг. Actor'ы отвергнуты: потребитель синхронный (event loop редактора), синхронное ожидание актора — deadlock, а `Task`-на-чанк не гарантирует FIFO кадров.
 
 **Диагностика:** `EditorWindow.rebuildLSPIndexes()` (те же события, что и `tokenIndex`: применение токенов, активация таба, `bufferReloaded` при in-place reload) конвертирует сырые UTF-16 диапазоны в построчные графем-спаны `diagnosticsIndex`. Рендер: номер строки больше не красится severity — после номера в хвостовую клетку гуттера ставится маленькая точка-марка (красная ошибка / оранжевая предупреждение / жёлтая info; ошибка+предупреждение — маленький квадрат цветом худшей severity, см. EditorWindow), спаны подчёркиваются (SGR 4), диагностики с тегом Unnecessary (неиспользуемые импорты) рендерятся серым вместо подчёркивания — стандартная конвенция. Статус-бар показывает `cursorDiagnostic()`: чистый запрос `diagnostic(at:col:)` выбирает спан под курсором (нуль-широкие нормализованы до единичной ширины), затем дистанцию, severity, позицию — вторая проблема на строке показывается при наведении именно на неё.
 

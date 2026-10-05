@@ -20,7 +20,11 @@ import SwimCore
 ///   the reference is deliberately shared across threads, the mutable
 ///   state is not (queue-confined or behind `Locked`). `alive` is the
 ///   one unlocked cross-thread flag — a word-sized Bool, tear-free on
-///   every supported platform.
+///   every supported platform. It flips true exactly once (start()) and
+///   only ever back to false, from four writers: the reader's EOF branch,
+///   a rejected initialize response, an undeliverable frame in write(),
+///   and stop() — one direction after startup, so no write can lose a
+///   race against another.
 final class LSPClient: @unchecked Sendable {
     private var process: Process?
     private var inputPipe: Pipe?
@@ -257,6 +261,12 @@ final class LSPClient: @unchecked Sendable {
     func openDocument(uri: String, languageId: String, text: String) {
         queue.async { [weak self] in
             guard let self else { return }
+            // A dead client accepts nothing — not even the pre-init stash:
+            // initialize will never complete now, and stashed didOpens
+            // would sit inert until removal drops the whole client. Same
+            // guard in changeDocument/reloadDocument keeps them from
+            // bumping documentVersions for frames that cannot be written.
+            guard self.alive else { return }
             guard self.initialized else {
                 // Not initialized yet: stash for replay after initialize —
                 // decided ON the queue, so a response being processed right
@@ -282,7 +292,7 @@ final class LSPClient: @unchecked Sendable {
 
     func changeDocument(uri: String, changes: [LSPTextChange]) {
         queue.async { [weak self] in
-            guard let self, self.initialized else { return }
+            guard let self, self.alive, self.initialized else { return }
             let version = self.nextVersion(uri)
             let contentChanges: [[String: Any]] = changes.map { change in
                 [
@@ -310,7 +320,7 @@ final class LSPClient: @unchecked Sendable {
     /// semantic tokens are stale — re-request them.
     func reloadDocument(uri: String, text: String) {
         queue.async { [weak self] in
-            guard let self, self.initialized else { return }
+            guard let self, self.alive, self.initialized else { return }
             let version = self.nextVersion(uri)
             guard let frame = Self.frame(method: "textDocument/didChange", params: [
                 "textDocument": [
@@ -450,7 +460,10 @@ final class LSPClient: @unchecked Sendable {
         }
         guard let frame = Self.frame(id: id, method: method, params: params) else { return }
         queue.async { [weak self] in
-            guard let self else { return }
+            // Dead clients register no callbacks: a response can never
+            // come, and every queued request would leak one
+            // pendingRequests slot until removal drops the client.
+            guard let self, self.alive else { return }
             self.pendingRequests[id] = callback
             self.write(frame)
         }
@@ -463,10 +476,20 @@ final class LSPClient: @unchecked Sendable {
         }
     }
 
-    /// Must run on `queue`: whole-frame writes keep frames from interleaving.
+    /// Must run on `queue`: whole-frame writes keep frames from
+    /// interleaving. EPIPE-tolerant by construction (PipeWriter): a
+    /// server dying between the alive guard and the syscall must not
+    /// take the editor with it (probed fatal through FileHandle.write).
+    /// A frame that could not be delivered marks the client dead: the
+    /// server's read end is gone, so the session is over even when the
+    /// reader has not seen EOF yet — a half-open server (stdin closed,
+    /// stdout held) would otherwise sit isReady forever, swallowing
+    /// every frame silently. The next edit's removal machinery reaps it.
     private func write(_ frame: Data) {
-        guard alive, let inputPipe else { return }
-        inputPipe.fileHandleForWriting.write(frame)
+        guard alive, let fd = inputPipe?.fileHandleForWriting.fileDescriptor else { return }
+        if !PipeWriter.writeAll(frame, to: fd) {
+            alive = false
+        }
     }
 
     private func handleData(_ data: Data) {

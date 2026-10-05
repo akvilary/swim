@@ -94,8 +94,10 @@ final class InteractiveShell {
     }
 
     /// Submits the typed credential — one line into the FIFO; the
-    /// asking helper consumes it. EINTR-safe partial-write loop; EPIPE
-    /// is impossible while the session holds the O_RDWR descriptor.
+    /// asking helper consumes it. EINTR-safe partial-write loop
+    /// (PipeWriter); EPIPE is impossible while the session holds the
+    /// O_RDWR descriptor, and the loop's quiet stop covers every other
+    /// hard error the same way.
     func answer(_ text: String) {
         let wasPending = mailbox.mutex.withLock { state -> Bool in
             guard state.prompt != nil else { return false }
@@ -103,18 +105,7 @@ final class InteractiveShell {
             return true
         }
         guard wasPending, fifoFd >= 0 else { return }
-        let bytes = Array((text + "\n").utf8)
-        bytes.withUnsafeBufferPointer { ptr in
-            var offset = 0
-            while offset < bytes.count {
-                let n = write(fifoFd, ptr.baseAddress! + offset, bytes.count - offset)
-                if n > 0 {
-                    offset += n
-                } else if errno != EINTR {
-                    break
-                }
-            }
-        }
+        PipeWriter.writeAll(Data((text + "\n").utf8), to: fifoFd)
     }
 
     /// Aborts the operation: closes the FIFO (every helper child blocked
