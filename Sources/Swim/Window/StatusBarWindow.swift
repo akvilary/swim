@@ -152,7 +152,7 @@ class StatusBarWindow: Window {
 
     override func cursorRenderInfo() -> CursorRenderInfo? {
         guard let caret = commandCaretScreenCol else { return nil }
-        return CursorRenderInfo(row: y, col: x + caret, shape: 5, visible: true)
+        return .insertCaret(row: y, col: x + caret)
     }
 
     private static func modeText(_ mode: WindowMode) -> String {

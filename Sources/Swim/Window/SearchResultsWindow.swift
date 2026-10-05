@@ -67,14 +67,6 @@ class SearchResultsWindow: Window {
             for i in min(width, max(0, prompt.count + displayText.count))..<width {
                 setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
             }
-            let cursorCol = prompt.count + min(inputCursorPos, maxInput)
-            if cursorCol < width {
-                // Same as the editor/terminal: invert the existing cell —
-                // the character keeps its text color and stays visible.
-                var cell = getCell(0, cursorCol)
-                cell.reverse = true
-                setCell(0, cursorCol, cell)
-            }
         } else {
             let headerText: String
             if isSearching {
@@ -253,6 +245,18 @@ class SearchResultsWindow: Window {
                 (name: name, results: results.sorted { $0.lineNumber < $1.lineNumber })
             }.sorted { $0.name < $1.name })
         }.sorted { $0.dir < $1.dir }
+    }
+
+    /// The query-input caret is a terminal cursor — the shared
+    /// insert-mode bar every typing surface shows (see
+    /// CursorRenderInfo.insertCaret), not a faked inverted cell.
+    override func cursorRenderInfo() -> CursorRenderInfo? {
+        guard visible, focused, inputMode else { return nil }
+        let prompt = " Search: ".count
+        let maxInput = max(0, width - prompt - 2)
+        let col = prompt + min(inputCursorPos, maxInput)
+        guard col < width else { return nil }
+        return .insertCaret(row: y, col: x + col)
     }
 
     override func handleKey(_ key: Key) -> Bool {

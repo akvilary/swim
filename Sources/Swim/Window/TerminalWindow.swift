@@ -192,26 +192,37 @@ class TerminalWindow: Window {
         return true
     }
 
-    /// The live prompt — the last line of the scrollable buffer.
-    private func drawPromptLine(row: Int) {
-        var prompt = " > "
+    /// The live prompt's text — the spinner claims its head while a
+    /// command runs; one width shared by the drawing and the caret
+    /// math so they cannot drift apart.
+    private var promptText: String {
         if isRunning {
             let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
-            prompt = " \(spinner) > "
+            return " \(spinner) > "
         }
+        return " > "
+    }
 
-        drawLine(prompt, row: row, col: 0, fg: Theme.blue, bg: Theme.terminalBg, bold: true)
-        let maxInput = max(0, width - prompt.count - 1)
+    /// The live prompt — the last line of the scrollable buffer. The
+    /// typing caret is the terminal's shared insert bar (see
+    /// cursorRenderInfo), not a faked inverted cell.
+    private func drawPromptLine(row: Int) {
+        drawLine(promptText, row: row, col: 0, fg: Theme.blue, bg: Theme.terminalBg, bold: true)
+        let maxInput = max(0, width - promptText.count - 1)
         let displayText = String(inputBuffer.suffix(maxInput))
-        drawLine(displayText, row: row, col: prompt.count, fg: Theme.fg, bg: Theme.terminalBg)
-        let cursorCol = prompt.count + min(inputCursorPos, maxInput)
-        if cursorCol < width {
-            // Same as the editor: invert the existing cell — the character
-            // keeps its text color and stays visible under the cursor.
-            var cell = getCell(row, cursorCol)
-            cell.reverse = true
-            setCell(row, cursorCol, cell)
-        }
+        drawLine(displayText, row: row, col: promptText.count, fg: Theme.fg, bg: Theme.terminalBg)
+    }
+
+    /// The prompt is a typing surface like any other: its caret is
+    /// the shared insert-mode bar, on the line right after the
+    /// buffer (clamped to what is actually on screen).
+    override func cursorRenderInfo() -> CursorRenderInfo? {
+        guard visible, focused else { return nil }
+        let row = contentTop + flatLines.count - scrollOffset
+        let maxInput = max(0, width - promptText.count - 1)
+        let col = promptText.count + min(inputCursorPos, maxInput)
+        guard row >= contentTop, row < height, col < width else { return nil }
+        return .insertCaret(row: y + row, col: x + col)
     }
 
     private func buildFlat() {

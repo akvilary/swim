@@ -1,10 +1,29 @@
 import Foundation
 
 struct CursorRenderInfo {
+    /// DECSCUSR shapes swim uses, as one place's vocabulary: `bar` is
+    /// the insert-mode caret of every typing surface (the editor's
+    /// insert, the status-bar command line, the query inputs of the
+    /// branches picker, search and terminal); `block` is the
+    /// navigation default the renderer resets to when no window owns
+    /// a cursor. Normal-mode cursors are not terminal cursors at all
+    /// — the editor draws its block as an inverted cell highlight.
+    enum Shape: Int {
+        case block = 1
+        case bar = 5
+    }
+
     let row: Int
     let col: Int
-    let shape: Int
+    let shape: Shape
     let visible: Bool
+
+    /// The shared insert-mode caret: a steady bar at the screen
+    /// position — one definition of "I am typing here", reused by
+    /// every typing surface so they all afford the same cursor.
+    static func insertCaret(row: Int, col: Int) -> CursorRenderInfo {
+        CursorRenderInfo(row: row, col: col, shape: .bar, visible: true)
+    }
 }
 
 class Renderer {
@@ -108,11 +127,11 @@ class Renderer {
 
         if let info = cursorInfo, info.visible {
             terminal.moveCursor(row: info.row, col: info.col)
-            terminal.setCursorShape(info.shape)
+            terminal.setCursorShape(info.shape.rawValue)
             terminal.showCursor(true)
         } else {
             terminal.showCursor(false)
-            terminal.setCursorShape(1)
+            terminal.setCursorShape(CursorRenderInfo.Shape.block.rawValue)
         }
 
         terminal.flush()

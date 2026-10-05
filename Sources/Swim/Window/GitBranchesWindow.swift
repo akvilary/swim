@@ -71,6 +71,9 @@ class GitBranchesWindow: Window {
     private var filterCursorPos: Int = 0
     private var selectedIndex: Int = 0
     private var scrollOffset: Int = 0
+    /// The input line's prompt — a constant so the drawing and the
+    /// caret math can never drift apart.
+    private static let prompt = " Branch: "
 
     var workingDirectory: String = "" {
         didSet { refresh() }
@@ -149,28 +152,32 @@ class GitBranchesWindow: Window {
         drawBranchList()
     }
 
-    /// The typing surface — the search window's input row, verbatim:
-    /// prompt + query in the plate colors, the caret inverted in place.
+    /// The typing surface — the search window's input row: prompt +
+    /// query in the plate colors; the caret itself is the terminal's
+    /// insert bar (see cursorRenderInfo), not a faked inverted cell.
     private func drawFilterLine() {
-        let prompt = " Branch: "
-        drawLine(prompt, row: 0, col: 0, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)
-        let maxInput = width - prompt.count - 2
+        drawLine(Self.prompt, row: 0, col: 0, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)
+        let maxInput = width - Self.prompt.count - 2
         let displayText = String(filterBuffer.suffix(max(0, maxInput)))
-        drawLine(displayText, row: 0, col: prompt.count, fg: Theme.fg, bg: Theme.bgHighlight)
+        drawLine(displayText, row: 0, col: Self.prompt.count, fg: Theme.fg, bg: Theme.bgHighlight)
         // Fill the whole tail — starting one past the text would leave a
         // stray dark cell right after the last character once the
         // cursor moves away from it.
-        for i in min(width, max(0, prompt.count + displayText.count))..<width {
+        for i in min(width, max(0, Self.prompt.count + displayText.count))..<width {
             setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
         }
-        let cursorCol = prompt.count + min(filterCursorPos, maxInput)
-        if cursorCol < width {
-            // Invert the existing cell — the character keeps its text
-            // color and stays visible.
-            var cell = getCell(0, cursorCol)
-            cell.reverse = true
-            setCell(0, cursorCol, cell)
-        }
+    }
+
+    /// The typing caret is a terminal cursor — the shared insert-mode
+    /// bar every typing surface shows. Menu mode owns no typing
+    /// surface: no cursor, the renderer falls back to its navigation
+    /// default.
+    override func cursorRenderInfo() -> CursorRenderInfo? {
+        guard visible, focused, mode == .insert else { return nil }
+        let maxInput = max(0, width - Self.prompt.count - 2)
+        let col = Self.prompt.count + min(filterCursorPos, maxInput)
+        guard col < width else { return nil }
+        return .insertCaret(row: y, col: x + col)
     }
 
     private func drawPlateHeader() {
