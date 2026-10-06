@@ -5,7 +5,6 @@
 #endif
 import Foundation
 import SwimCore
-import Synchronization
 
 /// The credential kind a pending askpass prompt asks for.
 enum CredentialKind {
@@ -52,7 +51,7 @@ struct CredentialPrompt: Sendable {
 /// Concurrency: the session object is main-thread-confined — it owns
 /// the Process and the FIFO descriptor with plain stored properties,
 /// enforced by NOT being Sendable. The only cross-thread state is the
-/// `Mutex<Mailbox>` (reader -> UI direction: prompt, output, done).
+/// `Locked<Mailbox>` (reader -> UI direction: prompt, output, done).
 /// The reader thread captures exclusively Sendable values — the mutex
 /// value, raw descriptors, the FIFO path — never the session itself,
 /// so it always runs to completion no matter the session's lifetime.
@@ -60,10 +59,15 @@ struct CredentialPrompt: Sendable {
 /// also releases the descriptors they inherited) and SIGTERMs the
 /// process — the operation dies instead of hanging.
 final class InteractiveShell {
-    /// Reader -> UI state behind a `Mutex`; a separate Sendable object
+    /// Reader -> UI state behind a `Locked` (SwimCore's NSLock cell —
+    /// Mutex from Synchronization needs macOS 15 while the package
+    /// ships 13). `@unchecked Sendable` is the repo's discipline for a
+    /// cell that itself crosses threads — the same vouch LSPClient and
+    /// BackgroundTask make for their Locked mailboxes: every access is
+    /// behind the lock. A separate Sendable object
     /// so the reader thread can hold it without touching the
     /// (non-Sendable, main-thread-confined) session itself.
-    private final class Mailbox: Sendable {
+    private final class Mailbox: @unchecked Sendable {
         struct State: Sendable {
             var prompt: CredentialPrompt?
             var cancelled = false
@@ -72,7 +76,7 @@ final class InteractiveShell {
             var stderr: [UInt8] = []
         }
 
-        let mutex = Mutex(State())
+        let mutex = Locked(State())
     }
 
     private let mailbox = Mailbox()
