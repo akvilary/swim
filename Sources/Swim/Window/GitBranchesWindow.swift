@@ -9,6 +9,14 @@ private struct BranchFetch {
     /// page grown while the fetch was in flight can't flip the flag
     /// wrongly.
     let complete: Bool
+    /// Whether the consumer must keep the selected branch where it
+    /// still matches (menu-mode page growth, external refreshes) or
+    /// land on the first row (insert-phase query edits, the Esc
+    /// reset, a fresh open — the typing phase owns no visible
+    /// selection to preserve). Captured at request time like the
+    /// query and the limit: the intent rides with the result, immune
+    /// to later refreshes while the fetch is in flight.
+    let keepsSelection: Bool
 }
 
 /// Branch picker: a two-phase list window shaped like the search
@@ -28,13 +36,14 @@ private struct BranchFetch {
 /// truthful option; BackgroundTask's newest-wins keeps a fast typist
 /// to one in-flight fetch.
 ///
-/// Keys: ↑/↓ leave insert mode while moving the selection through the
-/// matches; Enter switches the selected branch (through the command
-/// window — its output and the reload sweep come free) and closes the
-/// picker; Ctrl+Enter switches AND pulls (on the current branch —
-/// just pulls); the first Esc clears the query and leaves insert
-/// mode, an Esc in menu mode closes the window; `i` returns to
-/// typing.
+/// Keys: the typing phase owns neither a selection nor action keys —
+/// ↑/↓ and Enter leave it for menu mode with the cursor revealed on
+/// the first row, and the first Esc does the same while also
+/// clearing the query; in menu mode Enter switches the selected
+/// branch (through the command window — its output and the reload
+/// sweep come free) and closes the picker, Ctrl+Enter switches AND
+/// pulls (on the current branch — just pulls); an Esc in menu mode
+/// closes the window; `i` returns to typing.
 class GitBranchesWindow: Window {
     override var availableModes: [WindowMode] { [.insert, .menu, .command] }
 
@@ -76,14 +85,17 @@ class GitBranchesWindow: Window {
     private static let prompt = " Branch: "
 
     var workingDirectory: String = "" {
-        didSet { refresh() }
+        // Assigned only by prepare (a fresh open): the reload must
+        // not follow the previous visit's rows — the typing phase
+        // starts parked on the top of the plain page.
+        didSet { refresh(keepingSelection: false) }
     }
 
-    /// Fresh open state: empty filter, first page only, selection on
-    /// the newest branch, typing surface ready (insert mode).
-    /// Assigning the directory (its didSet starts the reload) restarts
-    /// the fetch even when it did not change — a branch may have moved
-    /// since the last visit.
+    /// Fresh open state: empty filter, first page only, the index
+    /// parked on the first row (insert mode shows no selection),
+    /// typing surface ready. Assigning the directory (its didSet
+    /// starts the reload) restarts the fetch even when it did not
+    /// change — a branch may have moved since the last visit.
     func prepare(workingDirectory: String) {
         filterBuffer = ""
         filterCursorPos = 0
@@ -96,7 +108,7 @@ class GitBranchesWindow: Window {
         dirty = true
     }
 
-    func refresh() {
+    func refresh(keepingSelection: Bool = true) {
         guard !workingDirectory.isEmpty else { return }
         isRefreshing = true
         // A new fetch invalidates the previous failure — the window
@@ -108,6 +120,7 @@ class GitBranchesWindow: Window {
         // Captured at request time: a queued closure must carry the
         // query it was started for, immune to later keystrokes.
         let pattern = BranchList.matchPattern(for: filterBuffer)
+        let keep = keepingSelection
         gitTask.start {
             var args = [
                 "for-each-ref",
@@ -122,7 +135,7 @@ class GitBranchesWindow: Window {
             // keeps it apart from the legitimate empty listing.
             guard result.exitCode == 0 else { return nil }
             let entries = BranchList.parse(result.stdout)
-            return BranchFetch(entries: entries, complete: entries.count < limit)
+            return BranchFetch(entries: entries, complete: entries.count < limit, keepsSelection: keep)
         }
     }
 
@@ -231,7 +244,10 @@ class GitBranchesWindow: Window {
             let idx = scrollOffset + row
             guard idx < list.count else { break }
             let entry = list[idx]
-            let selected = idx == selectedIndex
+            // The typing phase shows no selection: the cursor row
+            // appears only in menu mode, revealed by the phase exits
+            // (Esc, ↑/↓, Enter) on the first row.
+            let selected = !inputMode && idx == selectedIndex
             let bg: Color = selected ? Theme.bgHighlight : Theme.bgDark
             fillRegion(row: row + 1, col: 0, width: width, height: 1, cell: Cell.colored(" ", fg: Theme.fg, bg: bg))
             let marker = entry.isCurrent ? "* " : "  "
@@ -272,7 +288,9 @@ class GitBranchesWindow: Window {
         case .ctrl("j"):
             // Ctrl+Enter — every mainstream terminal sends it as LF
             // (byte 10), the byte twin of Ctrl+J: no keyboard protocol
-            // needed, and this window has no other claim on it.
+            // needed, and this window has no other claim on it. A
+            // menu-mode binding only — the typing phase swallows the
+            // byte silently (see handleInputKey).
             switchSelected(pullAfter: true)
         case .char("i"):
             mode = .insert
@@ -291,29 +309,23 @@ class GitBranchesWindow: Window {
         case .escape:
             // The first Esc leaves the typing phase AND clears the
             // query — the list returns to the plain recent-branches
-            // page through the same re-query path as any other edit
-            // (selection keeps its branch while it stays on the
-            // page); the next one (menu mode) closes the window.
-            mode = .menu
+            // page through the same re-query path as any other edit,
+            // the cursor revealed on the first row; the next one
+            // (menu mode) closes the window.
+            revealSelectionAtFirstRow()
             if !filterBuffer.isEmpty {
-                editFilter {
-                    filterBuffer = ""
-                    filterCursorPos = 0
-                }
-            } else {
-                dirty = true
+                filterBuffer = ""
+                filterCursorPos = 0
+                refresh(keepingSelection: false)
             }
-        case .enter:
-            switchSelected(pullAfter: false)
-        case .ctrl("j"):
-            // Ctrl+Enter — see the menu-mode twin above.
-            switchSelected(pullAfter: true)
-        case .up:
-            mode = .menu
-            moveSelection(-1)
-        case .down:
-            mode = .menu
-            moveSelection(1)
+        case .up, .down, .enter:
+            // Phase exits: the typing phase owns neither a selection
+            // nor action keys — ↑/↓ navigating out and Enter finishing
+            // the query merely reveal the cursor on the first match;
+            // the switch/pull actions live in menu mode (Ctrl+Enter's
+            // LF byte falls through to default — ignored here). The
+            // filter stays — Esc is the exit that clears it.
+            revealSelectionAtFirstRow()
         case .backspace:
             editFilter {
                 if filterCursorPos > 0 {
@@ -349,18 +361,28 @@ class GitBranchesWindow: Window {
         return true
     }
 
-    /// Applies an edit to the filter and re-resolves the selection: the
-    /// selected branch stays selected while it still matches; otherwise
-    /// the cursor lands on the first match. The same identity-follows
-    /// idea as the git panel's SectionedListSelection, scoped to a flat
-    /// list. Every edit re-queries git: the first page of matches for
-    /// the new query is not a subset of the page on screen (newest-wins
-    /// coalesces a typing burst into the last query).
+    /// Applies an edit to the filter and re-resolves the selection.
+    /// The typing phase shows no selection, so every edit parks the
+    /// index on the first row of the page on screen, and the fetch
+    /// lands with the same reset — the cursor sits on the first match
+    /// the moment the user leaves insert mode. Every edit re-queries
+    /// git: the first page of matches for the new query is not a
+    /// subset of the page on screen (newest-wins coalesces a typing
+    /// burst into the last query).
     private func editFilter(_ edit: () -> Void) {
-        let keptName = selectedEntry?.name
         edit()
-        reresolveSelection(keeping: keptName)
-        refresh()
+        reresolveSelection(keeping: nil)
+        refresh(keepingSelection: false)
+        dirty = true
+    }
+
+    /// The insert→menu transition (Esc, ↑/↓, Enter). The typing
+    /// phase shows no selection, so leaving it always reveals the
+    /// cursor on the first row — the next press moves from there.
+    private func revealSelectionAtFirstRow() {
+        mode = .menu
+        selectedIndex = 0
+        scrollOffset = 0
         dirty = true
     }
 
@@ -406,7 +428,7 @@ class GitBranchesWindow: Window {
     /// window — its visible output, error reporting and the finished
     /// hook (stats refetch, panel refresh, changed-tab reload sweep)
     /// come free. The picker closes first, so the command window takes
-    /// the stage cleanly. Ctrl+Enter (pullAfter) chains a `git pull`
+    /// the stage cleanly. Ctrl+Enter (menu mode) chains a `git pull`
     /// after a successful switch; on the current branch the switch is
     /// a no-op, so the pull alone runs.
     private func switchSelected(pullAfter: Bool) {
@@ -437,7 +459,12 @@ class GitBranchesWindow: Window {
         if let fetched = result {
             loadFailed = false
             isComplete = fetched.complete
-            let keptName = selectedEntry?.name
+            // Keeping is ownership-bound: a selection exists only in
+            // menu mode, so even a keep-intent fetch (an external
+            // refresh from a finishing git command) resets to the
+            // first row when it lands mid-typing — the parked index
+            // must not drift while the user types.
+            let keptName = fetched.keepsSelection && !inputMode ? selectedEntry?.name : nil
             branches = fetched.entries
             reresolveSelection(keeping: keptName)
         } else {

@@ -752,8 +752,9 @@ class Application: WindowDelegate {
         }
 
         // Tab cycles focus, but only from modes that don't take text:
-        // insert (editor, search query, commit message) and command
-        // modes consume it, and the terminal types it literally.
+        // insert (editor, search query, branch filter, commit message)
+        // and command modes consume it, and the terminal types it
+        // literally.
         if case .tab = key, spaces.current.focused !== terminalWindow,
            let focused = spaces.current.focused,
            focused.mode == .menu || focused.mode == .normal {

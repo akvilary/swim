@@ -7,7 +7,7 @@ protocol WindowDelegate: AnyObject {
     /// Runs a git command in the command window. The optional
     /// follow-up starts automatically once the command SUCCEEDS (see
     /// CommandWindow.runCommand(then:)) — the branch picker's
-    /// Ctrl+Enter: switch, then pull.
+    /// menu-mode Ctrl+Enter: switch, then pull.
     func runGitCommand(label: String, args: [String], then followUp: (label: String, args: [String])?)
     func gitCommandFinished(_ label: String)
     func terminalCommandFinished()

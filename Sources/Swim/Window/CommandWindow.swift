@@ -15,9 +15,9 @@ class CommandWindow: Window {
     /// The finished run was Esc-cancelled — the done plate says so.
     private var lastRunCancelled = false
     /// A command queued to run in this window right after the current
-    /// one SUCCEEDS (the branch picker's Ctrl+Enter: switch, then
-    /// pull). Dropped on failure or Esc-cancel — the predecessor's
-    /// output stays on screen explaining why.
+    /// one SUCCEEDS (the branch picker's menu-mode Ctrl+Enter: switch,
+    /// then pull). Dropped on failure or Esc-cancel — the
+    /// predecessor's output stays on screen explaining why.
     private var followUp: (label: String, args: [String])?
 
     private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
