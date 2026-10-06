@@ -1,4 +1,5 @@
 import Foundation
+import SwimCore
 
 struct Shell {
     struct Result {
@@ -18,6 +19,11 @@ struct Shell {
         if let workDir { process.currentDirectoryURL = URL(fileURLWithPath: workDir) }
         process.standardOutput = outPipe
         process.standardError = errPipe
+        // An explicit environment, not silent inheritance: the app
+        // locale overrides the user's shell vars — a French desktop
+        // must not leak into git's dates and messages (gettext's
+        // LANGUAGE outranks even LC_ALL, hence both keys; AppLocale).
+        process.environment = AppLocale.current.childEnvironment()
         let inPipe = stdin != nil ? Pipe() : nil
         if let inPipe { process.standardInput = inPipe }
         do {

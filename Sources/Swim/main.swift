@@ -5,7 +5,7 @@ import Foundation
 @preconcurrency import Darwin
 #endif
 
-let version = "0.1.1"
+let version = "0.2.0"
 
 if CommandLine.arguments.contains("--version") || CommandLine.arguments.contains("-v") {
     print("swim \(version)")

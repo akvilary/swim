@@ -4,6 +4,7 @@
 @preconcurrency import Darwin
 #endif
 import Foundation
+import SwimCore
 import Synchronization
 
 /// The credential kind a pending askpass prompt asks for.
@@ -181,7 +182,11 @@ final class InteractiveShell {
             // (ours is busy being a TUI). Older ssh ignores the variable.
             env["SSH_ASKPASS_REQUIRE"] = "force"
         }
-        process.environment = env
+        // The askpass routing plus the app locale overrides — the same
+        // child-environment policy every swim subprocess gets (the
+        // locale vars must not stay inherited here: git pull/push
+        // output lands in swim's UI; see AppLocale).
+        process.environment = AppLocale.current.childEnvironment(over: env)
 
         do {
             try process.run()
@@ -307,7 +312,10 @@ final class InteractiveShell {
     /// must not rearm a prompt) and the sideband prefixes (`remote:`,
     /// `warning:`, `hint:`) — a remote can print spoofed prompt text
     /// through the transfer output, and only a real askpass echo arrives
-    /// unprefixed.
+    /// unprefixed. The markers assume git speaks English: true today
+    /// (the askpass templates are untranslated and the app locale pins
+    /// the child environment — AppLocale); revisit here before the
+    /// locale config ever ships a non-English default.
     private static func classifyPromptLine(_ line: String) -> CredentialPrompt? {
         let excludedPrefixes = ["fatal:", "error:", "remote:", "warning:", "hint:"]
         let isExcluded = excludedPrefixes.contains { line.hasPrefix($0) }

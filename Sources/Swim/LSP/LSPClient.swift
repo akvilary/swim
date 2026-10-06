@@ -113,6 +113,10 @@ final class LSPClient: @unchecked Sendable {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
+        // Every subprocess speaks the app locale, the server included
+        // (its stderr, the children it spawns, non-compliant servers
+        // that ignore the protocol-level locale below).
+        process.environment = AppLocale.current.childEnvironment()
 
         let source = DispatchSource.makeReadSource(fileDescriptor: output.fileHandleForReading.fileDescriptor, queue: queue)
         source.setEventHandler { [weak self] in
@@ -187,9 +191,10 @@ final class LSPClient: @unchecked Sendable {
         var params: [String: Any] = [
             "processId": ProcessInfo.processInfo.processIdentifier,
             "capabilities": capabilities,
-            // Diagnostics language: pin English regardless of the system
-            // locale (a French terminal got French pyright messages).
-            "locale": "en"
+            // Diagnostics language: the app locale, regardless of the
+            // system one (a French terminal must not get French
+            // pyright messages) — see AppLocale.
+            "locale": AppLocale.current.id
         ]
         if let uri = rootUri {
             params["rootUri"] = uri
