@@ -59,12 +59,14 @@ class SearchResultsWindow: Window {
             let prompt = " Search: "
             drawLine(prompt, row: 0, col: 0, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)
             let maxInput = width - prompt.count - 2
-            let displayText = String(inputBuffer.suffix(max(0, maxInput)))
+            let win = InputLine.window(text: inputBuffer, caret: inputCursorPos, capacity: max(0, maxInput))
+            let displayText = String(inputBuffer.dropFirst(win.start).prefix(win.visibleCount))
             drawLine(displayText, row: 0, col: prompt.count, fg: Theme.fg, bg: Theme.bgHighlight)
             // Fill the whole tail — starting one past the text would leave a
             // stray dark cell right after the last character once the
-            // cursor moves away from it.
-            for i in min(width, max(0, prompt.count + displayText.count))..<width {
+            // cursor moves away from it. Measured in cells (visibleCells),
+            // not characters.
+            for i in min(width, max(0, prompt.count + win.visibleCells))..<width {
                 setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
             }
         } else {
@@ -254,8 +256,9 @@ class SearchResultsWindow: Window {
         guard visible, focused, inputMode else { return nil }
         let prompt = " Search: ".count
         let maxInput = max(0, width - prompt - 2)
-        let col = prompt + min(inputCursorPos, maxInput)
-        guard col < width else { return nil }
+        let win = InputLine.window(text: inputBuffer, caret: inputCursorPos, capacity: maxInput)
+        let col = prompt + win.caretOffset
+        guard col >= 0, col < width else { return nil }
         return .insertCaret(row: y, col: x + col)
     }
 
@@ -294,35 +297,13 @@ class SearchResultsWindow: Window {
                 : workingDirectory
             search(query: inputBuffer, in: cwd)
             dirty = true
-        case .backspace:
-            if inputCursorPos > 0 {
-                let idx = inputBuffer.index(inputBuffer.startIndex, offsetBy: inputCursorPos - 1)
-                inputBuffer.remove(at: idx)
-                inputCursorPos -= 1
+        default:
+            // The shared single-line editor (see Window.applyLineEdit):
+            // every typing key lands here. Nothing re-runs while typing
+            // — the search starts on Enter alone; edits only repaint.
+            if Self.applyLineEdit(key, text: &inputBuffer, cursor: &inputCursorPos) != .notEditing {
                 dirty = true
             }
-        case .delete:
-            if inputCursorPos < inputBuffer.count {
-                let idx = inputBuffer.index(inputBuffer.startIndex, offsetBy: inputCursorPos)
-                inputBuffer.remove(at: idx)
-                dirty = true
-            }
-        case .left:
-            if inputCursorPos > 0 { inputCursorPos -= 1; dirty = true }
-        case .right:
-            if inputCursorPos < inputBuffer.count { inputCursorPos += 1; dirty = true }
-        case .home:
-            inputCursorPos = 0; dirty = true
-        case .end:
-            inputCursorPos = inputBuffer.count; dirty = true
-        case .char(let c):
-            if c.unicodeScalars.count == 1 {
-                let idx = inputBuffer.index(inputBuffer.startIndex, offsetBy: inputCursorPos)
-                inputBuffer.insert(c, at: idx)
-                inputCursorPos += 1
-                dirty = true
-            }
-        default: break
         }
         return true
     }

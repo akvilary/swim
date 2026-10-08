@@ -145,6 +145,70 @@ class Window {
     /// surface is a credential input, not a ":" command.
     func commandModeLabel() -> String? { nil }
 
+    /// What a key did to a single-line typing surface's (text, caret).
+    enum LineEditOutcome {
+        /// The key owns no editing meaning here.
+        case notEditing
+        /// Only the caret moved — the text is intact, so a surface that
+        /// re-queries on edits (the branch filter) owes no re-query.
+        case caretOnly
+        /// The text mutated.
+        case textChanged
+    }
+
+    /// The single key→edit mapping for the windows' own single-line
+    /// typing surfaces — the branch picker's filter and new-branch
+    /// name, the search query, the terminal prompt. One place keeps
+    /// the editing semantics, so the surfaces can never drift apart.
+    /// Pure: no window state, no side effects; what an edit MEANS
+    /// (re-query git, restart a search, scroll to the prompt) stays
+    /// with the caller. Backspace and Delete always report
+    /// .textChanged even when there was nothing to remove — a no-op
+    /// edit is still an edit key. Multi-scalar characters are
+    /// rejected: they are not typing input for these surfaces (emoji
+    /// have no place in a query or a branch name).
+    ///
+    /// The command line (`handleCommandModeKey`) deliberately keeps
+    /// its own arm: its contract differs — every character inserts
+    /// (no single-scalar guard), backspace on an empty buffer EXITS
+    /// the mode, and Enter/Esc are intercepted before any editing.
+    static func applyLineEdit(_ key: Key, text: inout String, cursor: inout Int) -> LineEditOutcome {
+        switch key {
+        case .backspace:
+            if cursor > 0 {
+                let idx = text.index(text.startIndex, offsetBy: cursor - 1)
+                text.remove(at: idx)
+                cursor -= 1
+            }
+            return .textChanged
+        case .delete:
+            if cursor < text.count {
+                let idx = text.index(text.startIndex, offsetBy: cursor)
+                text.remove(at: idx)
+            }
+            return .textChanged
+        case .left:
+            if cursor > 0 { cursor -= 1 }
+            return .caretOnly
+        case .right:
+            if cursor < text.count { cursor += 1 }
+            return .caretOnly
+        case .home:
+            cursor = 0
+            return .caretOnly
+        case .end:
+            cursor = text.count
+            return .caretOnly
+        case .char(let c) where c.unicodeScalars.count == 1:
+            let idx = text.index(text.startIndex, offsetBy: cursor)
+            text.insert(c, at: idx)
+            cursor += 1
+            return .textChanged
+        default:
+            return .notEditing
+        }
+    }
+
     /// Whether the command line displays its content masked — one
     /// asterisk per character, the same length, so the caret position
     /// stays exact. The buffer itself keeps the real text (editing and
@@ -228,8 +292,22 @@ class Window {
                     c += 1
                 }
             } else {
+                // Wide graphemes (CJK, emoji) occupy two cells: the
+                // right one is the continuation the renderer skips
+                // (the wide char itself advances the terminal cursor
+                // by two). A glyph that would straddle the right edge
+                // is dropped whole — no sliced wide char. Zero-width
+                // and control characters render as one blank cell,
+                // matching the InputLine window math (max(1, width)).
+                let w = max(1, char.displayWidth)
+                guard c + w <= width else { break }
                 setCell(row, c, Cell.colored(char, fg: fg, bg: bg, bold: bold))
-                c += 1
+                if w == 2 {
+                    var cont = Cell.colored(" ", fg: fg, bg: bg, bold: bold)
+                    cont.wideContinuation = true
+                    setCell(row, c + 1, cont)
+                }
+                c += w
             }
         }
     }

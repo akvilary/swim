@@ -244,7 +244,7 @@ class GitPanelWindow: Window {
         if mode == .visualLine {
             headerPlate = HeaderPlate(text: " [ VISUAL ] \(branchLabel) ", fg: Theme.purple)
         } else {
-            headerPlate = HeaderPlate(text: " \(branchLabel) (s: stage/unstage, d: discard, c/C: commit / + last msg) ", fg: Theme.orange)
+            headerPlate = HeaderPlate(text: " \(branchLabel) (s: stage/unstage, d: discard, c/C: commit / + last msg, a: new branch) ", fg: Theme.orange)
         }
         drawPlate()
 
@@ -504,6 +504,12 @@ class GitPanelWindow: Window {
         case .char("C"):
             mode = .menu; pendingY = false
             delegate?.requestCommitMessage(prefill: lastCommitMessage())
+        case .char("a"):
+            // Branch creation lives in the picker — `a` opens it
+            // straight into its name-input phase (see
+            // GitBranchesWindow.beginCreateBranch).
+            mode = .menu; pendingY = false
+            delegate?.requestCreateBranch()
         case .char("y"):
             if pendingY {
                 if let item = selectedItem { Terminal.shared.osc52Copy(item.visibleText) }

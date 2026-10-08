@@ -19,36 +19,52 @@ private struct BranchFetch {
     let keepsSelection: Bool
 }
 
-/// Branch picker: a two-phase list window shaped like the search
-/// results — `.insert` types a live filter into the window's own input
-/// line, `.menu` navigates the (already filtered) list. The listing
-/// comes from `git for-each-ref --sort=-committerdate` (git does the
-/// ordering by last-commit date; swim never sorts).
+/// Branch picker: a list window shaped like the search results with
+/// two typing surfaces over one list — `.insert` types either a live
+/// filter or (the `a` create phase) a new-branch name into the
+/// window's own input line, `.menu` navigates the (already filtered)
+/// list. The listing comes from `git for-each-ref
+/// --sort=-committerdate` (git does the ordering by last-commit date;
+/// swim never sorts).
 ///
 /// The listing is paged: git is asked for `--count=listLimit` entries
 /// (a page is 20) and navigating within a few rows of the page's end
 /// grows it — the branch table is read only as deep as the user
 /// actually scrolls. The query rides to git with every keystroke
-/// (`--ignore-case` + a contains-pattern, see `BranchList.matchPattern`):
+/// (`--ignore-case` + contains-patterns, see `BranchList.matchPatterns`;
+/// the blank query lists LOCAL branches only, a query reaches into
+/// refs/remotes too — a fetched branch without a local counterpart is
+/// exactly what a search is for, and a local twin suppresses its
+/// remote rows — the local row covers the same switch):
 /// the first page of matches for a longer query is NOT a subset of the
 /// page already on screen (the newest "fix*" branches may contain no
 /// "fixe*" at all), so re-querying — not cache filtering — is the only
 /// truthful option; BackgroundTask's newest-wins keeps a fast typist
 /// to one in-flight fetch.
 ///
-/// Keys: the typing phase owns neither a selection nor action keys —
-/// ↑/↓ and Enter leave it for menu mode with the cursor revealed on
-/// the first row, and the first Esc does the same while also
-/// clearing the query; in menu mode Enter switches the selected
-/// branch (through the command window — its output and the reload
-/// sweep come free) and closes the picker, Ctrl+Enter switches AND
-/// pulls (on the current branch — just pulls); an Esc in menu mode
-/// closes the window; `i` returns to typing.
+/// Keys: `Ctrl+B` lands on the LIST (menu mode) — the cursor on the
+/// newest branch, ready to navigate; `i` returns to the typing phase
+/// (live filter), whose ↑/↓ and Enter leave it for menu mode with the
+/// cursor revealed on the first row, and whose first Esc does the
+/// same while also clearing the query. In menu mode Enter switches
+/// the selected branch (through the command window — its output and
+/// the reload sweep come free) and closes the picker, Ctrl+Enter
+/// switches AND pulls (on the current branch — just pulls); `a`
+/// starts branch creation: the input line becomes a name prompt
+/// seeded with the current filter, Enter runs `git switch -c <name>`
+/// (create + switch, the common intent) through the command window
+/// and closes the picker, Esc returns to the plain list; `d` deletes
+/// the selected branch locally (`git branch -d` — git itself refuses
+/// unmerged branches), `D` also deletes its remote counterpart (the
+/// remote leg runs only after the local one succeeded) — the picker
+/// stays open, the finishing command refreshes the list; an Esc in
+/// menu mode closes the window.
 class GitBranchesWindow: Window {
     override var availableModes: [WindowMode] { [.insert, .menu, .command] }
 
-    /// The query-input phase is the window's insert mode; branch
-    /// navigation is menu mode (same contract as SearchResultsWindow).
+    /// A typing phase (the filter or the new-branch name) is the
+    /// window's insert mode; branch navigation is menu mode (same
+    /// contract as SearchResultsWindow).
     var inputMode: Bool { mode == .insert }
 
     /// One page of the listing: the initial `--count` and the growth
@@ -78,11 +94,19 @@ class GitBranchesWindow: Window {
 
     private var filterBuffer: String = ""
     private var filterCursorPos: Int = 0
+    /// The create phase's own typing surface: a separate buffer, so
+    /// canceling creation (Esc) restores the filter exactly as it
+    /// was. Edits here never re-query git — the listing is idle
+    /// while the name is being typed.
+    private var createMode = false
+    private var nameBuffer: String = ""
+    private var nameCursorPos: Int = 0
     private var selectedIndex: Int = 0
     private var scrollOffset: Int = 0
-    /// The input line's prompt — a constant so the drawing and the
-    /// caret math can never drift apart.
-    private static let prompt = " Branch: "
+    /// The input line's prompt — a constant per phase (filter vs
+    /// create) so the drawing and the caret math can never drift
+    /// apart.
+    private var activePrompt: String { createMode ? " New branch: " : " Branch: " }
 
     var workingDirectory: String = "" {
         // Assigned only by prepare (a fresh open): the reload must
@@ -92,18 +116,21 @@ class GitBranchesWindow: Window {
     }
 
     /// Fresh open state: empty filter, first page only, the index
-    /// parked on the first row (insert mode shows no selection),
-    /// typing surface ready. Assigning the directory (its didSet
-    /// starts the reload) restarts the fetch even when it did not
-    /// change — a branch may have moved since the last visit.
-    func prepare(workingDirectory: String) {
+    /// parked on the first row, list reloaded — a branch may have
+    /// moved since the last visit. `Ctrl+B` lands in MENU mode (the
+    /// list itself, cursor on the newest branch); `createBranch` (the
+    /// git panel's `a`) opens straight into the name prompt instead.
+    func prepare(workingDirectory: String, createBranch: Bool = false) {
         filterBuffer = ""
         filterCursorPos = 0
+        createMode = createBranch
+        nameBuffer = ""
+        nameCursorPos = 0
         selectedIndex = 0
         scrollOffset = 0
         listLimit = Self.pageSize
         isComplete = false
-        mode = .insert
+        mode = createBranch ? .insert : .menu
         self.workingDirectory = workingDirectory
         dirty = true
     }
@@ -119,7 +146,7 @@ class GitBranchesWindow: Window {
         let limit = listLimit
         // Captured at request time: a queued closure must carry the
         // query it was started for, immune to later keystrokes.
-        let pattern = BranchList.matchPattern(for: filterBuffer)
+        let patterns = BranchList.matchPatterns(for: filterBuffer)
         let keep = keepingSelection
         gitTask.start {
             var args = [
@@ -127,22 +154,31 @@ class GitBranchesWindow: Window {
                 "--ignore-case",
                 "--count=\(limit)",
                 "--sort=-committerdate",
-                "--format=%(refname:short)%00%(committerdate:relative)%00%(HEAD)"
+                "--format=%(refname:short)%00%(committerdate:relative)%00%(HEAD)%00%(refname)"
             ]
-            args.append(pattern ?? "refs/heads/")
+            // Blank query — locals only; a query reaches into the
+            // remotes too (a fetched branch without a local
+            // counterpart is exactly what a search is for).
+            args += patterns
             let result = Shell.git(args, workDir: workDir)
             // A non-zero exit (not a repository) is a result too — nil
             // keeps it apart from the legitimate empty listing.
             guard result.exitCode == 0 else { return nil }
             let entries = BranchList.parse(result.stdout)
-            return BranchFetch(entries: entries, complete: entries.count < limit, keepsSelection: keep)
+            // Completeness is git's own page fullness — the RAW line
+            // count, not the parsed entries: the parser drops the
+            // remote HEAD pointers, and a page whose boundary they
+            // share must not read as "git ran out of matches" one page
+            // early.
+            let rawLines = result.stdout.split(separator: "\n", omittingEmptySubsequences: true).count
+            return BranchFetch(entries: entries, complete: rawLines < limit, keepsSelection: keep)
         }
     }
 
     /// True while the listing may have entries past the loaded page —
-    /// the "N+" count and the "… more" tail draw from this. Refers to
-    /// the current query once its fetch lands; until then the page on
-    /// screen is the previous query's (the "… loading" tail says so).
+    /// the "… more" tail draws from this. Refers to the current query
+    /// once its fetch lands; until then the page on screen is the
+    /// previous query's (the "… loading" tail says so).
     private var mayHaveMore: Bool {
         !isComplete
     }
@@ -168,15 +204,23 @@ class GitBranchesWindow: Window {
     /// The typing surface — the search window's input row: prompt +
     /// query in the plate colors; the caret itself is the terminal's
     /// insert bar (see cursorRenderInfo), not a faked inverted cell.
+    /// The visible window into the text follows the shared pure
+    /// policy (`InputLine`, SwimCore — tested, cell-aware: wide
+    /// graphemes occupy two cells), shared with the caret math below.
     private func drawFilterLine() {
-        drawLine(Self.prompt, row: 0, col: 0, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)
-        let maxInput = width - Self.prompt.count - 2
-        let displayText = String(filterBuffer.suffix(max(0, maxInput)))
-        drawLine(displayText, row: 0, col: Self.prompt.count, fg: Theme.fg, bg: Theme.bgHighlight)
+        let prompt = activePrompt
+        let text = createMode ? nameBuffer : filterBuffer
+        let caret = createMode ? nameCursorPos : filterCursorPos
+        drawLine(prompt, row: 0, col: 0, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)
+        let maxInput = max(0, width - prompt.count - 2)
+        let win = InputLine.window(text: text, caret: caret, capacity: maxInput)
+        let displayText = String(text.dropFirst(win.start).prefix(win.visibleCount))
+        drawLine(displayText, row: 0, col: prompt.count, fg: Theme.fg, bg: Theme.bgHighlight)
         // Fill the whole tail — starting one past the text would leave a
         // stray dark cell right after the last character once the
-        // cursor moves away from it.
-        for i in min(width, max(0, Self.prompt.count + displayText.count))..<width {
+        // cursor moves away from it. Measured in cells (visibleCells),
+        // not characters.
+        for i in min(width, max(0, prompt.count + win.visibleCells))..<width {
             setCell(0, i, Cell.colored(" ", fg: Theme.fgDark, bg: Theme.bgHighlight))
         }
     }
@@ -187,10 +231,24 @@ class GitBranchesWindow: Window {
     /// default.
     override func cursorRenderInfo() -> CursorRenderInfo? {
         guard visible, focused, mode == .insert else { return nil }
-        let maxInput = max(0, width - Self.prompt.count - 2)
-        let col = Self.prompt.count + min(filterCursorPos, maxInput)
-        guard col < width else { return nil }
+        let prompt = activePrompt
+        let text = createMode ? nameBuffer : filterBuffer
+        let caret = createMode ? nameCursorPos : filterCursorPos
+        let maxInput = max(0, width - prompt.count - 2)
+        let win = InputLine.window(text: text, caret: caret, capacity: maxInput)
+        let col = prompt.count + win.caretOffset
+        guard col >= 0, col < width else { return nil }
         return .insertCaret(row: y, col: x + col)
+    }
+
+    /// The plate's title: "Found by <query>" while a filter is active
+    /// (the input line itself is not visible in menu mode — the title
+    /// is the only reminder that the list is filtered), plain
+    /// "Branches" otherwise. Shared by the loading and hint plates so
+    /// the title never flickers between them mid-query.
+    private var plateTitle: String {
+        let query = filterBuffer.trimmingCharacters(in: .whitespaces)
+        return query.isEmpty ? "Branches" : "Found by \(query)"
     }
 
     private func drawPlateHeader() {
@@ -198,17 +256,12 @@ class GitBranchesWindow: Window {
             // Nothing on screen yet — say so in the plate, spinner in
             // the list area below.
             let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
-            headerPlate = HeaderPlate(text: " \(spinner) Branches ", fg: Theme.blue)
+            headerPlate = HeaderPlate(text: " \(spinner) \(plateTitle) ", fg: Theme.blue)
             drawPlate()
             return
         }
-        let query = filterBuffer.trimmingCharacters(in: .whitespaces)
-        let filterNote = query.isEmpty ? "" : " [\(query)] "
-        // The "+" marks a paged listing: more matches exist past the
-        // loaded page, waiting for navigation to fetch them.
-        let countNote = mayHaveMore ? "\(branches.count)+" : "\(branches.count)"
         headerPlate = HeaderPlate(
-            text: " Branches (\(countNote))\(filterNote)(Enter: switch, Ctrl+Enter: +pull, i: filter, Esc: close) ",
+            text: " \(plateTitle) (Enter: switch, Ctrl+Enter: +pull, a: new, d/D: delete /+remote, i: filter, Esc: close) ",
             fg: Theme.orange)
         drawPlate()
     }
@@ -251,7 +304,17 @@ class GitBranchesWindow: Window {
             let bg: Color = selected ? Theme.bgHighlight : Theme.bgDark
             fillRegion(row: row + 1, col: 0, width: width, height: 1, cell: Cell.colored(" ", fg: Theme.fg, bg: bg))
             let marker = entry.isCurrent ? "* " : "  "
-            let nameFg: Color = entry.isCurrent ? Theme.green : (selected ? Theme.fg : Theme.fgDark)
+            // Remote-tracking entries are dimmer than locals — the
+            // "origin/" prefix says what they are, the color says
+            // they are not the working set (no local counterpart).
+            let nameFg: Color
+            if entry.isCurrent {
+                nameFg = Theme.green
+            } else if entry.isRemote {
+                nameFg = Theme.comment
+            } else {
+                nameFg = selected ? Theme.fg : Theme.fgDark
+            }
             drawLine(marker + entry.name, row: row + 1, col: 0, fg: nameFg, bg: bg, bold: entry.isCurrent)
             // Relative last-commit date, right-aligned, dim — never
             // drawn over a long name: the name owns the width it needs.
@@ -296,6 +359,12 @@ class GitBranchesWindow: Window {
             mode = .insert
             filterCursorPos = filterBuffer.count
             dirty = true
+        case .char("a"):
+            beginCreateBranch()
+        case .char("d"):
+            deleteSelected(alsoRemote: false)
+        case .char("D"):
+            deleteSelected(alsoRemote: true)
         case .escape:
             return false
         default:
@@ -305,6 +374,9 @@ class GitBranchesWindow: Window {
     }
 
     private func handleInputKey(_ key: Key) -> Bool {
+        if createMode {
+            return handleCreateKey(key)
+        }
         switch key {
         case .escape:
             // The first Esc leaves the typing phase AND clears the
@@ -326,54 +398,97 @@ class GitBranchesWindow: Window {
             // LF byte falls through to default — ignored here). The
             // filter stays — Esc is the exit that clears it.
             revealSelectionAtFirstRow()
-        case .backspace:
-            editFilter {
-                if filterCursorPos > 0 {
-                    let idx = filterBuffer.index(filterBuffer.startIndex, offsetBy: filterCursorPos - 1)
-                    filterBuffer.remove(at: idx)
-                    filterCursorPos -= 1
-                }
-            }
-        case .delete:
-            editFilter {
-                if filterCursorPos < filterBuffer.count {
-                    let idx = filterBuffer.index(filterBuffer.startIndex, offsetBy: filterCursorPos)
-                    filterBuffer.remove(at: idx)
-                }
-            }
-        case .left:
-            if filterCursorPos > 0 { filterCursorPos -= 1; dirty = true }
-        case .right:
-            if filterCursorPos < filterBuffer.count { filterCursorPos += 1; dirty = true }
-        case .home:
-            filterCursorPos = 0; dirty = true
-        case .end:
-            filterCursorPos = filterBuffer.count; dirty = true
-        case .char(let c) where c.unicodeScalars.count == 1:
-            editFilter {
-                let idx = filterBuffer.index(filterBuffer.startIndex, offsetBy: filterCursorPos)
-                filterBuffer.insert(c, at: idx)
-                filterCursorPos += 1
-            }
         default:
-            break
+            switch Self.applyLineEdit(key, text: &filterBuffer, cursor: &filterCursorPos) {
+            case .textChanged:
+                // Every text edit re-queries git and parks the index
+                // on the first row of the page on screen (the typing
+                // phase shows no selection): the first page of
+                // matches for the new query is not a subset of the
+                // page on screen — newest-wins coalesces a typing
+                // burst into the last query. Caret-only moves (←/→,
+                // Home/End) re-query nothing.
+                reresolveSelection(keeping: nil)
+                refresh(keepingSelection: false)
+                dirty = true
+            case .caretOnly:
+                dirty = true
+            case .notEditing:
+                break
+            }
         }
         return true
     }
 
-    /// Applies an edit to the filter and re-resolves the selection.
-    /// The typing phase shows no selection, so every edit parks the
-    /// index on the first row of the page on screen, and the fetch
-    /// lands with the same reset — the cursor sits on the first match
-    /// the moment the user leaves insert mode. Every edit re-queries
-    /// git: the first page of matches for the new query is not a
-    /// subset of the page on screen (newest-wins coalesces a typing
-    /// burst into the last query).
-    private func editFilter(_ edit: () -> Void) {
-        edit()
-        reresolveSelection(keeping: nil)
-        refresh(keepingSelection: false)
+    /// Menu-mode `a` (or a fresh open with the create intent — the
+    /// git panel's `a`): the input line becomes a name prompt. The
+    /// name is seeded with the current filter — typing a name that
+    /// matches nothing and pressing `a` keeps the typing instead of
+    /// discarding it.
+    private func beginCreateBranch() {
+        nameBuffer = filterBuffer
+        nameCursorPos = nameBuffer.count
+        createMode = true
+        mode = .insert
         dirty = true
+    }
+
+    /// The create phase's typing surface: Enter creates the branch,
+    /// Esc returns to the plain list (the filter survives — the name
+    /// lives in its own buffer); every other key goes through the
+    /// shared line editor. Name edits never re-query git — the
+    /// listing is idle while the name is being typed. ↑/↓
+    /// deliberately do NOT leave the phase (unlike the filter's
+    /// phase exits): re-entering `a` reseeds the name from the
+    /// filter, so an accidental exit would discard the typing.
+    private func handleCreateKey(_ key: Key) -> Bool {
+        switch key {
+        case .enter:
+            createSelected()
+        case .escape:
+            createMode = false
+            mode = .menu
+            dirty = true
+        default:
+            if Self.applyLineEdit(key, text: &nameBuffer, cursor: &nameCursorPos) != .notEditing {
+                dirty = true
+            }
+        }
+        return true
+    }
+
+    /// Enter in the create phase: `git switch -c <name>` — create and
+    /// switch in one move, through the shared command window (its
+    /// visible output, error reporting and the finished-hook reload
+    /// sweep are the same free contract as a branch switch). The
+    /// picker closes first, so the command window takes the stage
+    /// cleanly.
+    ///
+    /// The name is vetted by git itself (`check-ref-format --branch`)
+    /// BEFORE the picker closes: git stays the single authority on
+    /// what a branch name may be — and `--branch` also rejects a
+    /// leading dash, which `switch -c -foo` would only answer with an
+    /// obscure "unknown switch". A refused name keeps the window (and
+    /// the typing) on screen; an empty name is the same story.
+    private func createSelected() {
+        let name = nameBuffer.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else {
+            delegate?.reportError("Branch name is empty")
+            return
+        }
+        let check = Shell.git(["check-ref-format", "--branch", name], workDir: workingDirectory)
+        guard check.exitCode == 0 else {
+            var detail = check.stderr.split(separator: "\n").first.map(String.init)
+                ?? "'\(name)' is not a valid branch name"
+            detail = detail.trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "fatal: ", with: "")
+                .replacingOccurrences(of: "error: ", with: "")
+            delegate?.reportError(detail.isEmpty ? "'\(name)' is not a valid branch name" : detail)
+            return
+        }
+        createMode = false
+        delegate?.requestClose(self)
+        delegate?.runGitCommand(label: "git switch -c \(name)", args: ["switch", "-c", name])
     }
 
     /// The insert→menu transition (Esc, ↑/↓, Enter). The typing
@@ -433,10 +548,24 @@ class GitBranchesWindow: Window {
     /// a no-op, so the pull alone runs.
     private func switchSelected(pullAfter: Bool) {
         guard let entry = selectedEntry else { return }
-        let name = entry.name
-        if entry.isCurrent {
+        // A remote-tracking entry switches by the branch name WITHOUT
+        // the remote prefix — git's DWIM: the local branch exists →
+        // switch to it; it doesn't but exactly this remote has it →
+        // create the local tracking branch (the manual `git switch
+        // <name>` flow). Switching at the remote ref itself would
+        // detach HEAD — never what a branch picker means.
+        let name = entry.isRemote && entry.name.contains("/")
+            ? String(entry.name.split(separator: "/", maxSplits: 1)[1])
+            : entry.name
+        // The remote row of the CURRENT branch behaves exactly like
+        // its local row: an instant "Already on" without closing the
+        // picker (or a plain pull on Ctrl+Enter) — git would only
+        // echo the same refusal after the picker is gone.
+        let isTargetCurrent = entry.isCurrent
+            || (entry.isRemote && branches.first(where: { $0.isCurrent })?.name == name)
+        if isTargetCurrent {
             guard pullAfter else {
-                delegate?.reportError("Already on \(entry.name)")
+                delegate?.reportError("Already on \(name)")
                 return
             }
             delegate?.requestClose(self)
@@ -451,6 +580,71 @@ class GitBranchesWindow: Window {
         } else {
             delegate?.runGitCommand(label: "git switch \(name)", args: ["switch", name])
         }
+    }
+
+    /// Menu-mode `d`/`D`: delete the selected branch through the
+    /// shared command window. `d` is local only (`git branch -d` —
+    /// git itself refuses the current branch and unmerged work, both
+    /// visible in the output); `D` also deletes the remote
+    /// counterpart — the remote leg is a follow-up, so it runs ONLY
+    /// after the local deletion succeeded (an unmerged branch stops
+    /// the chain). The remote is the branch's configured upstream
+    /// (`name@{upstream}`), falling back to the repo's sole remote —
+    /// several remotes with no upstream is refused with a message
+    /// instead of guessing. The picker STAYS open: the finishing
+    /// command refreshes the list (`gitCommandFinished`), the deleted
+    /// entry drops out, the selection falls back to its row policy.
+    /// The current branch is refused up front — git would only echo
+    /// its own refusal — and so are remote-tracking rows: `branch -d`
+    /// cannot touch them, a remote-side deletion is a different
+    /// operation than this picker's `d`.
+    private func deleteSelected(alsoRemote: Bool) {
+        guard let entry = selectedEntry else { return }
+        if entry.isCurrent {
+            delegate?.reportError("Cannot delete the current branch")
+            return
+        }
+        // A remote-tracking row is not a local branch — `branch -d`
+        // cannot touch it; removing a remote branch is a remote-side
+        // operation (a `git push --delete`), not this picker's `d`.
+        if entry.isRemote {
+            delegate?.reportError("Cannot delete a remote branch here — only local branches (D also removes the remote side)")
+            return
+        }
+        let name = entry.name
+        if alsoRemote {
+            // A refused remote resolution (reported inside) aborts the
+            // whole `D` — deleting only the local half of what the user
+            // asked for would be a silent surprise.
+            guard let remote = remoteForDeletion(of: name) else { return }
+            delegate?.runGitCommand(
+                label: "git branch -d \(name)", args: ["branch", "-d", name],
+                then: (label: "git push \(remote) --delete \(name)", args: ["push", remote, "--delete", name]))
+        } else {
+            delegate?.runGitCommand(label: "git branch -d \(name)", args: ["branch", "-d", name])
+        }
+    }
+
+    /// The remote a `D`-deletion would target: the branch's upstream
+    /// (`origin/name` → `origin`), else the repo's single remote;
+    /// nil — several remotes and no upstream, nothing to guess with.
+    /// Reports the refusal itself. A LOCAL upstream (`remote = .`,
+    /// the name comes back with no slash) is not a remote — it falls
+    /// through to the sole-remote fallback instead of feeding a
+    /// branch name to `git push`.
+    private func remoteForDeletion(of name: String) -> String? {
+        let workDir = workingDirectory
+        let upstream = Shell.git(["rev-parse", "--abbrev-ref", "\(name)@{upstream}"], workDir: workDir)
+            .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !upstream.hasPrefix("fatal"), let slash = upstream.firstIndex(of: "/") {
+            let remote = String(upstream[upstream.startIndex..<slash])
+            if !remote.isEmpty { return remote }
+        }
+        let remotes = Shell.git(["remote"], workDir: workDir).stdout
+            .split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        if remotes.count == 1 { return remotes[0] }
+        delegate?.reportError("Branch '\(name)' has no upstream and the repo has \(remotes.count) remotes")
+        return nil
     }
 
     override func poll() {

@@ -936,18 +936,27 @@ class Application: WindowDelegate {
         openGitBranches()
     }
 
-    /// Opens the branch picker: fresh filter, typing surface ready,
-    /// list reloaded — a branch may have moved since the last visit.
-    private func openGitBranches() {
+    /// Opens the branch picker: fresh list, cursor on the newest
+    /// branch (menu mode) — a branch may have moved since the last
+    /// visit. `createBranch` (the git panel's `a`) opens straight
+    /// into the name prompt instead.
+    private func openGitBranches(createBranch: Bool = false) {
         if maximized != nil { restoreMaximized() }
         if spaces.current.id != "editor" { switchToSpace("editor") }
         gitBranches.prepare(workingDirectory: gitPanel.workingDirectory.isEmpty
             ? FileManager.default.currentDirectoryPath
-            : gitPanel.workingDirectory)
+            : gitPanel.workingDirectory, createBranch: createBranch)
         gitBranches.visible = true
         focus(gitBranches)
         recalculateLayout()
         spaces.markAllDirty()
+    }
+
+    /// The git panel's `a` — the branch picker with its new-branch
+    /// phase armed (the input line prompts for the name, Enter runs
+    /// `git switch -c`).
+    func requestCreateBranch() {
+        openGitBranches(createBranch: true)
     }
 
     private func toggleSearch() {

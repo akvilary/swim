@@ -128,40 +128,7 @@ class TerminalWindow: Window {
         case .ctrl("d"):
             scrollBy(max(1, height / 2))
         case .ctrl("u"):
-            scrollBy(-max(1, height / 2))
-        case .char(let c) where c.unicodeScalars.count == 1:
-            scrollToBottom()
-            let idx = inputBuffer.index(inputBuffer.startIndex, offsetBy: inputCursorPos)
-            inputBuffer.insert(c, at: idx)
-            inputCursorPos += 1
-            dirty = true
-        case .backspace:
-            scrollToBottom()
-            if inputCursorPos > 0 {
-                let idx = inputBuffer.index(inputBuffer.startIndex, offsetBy: inputCursorPos - 1)
-                inputBuffer.remove(at: idx)
-                inputCursorPos -= 1
-                dirty = true
-            }
-        case .delete:
-            scrollToBottom()
-            if inputCursorPos < inputBuffer.count {
-                let idx = inputBuffer.index(inputBuffer.startIndex, offsetBy: inputCursorPos)
-                inputBuffer.remove(at: idx)
-                dirty = true
-            }
-        case .left:
-            scrollToBottom()
-            if inputCursorPos > 0 { inputCursorPos -= 1; dirty = true }
-        case .right:
-            scrollToBottom()
-            if inputCursorPos < inputBuffer.count { inputCursorPos += 1; dirty = true }
-        case .home:
-            scrollToBottom()
-            inputCursorPos = 0; dirty = true
-        case .end:
-            scrollToBottom()
-            inputCursorPos = inputBuffer.count; dirty = true
+            scrollBy(max(1, height / 2))
         case .enter:
             if !atBottom {
                 scrollToBottom()
@@ -187,7 +154,16 @@ class TerminalWindow: Window {
                 dirty = true
             }
         default:
-            break
+            // The prompt's typing keys — one shared single-line editor
+            // (see Window.applyLineEdit) with the terminal's own
+            // post-effect: any typing returns the view to the live
+            // prompt at the buffer's bottom. Non-typing keys (and
+            // multi-scalar characters, rejected by the editor) fall
+            // through untouched.
+            if Self.applyLineEdit(key, text: &inputBuffer, cursor: &inputCursorPos) != .notEditing {
+                scrollToBottom()
+                dirty = true
+            }
         }
         return true
     }
@@ -205,11 +181,14 @@ class TerminalWindow: Window {
 
     /// The live prompt — the last line of the scrollable buffer. The
     /// typing caret is the terminal's shared insert bar (see
-    /// cursorRenderInfo), not a faked inverted cell.
+    /// cursorRenderInfo), not a faked inverted cell. The visible
+    /// window into the text follows the shared pure policy
+    /// (`InputLine`, SwimCore — tested, cell-aware).
     private func drawPromptLine(row: Int) {
         drawLine(promptText, row: row, col: 0, fg: Theme.blue, bg: Theme.terminalBg, bold: true)
         let maxInput = max(0, width - promptText.count - 1)
-        let displayText = String(inputBuffer.suffix(maxInput))
+        let win = InputLine.window(text: inputBuffer, caret: inputCursorPos, capacity: maxInput)
+        let displayText = String(inputBuffer.dropFirst(win.start).prefix(win.visibleCount))
         drawLine(displayText, row: row, col: promptText.count, fg: Theme.fg, bg: Theme.terminalBg)
     }
 
@@ -220,8 +199,9 @@ class TerminalWindow: Window {
         guard visible, focused else { return nil }
         let row = contentTop + flatLines.count - scrollOffset
         let maxInput = max(0, width - promptText.count - 1)
-        let col = promptText.count + min(inputCursorPos, maxInput)
-        guard row >= contentTop, row < height, col < width else { return nil }
+        let win = InputLine.window(text: inputBuffer, caret: inputCursorPos, capacity: maxInput)
+        let col = promptText.count + win.caretOffset
+        guard row >= contentTop, row < height, col >= 0, col < width else { return nil }
         return .insertCaret(row: y + row, col: x + col)
     }
 

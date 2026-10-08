@@ -13,6 +13,9 @@ protocol WindowDelegate: AnyObject {
     func terminalCommandFinished()
     func requestCommitMessage(prefill: String)
     func requestCommit()
+    /// The git panel's `a` — open the branch picker straight into its
+    /// new-branch phase (name input ready).
+    func requestCreateBranch()
     func reportError(_ message: String)
     func requestRender()
     func updatePreview(path: String?, highlightLine: Int)

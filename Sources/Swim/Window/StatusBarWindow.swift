@@ -1,3 +1,6 @@
+import Foundation
+import SwimCore
+
 class StatusBarWindow: Window {
     /// The window whose mode and command line are presented — the command
     /// owner while a command is being typed, else the focused window.
@@ -74,6 +77,33 @@ class StatusBarWindow: Window {
             }
         }
 
+        // The right block is composed FIRST: it is fixed — always
+        // displayed, right-aligned — and the command line's scrolling
+        // area is measured against its left edge (the center block
+        // below). Groups joined by uniform single spaces, one space
+        // padding on each side.
+        var rightGroups: [(text: String, fg: Color)] = []
+        if !fileType.isEmpty { rightGroups.append((fileType, fg: Theme.fgDark)) }
+        if fileAdded > 0 || fileDeleted > 0 {
+            if fileAdded > 0 { rightGroups.append(("+\(fileAdded)", fg: Theme.green)) }
+            if fileDeleted > 0 { rightGroups.append(("-\(fileDeleted)", fg: Theme.red)) }
+        }
+        rightGroups.append(("utf-8", fg: Theme.fgDark))
+        rightGroups.append(("\(cursorLine + 1):\(cursorCol + 1)", fg: Theme.fgDark))
+        rightGroups.append(("\(Int(Double(cursorLine + 1) / Double(max(totalLines, 1)) * 100))%", fg: Theme.fgDark))
+
+        var rightParts: [(text: String, fg: Color)] = [(" ", fg: Theme.fgDark)]
+        for (idx, group) in rightGroups.enumerated() {
+            if idx > 0 { rightParts.append((" ", fg: Theme.fgDark)) }
+            rightParts.append(group)
+        }
+        rightParts.append((" ", fg: Theme.fgDark))
+        let rightWidth = rightParts.reduce(0) { $0 + $1.text.count }
+        // The block is right-aligned but never claims the mode label's
+        // territory — the label (always ASCII) owns its cells on every
+        // width; on a bar too narrow for both, the block is what clips.
+        let rightStart = max(modeLabel.count, width - rightWidth)
+
         let centerParts: [(text: String, fg: Color)]
         let centerBold: Bool
         if let err = errorMessage {
@@ -90,10 +120,22 @@ class StatusBarWindow: Window {
             let display = source.masksCommandLine()
                 ? String(repeating: "*", count: commandText.count)
                 : commandText
-            centerParts = [(" \(prefix)\(display)", fg: Theme.fg)]
+            // The command line scrolls like every other typing surface
+            // (the shared InputLine policy) within the space between the
+            // mode label and the FIXED right block: the block is always
+            // displayed, the typed text scrolls horizontally inside its
+            // own area so the newest characters and the caret stay
+            // visible. The window is measured in terminal CELLS — wide
+            // graphemes (CJK, emoji) occupy two and cannot push the
+            // caret under the block; one trailing cell of the area is
+            // reserved so the caret always owns a cell of its own.
+            let capacity = max(0, rightStart - modeLabel.count - 1 - prefix.count - 1)
+            let win = InputLine.window(text: display, caret: source.commandCursorPos, capacity: capacity)
+            let visible = display.dropFirst(win.start).prefix(win.visibleCount)
+            centerParts = [(" \(prefix)\(visible)", fg: Theme.fg)]
             centerBold = false
-            let caret = modeLabel.count + 1 + prefix.count + source.commandCursorPos
-            if caret < width { commandCaretScreenCol = caret }
+            let caret = modeLabel.count + 1 + prefix.count + win.caretOffset
+            if caret >= 0, caret < width { commandCaretScreenCol = caret }
         } else if let diag = diagnosticMessage {
             let fg = diag.severity <= 1 ? Theme.red : (diag.severity == 2 ? Theme.orange : Theme.yellow)
             centerParts = [(" \(diag.text) ", fg: fg)]
@@ -112,40 +154,38 @@ class StatusBarWindow: Window {
         var ccol = modeLabel.count
         centerLoop: for part in centerParts {
             for c in part.text {
-                guard ccol < width else { break centerLoop }
+                // Wide graphemes claim two cells (a continuation for the
+                // renderer); a glyph straddling the row's end is dropped
+                // whole — same policy as Window.writeString.
+                let w = max(1, c.displayWidth)
+                guard ccol + w <= width else { break centerLoop }
                 setCell(0, ccol, Cell.colored(c, fg: part.fg, bg: bgColor, bold: centerBold))
-                ccol += 1
+                if w == 2 {
+                    var cont = Cell.colored(" ", fg: part.fg, bg: bgColor, bold: centerBold)
+                    cont.wideContinuation = true
+                    setCell(0, ccol + 1, cont)
+                }
+                ccol += w
             }
         }
 
-        // Right block: groups joined by uniform single spaces, one space
-        // padding on each side.
-        var rightGroups: [(text: String, fg: Color)] = []
-        if !fileType.isEmpty { rightGroups.append((fileType, fg: Theme.fgDark)) }
-        if fileAdded > 0 || fileDeleted > 0 {
-            if fileAdded > 0 { rightGroups.append(("+\(fileAdded)", fg: Theme.green)) }
-            if fileDeleted > 0 { rightGroups.append(("-\(fileDeleted)", fg: Theme.red)) }
-        }
-        rightGroups.append(("utf-8", fg: Theme.fgDark))
-        rightGroups.append(("\(cursorLine + 1):\(cursorCol + 1)", fg: Theme.fgDark))
-        rightGroups.append(("\(Int(Double(cursorLine + 1) / Double(max(totalLines, 1)) * 100))%", fg: Theme.fgDark))
-
-        var rightParts: [(text: String, fg: Color)] = [(" ", fg: Theme.fgDark)]
-        for (idx, group) in rightGroups.enumerated() {
-            if idx > 0 { rightParts.append((" ", fg: Theme.fgDark)) }
-            rightParts.append(group)
-        }
-        rightParts.append((" ", fg: Theme.fgDark))
-
-        // Drawn last: on narrow widths the right block wins the overlap,
-        // matching the original status-bar precedence.
-        let rightWidth = rightParts.reduce(0) { $0 + $1.text.count }
-        var col = max(0, width - rightWidth)
+        // Drawn last: the fixed right block always wins the overlap over
+        // the informational center texts (errors, diagnostics, branch
+        // info — display-only, truncation is acceptable). The typed
+        // command never reaches it — its scrolling area ends one cell
+        // short of the block by construction.
+        var col = rightStart
         rightLoop: for part in rightParts {
             for c in part.text {
-                guard col < width else { break rightLoop }
+                let w = max(1, c.displayWidth)
+                guard col + w <= width else { break rightLoop }
                 setCell(0, col, Cell.colored(c, fg: part.fg, bg: bgColor))
-                col += 1
+                if w == 2 {
+                    var cont = Cell.colored(" ", fg: part.fg, bg: bgColor)
+                    cont.wideContinuation = true
+                    setCell(0, col + 1, cont)
+                }
+                col += w
             }
         }
     }

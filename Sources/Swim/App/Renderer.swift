@@ -1,4 +1,5 @@
 import Foundation
+import SwimCore
 
 struct CursorRenderInfo {
     /// DECSCUSR shapes swim uses, as one place's vocabulary: `bar` is

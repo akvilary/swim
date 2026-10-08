@@ -509,8 +509,17 @@ class EditorWindow: Window {
         // the search then runs for the wrong query).
         case .char(":"): enterCommandMode()
         case .char("/"): enterCommandMode(prefill: "/")
-        case .char("n"): searchNext()
-        case .char("N"): searchPrev()
+        // r/R — next/previous search match. Plain r owns no other
+        // normal-mode binding (redo is Ctrl+R; the write-confirm's
+        // reload-r lives in its own modal state). Like the default
+        // arm, both cancel any pending operator sequence (d/y/g) —
+        // a stale `d` must not turn the post-jump `d` into `dd`.
+        case .char("r"):
+            pendingG = false; pendingD = false; pendingY = false
+            searchNext()
+        case .char("R"):
+            pendingG = false; pendingD = false; pendingY = false
+            searchPrev()
         case .ctrl("j"), .ctrlDown: pageDown()
         case .ctrl("k"), .ctrlUp: pageUp()
         case .ctrl("h"), .ctrlLeft: cycleTab(-1)
