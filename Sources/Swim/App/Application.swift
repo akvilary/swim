@@ -1147,16 +1147,7 @@ class Application: WindowDelegate {
         // caret, status-bar command caret) and provides the terminal
         // cursor for it; by focus rules at most one is active.
         let cursorInfo = spaces.current.visibleWindows.compactMap { $0.cursorRenderInfo() }.last
-        if editor.visible {
-            renderer.render(
-                windows: spaces.current.visibleWindows,
-                cursorInfo: cursorInfo,
-                editorScrollY: editor.scrollY,
-                editorRect: (editor.x, editor.y, editor.width, editor.height)
-            )
-        } else {
-            renderer.render(windows: spaces.current.visibleWindows, cursorInfo: cursorInfo)
-        }
+        renderer.render(windows: spaces.current.visibleWindows, cursorInfo: cursorInfo)
     }
 
     private func updateStatusBar() {

@@ -32,8 +32,6 @@ class Renderer {
     private var prevScreenCells: [Cell?] = []
     private var prevScreenW: Int = 0
     private var prevScreenH: Int = 0
-    private var prevEditorScrollY: Int?
-    private var prevEditorRect: (x: Int, y: Int, w: Int, h: Int)?
     private var termFG: Color = .default
     private var termBG: Color = .default
     private var termBold: Bool = false
@@ -46,47 +44,28 @@ class Renderer {
         self.terminal = terminal
     }
 
-    func render(windows: [Window], cursorInfo: CursorRenderInfo?,
-                editorScrollY: Int? = nil, editorRect: (x: Int, y: Int, w: Int, h: Int)? = nil) {
+    func render(windows: [Window], cursorInfo: CursorRenderInfo?) {
         ensureScreenSize()
 
         if needsFullRedraw {
             for i in 0..<prevScreenCells.count { prevScreenCells[i] = nil }
-            prevEditorScrollY = nil
-            prevEditorRect = nil
             needsFullRedraw = false
         }
 
         let screenW = prevScreenW
         let screenH = prevScreenH
 
-        // Vertical editor scroll: shift the terminal's own buffer with a
-        // scroll region instead of repainting every row. A full repaint on
-        // scroll emits ~screen-size bytes per frame, which can overflow the
-        // pty buffer on slow terminals and block the main loop.
-        if let scrollY = editorScrollY, let rect = editorRect,
-           let prevY = prevEditorScrollY, let prevRect = prevEditorRect,
-           prevRect.x == rect.x, prevRect.y == rect.y,
-           prevRect.w == rect.w, prevRect.h == rect.h,
-           screenH == prevScreenH, screenW == prevScreenW {
-            let delta = scrollY - prevY
-            if delta != 0 && abs(delta) < rect.h {
-                let top = rect.y
-                let bottom = rect.y + rect.h - 1
-                // DECSTBM scroll region limited to the editor rows. All three
-                // sequences are queued (not written) so the whole frame —
-                // scroll + repaint of whatever the band shifted — reaches the
-                // terminal in one write() and paints atomically.
-                terminal.queueEscape("\u{1b}[\(top + 1);\(bottom + 1)r")
-                terminal.queueEscape("\u{1b}[\(delta > 0 ? "\(delta)S" : "\(-delta)T")")
-                terminal.queueEscape("\u{1b}[r")
-                // Mirror the shift in the previous-frame buffer so the diff
-                // below only redraws the rows that actually appeared.
-                shiftPrevCells(regionTop: top, regionBottom: bottom, delta: delta, width: screenW)
-            }
-        }
-        prevEditorScrollY = editorScrollY
-        prevEditorRect = editorRect
+        // Terminal pen position within this frame: the cursor advances by
+        // itself after each written glyph, so a moveCursor is only needed
+        // when diffing jumped to a non-adjacent cell (gap, row change,
+        // skipped wide continuation). Per-frame locals, deliberately not
+        // cross-frame state: the cursor placement at the end of a frame
+        // moves the terminal cursor, so any carried position would be
+        // stale by construction. This is what keeps a scroll repaint
+        // (every editor cell differs) at ~one move per row of bytes
+        // instead of a cursor escape per cell — the pty-friendly budget.
+        var penRow = -1
+        var penCol = -1
 
         for window in windows {
             guard window.visible else { continue }
@@ -105,7 +84,11 @@ class Renderer {
 
                     let idx = screenRow * screenW + screenCol
                     if prevScreenCells[idx] != cell {
-                        terminal.moveCursor(row: screenRow, col: screenCol)
+                        if penRow != screenRow || penCol != screenCol {
+                            terminal.moveCursor(row: screenRow, col: screenCol)
+                            penRow = screenRow
+                            penCol = screenCol
+                        }
 
                         if termFG != cell.fg { terminal.setFG(cell.fg); termFG = cell.fg }
                         if termBG != cell.bg { terminal.setBG(cell.bg); termBG = cell.bg }
@@ -114,7 +97,9 @@ class Renderer {
                         if termUnderline != cell.underline { terminal.setUnderline(cell.underline); termUnderline = cell.underline }
                         if termReverse != cell.reverse { terminal.setReverse(cell.reverse); termReverse = cell.reverse }
 
-                        terminal.writeChar(cell.char.displayWidth > 0 ? cell.char : " ")
+                        let glyph = cell.char.displayWidth > 0 ? cell.char : " "
+                        terminal.writeChar(glyph)
+                        penCol += max(1, glyph.displayWidth)
 
                         prevScreenCells[idx] = cell
 
@@ -145,41 +130,6 @@ class Renderer {
             prevScreenCells = Array(repeating: nil, count: w * h)
             prevScreenW = w
             prevScreenH = h
-            prevEditorScrollY = nil
-            prevEditorRect = nil
         }
     }
-
-    /// Shifts prevScreenCells rows inside the region, matching the terminal
-    /// scroll: delta > 0 means content moved up (scrolled down), the freed
-    /// rows at the bottom are reset so the diff redraws them.
-    private func shiftPrevCells(regionTop: Int, regionBottom: Int, delta: Int, width: Int) {
-        guard abs(delta) <= regionBottom - regionTop else { return }
-        func idx(_ r: Int, _ c: Int) -> Int { r * width + c }
-        if delta > 0 {
-            for r in regionTop...(regionBottom - delta) {
-                for c in 0..<width {
-                    prevScreenCells[idx(r, c)] = prevScreenCells[idx(r + delta, c)]
-                }
-            }
-            for r in (regionBottom - delta + 1)...regionBottom {
-                for c in 0..<width {
-                    prevScreenCells[idx(r, c)] = nil
-                }
-            }
-        } else {
-            let d = -delta
-            for r in stride(from: regionBottom, through: regionTop + d, by: -1) {
-                for c in 0..<width {
-                    prevScreenCells[idx(r, c)] = prevScreenCells[idx(r - d, c)]
-                }
-            }
-            for r in regionTop..<(regionTop + d) {
-                for c in 0..<width {
-                    prevScreenCells[idx(r, c)] = nil
-                }
-            }
-        }
-    }
-
 }
