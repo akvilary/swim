@@ -57,6 +57,10 @@ final class Terminal {
 
         updateSize()
         writeRaw("\u{1b}[?1049h")
+        // Bracketed paste: the terminal wraps pasted text in ESC[200~ …
+        // ESC[201~ so it arrives as one chunk instead of a keystroke
+        // stream (which auto-indent would mangle line by line).
+        writeRaw("\u{1b}[?2004h")
         writeRaw("\u{1b}[2J")
         writeRaw("\u{1b}[H")
 
@@ -76,7 +80,7 @@ final class Terminal {
             var copy = orig
             tcsetattr(STDIN_FILENO, TCSANOW, &copy)
         }
-        writeRaw("\u{1b}[?1049l\u{1b}[?25h")
+        writeRaw("\u{1b}[?2004l\u{1b}[?1049l\u{1b}[?25h")
         if resizePipeReadFd >= 0 { close(resizePipeReadFd); resizePipeReadFd = -1 }
         if resizePipeWriteFd >= 0 { close(resizePipeWriteFd); resizePipeWriteFd = -1 }
     }
@@ -90,8 +94,15 @@ final class Terminal {
 
     func readByte() -> UInt8? {
         var byte: UInt8 = 0
-        let n = read(STDIN_FILENO, &byte, 1)
-        return n == 1 ? byte : nil
+        while true {
+            let n = read(STDIN_FILENO, &byte, 1)
+            if n == 1 { return byte }
+            // SIGWINCH (no SA_RESTART) interrupts read() with EINTR —
+            // a resize during a keystroke or a long bracketed-paste
+            // read must not truncate the input; retry.
+            if n == -1 && errno == EINTR { continue }
+            return nil
+        }
     }
 
     func bytesAvailable() -> Bool {

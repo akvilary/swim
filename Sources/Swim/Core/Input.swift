@@ -1,3 +1,5 @@
+import SwimCore
+
 enum Key: Equatable {
     case char(Character)
     case escape
@@ -23,6 +25,10 @@ enum Key: Equatable {
     case f(Int)
     case shiftTab
     case insert
+    /// Text delivered as one chunk by bracketed paste mode — the
+    /// payload between ESC[200~ and ESC[201~. Newlines are already
+    /// normalized to "\n".
+    case paste(String)
     case unknown(String)
 
     static func parse(from terminal: Terminal) -> Key? {
@@ -52,6 +58,9 @@ enum Key: Equatable {
                 }
                 guard let fin = finalByte else {
                     return .unknown("\u{1b}[" + params)
+                }
+                if params == "200", fin == 126 {
+                    return Self.readBracketedPaste(from: terminal)
                 }
                 if let key = Self.csiKey(params: params, final: fin) {
                     return key
@@ -108,6 +117,20 @@ enum Key: Equatable {
         }
 
         return nil
+    }
+
+    /// Reads a bracketed-paste payload — everything up to the ESC[201~
+    /// end marker — with the incremental marker matching and newline
+    /// normalization living in SwimCore.BracketedPaste (tested there).
+    private static func readBracketedPaste(from terminal: Terminal) -> Key {
+        var scanner = BracketedPaste.Scanner()
+        while let b = terminal.readByte() {
+            if case .done(let text) = scanner.feed(b) {
+                return .paste(text)
+            }
+        }
+        // EOF mid-paste (malformed stream): keep what arrived.
+        return .paste(scanner.partialText)
     }
 
     /// Maps a scanned CSI sequence — the parameter string between `ESC [`

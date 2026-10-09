@@ -19,6 +19,7 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
 - **Git gutter** — editor line numbers colored by line status (added lines/files — green, staged — blue, unstaged — teal); diagnostics show as severity-colored circles after the line number (error + warning stack in one cell)
 - **Project search** (`Ctrl+F`) — recursive file search with grouped results
 - **Built-in terminal** (`Ctrl+T`) — run shell commands inside the editor: the prompt is the last line of the scrollback, arrows scroll the output, `Ctrl+Left/Right` recalls commands, `Tab` completes paths; `cd` and `clear` are handled by the window itself
+- **Bracketed paste** — text from the system clipboard lands verbatim in every mode (insert at the cursor, normal like `p`, visual replaces the selection); tabs in pasted text follow the file's indent policy, and the command line / filters accept single-line paste
 - **Full UTF-8 support** — Cyrillic, CJK, emoji
 - **Tokyo Night Storm theme**
 - **Status bar** — mode, filename, file type, encoding, cursor position

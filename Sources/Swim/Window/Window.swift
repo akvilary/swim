@@ -132,10 +132,35 @@ class Window {
             let idx = commandBuffer.index(commandBuffer.startIndex, offsetBy: commandCursorPos)
             commandBuffer.insert(c, at: idx)
             commandCursorPos += 1
+        case .paste(let text):
+            guard let flat = Self.pasteFlatLine(text) else { return false }
+            let idx = commandBuffer.index(commandBuffer.startIndex, offsetBy: commandCursorPos)
+            commandBuffer.insert(contentsOf: flat, at: idx)
+            commandCursorPos += flat.count
         default:
             return false
         }
         return true
+    }
+
+    /// Paste text for a single-line surface (the command line, filters,
+    /// prompts): newlines are dropped (vim cmdline parity — a pasted
+    /// command must not execute itself), tabs become one space —
+    /// "git<TAB>status" stays two words, not glued. No language policy
+    /// exists here, so one tab is one space, not an indent step. The CR
+    /// check is defense-in-depth: the paste payload is already
+    /// newline-normalized at the parse layer.
+    static func pasteFlatLine(_ text: String) -> String? {
+        var flat = ""
+        flat.reserveCapacity(text.count)
+        for ch in text {
+            switch ch {
+            case "\n", "\r": continue
+            case "\t": flat.append(" ")
+            default: flat.append(ch)
+            }
+        }
+        return flat.isEmpty ? nil : flat
     }
 
     /// Optional replacement for the status-bar COMMAND label while this
@@ -203,6 +228,15 @@ class Window {
             let idx = text.index(text.startIndex, offsetBy: cursor)
             text.insert(c, at: idx)
             cursor += 1
+            return .textChanged
+        case .paste(let pasted):
+            // Unlike typed chars, paste keeps multi-scalar characters
+            // (emoji): it is bulk text from another source, not a
+            // keystroke aimed at the surface.
+            guard let flat = Self.pasteFlatLine(pasted) else { return .notEditing }
+            let idx = text.index(text.startIndex, offsetBy: cursor)
+            text.insert(contentsOf: flat, at: idx)
+            cursor += flat.count
             return .textChanged
         default:
             return .notEditing

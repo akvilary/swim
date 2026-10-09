@@ -432,6 +432,34 @@ class EditorWindow: Window {
 
     override func handleKey(_ key: Key) -> Bool {
         guard buffer != nil else { return false }
+        // Bracketed paste arrives as one chunk and must go in verbatim —
+        // routing it through the per-key path would re-run the newline
+        // auto-indent on top of the text's own leading whitespace,
+        // compounding the indent line by line. Routed per mode exactly
+        // like the equivalent vim key: typing (insert), `p` (normal),
+        // selection-replace (visual), cmdline typing (command).
+        if case .paste(let raw) = key {
+            // A paste is a complete input event: any pending count or
+            // operator sequence (3, d, y, g) from earlier keystrokes is
+            // dead — the same reset handleNormal's defer applies to any
+            // non-count key. The interception sits before handleNormal,
+            // so without this a stale count would leak into the next key.
+            pendingCount = nil; pendingG = false; pendingD = false; pendingY = false
+            // External text only: tabs follow the file's indent policy
+            // (one tab = one indent step). The internal p/P round-trip
+            // never passes through here — register content stays verbatim.
+            let text = TabPolicy.expandTabs(raw, indent: indentSize())
+            switch mode {
+            case .insert: insertPasteAtCursor(text)
+            case .normal: pasteTextAfterCursor(text)
+            case .visual, .visualLine: replaceSelectionWithPaste(text)
+            case .command: return handleCommandModeKey(key)
+            case .menu: return false
+            }
+            desiredCol = cursorCol
+            dirty = true
+            return true
+        }
         switch mode {
         case .normal: return handleNormal(key)
         case .insert: return handleInsert(key)
@@ -550,7 +578,7 @@ class EditorWindow: Window {
         case .escape: mode = .normal
         case .enter: insertNewLineAtCursor()
         case .backspace: deleteBeforeCursor()
-        case .tab: insertText("    ")
+        case .tab: insertText(tabInsertText())
         case .char(let c): insertText(String(c))
         case .left: moveCursorLeft()
         case .right: moveCursorRightInsert()
@@ -879,6 +907,68 @@ class EditorWindow: Window {
         ))
     }
 
+    /// The text the Tab key inserts: the file's indent policy — one
+    /// indent step of spaces (indentSize), the same width the
+    /// auto-indenter produces.
+    private func tabInsertText() -> String {
+        String(repeating: " ", count: indentSize())
+    }
+
+    /// Bulk insert with no indent processing — the paste path. The
+    /// cursor lands after the pasted text (last line, after the last
+    /// char).
+    private func insertPasteAtCursor(_ text: String) {
+        guard let buf = buffer, !text.isEmpty else { return }
+        let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
+        let offset = buf.lineStart(line: cursorLine) + byteOff
+        buf.insert(text, at: offset)
+        recordAction(offset: offset, deleted: "", inserted: text)
+        let delta = MultilineInsert.cursorDelta(for: text)
+        cursorLine += delta.lines
+        if delta.lines > 0 { cursorCol = delta.tailCols } else { cursorCol += delta.tailCols }
+        ensureCursorVisible()
+    }
+
+    /// Paste over a visual / visual-line selection — vim's visual `p`:
+    /// the replaced text is yanked (register + OSC 52, like `d`), the
+    /// pasted text takes its place, and the whole replace is ONE undo
+    /// action (delete + insert merged — undo restores the selection in
+    /// a single step, like vim).
+    private func replaceSelectionWithPaste(_ text: String) {
+        guard let buf = buffer, !text.isEmpty else { return }
+        let startOffset: Int, endOffset: Int, startLine: Int, startCol: Int
+        if mode == .visualLine {
+            let (first, last) = visualLineRange()
+            startOffset = buf.lineStart(line: first)
+            endOffset = min(buf.lineEnd(line: last), buf.totalLength)
+            startLine = first; startCol = 0
+        } else {
+            let (first, firstCol, last, lastCol) = visualRange()
+            startOffset = buf.lineStart(line: first)
+                + buf.charToByteOffsetInLine(line: first, charIndex: firstCol)
+            endOffset = min(buf.lineStart(line: last)
+                + buf.charToByteOffsetInLine(line: last, charIndex: lastCol + 1), buf.totalLength)
+            startLine = first; startCol = firstCol
+        }
+        let deleted = buf.getText(range: startOffset..<endOffset)
+        yank(deleted)
+        buf.delete(at: startOffset, length: endOffset - startOffset)
+        buf.insert(text, at: startOffset)
+        recordAction(offset: startOffset, deleted: deleted, inserted: text)
+        if text.hasSuffix("\n") {
+            // Linewise-ish paste: cursor on the FIRST pasted line —
+            // parity with `p`'s linewise branch (pasteTextAfterCursor).
+            cursorLine = min(startLine, max(0, buf.lineCount - 1))
+            cursorCol = 0
+        } else {
+            let delta = MultilineInsert.cursorDelta(for: text)
+            cursorLine = min(startLine + delta.lines, max(0, buf.lineCount - 1))
+            cursorCol = delta.lines > 0 ? delta.tailCols : startCol + delta.tailCols
+        }
+        mode = .normal
+        ensureCursorVisible()
+    }
+
     private func insertText(_ text: String) {
         guard let buf = buffer else { return }
         let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
@@ -1013,34 +1103,60 @@ class EditorWindow: Window {
     private func yankCurrentLine() { guard let buf = buffer else { return }; yank(buf.getLine(cursorLine) + "\n") }
 
     private func pasteAfter() {
-        guard let buf = buffer, !yankBuffer.isEmpty else { return }
+        guard !yankBuffer.isEmpty else { return }
+        pasteTextAfterCursor(yankBuffer)
+    }
+
+    /// Inserts text like `p` — after the cursor (charwise) or below the
+    /// line (linewise, trailing "\n"). Multiline charwise text moves the
+    /// cursor to the char after the last pasted one.
+    private func pasteTextAfterCursor(_ text: String) {
+        guard let buf = buffer, !text.isEmpty else { return }
         let offset: Int
-        if yankBuffer.hasSuffix("\n") {
+        if text.hasSuffix("\n") {
             offset = buf.lineEnd(line: cursorLine)
-            buf.insert(yankBuffer, at: offset)
+            buf.insert(text, at: offset)
             cursorLine += 1; cursorCol = 0
         } else {
             let charAfterOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol + 1)
             offset = buf.lineStart(line: cursorLine) + charAfterOff
-            buf.insert(yankBuffer, at: offset)
-            cursorCol += yankBuffer.count
+            buf.insert(text, at: offset)
+            let delta = MultilineInsert.cursorDelta(for: text)
+            cursorLine += delta.lines
+            cursorCol = delta.lines > 0 ? delta.tailCols : cursorCol + delta.tailCols
         }
-        recordAction(offset: offset, deleted: "", inserted: yankBuffer)
+        recordAction(offset: offset, deleted: "", inserted: text)
+        ensureCursorVisible()
     }
 
     private func pasteBefore() {
-        guard let buf = buffer, !yankBuffer.isEmpty else { return }
+        guard !yankBuffer.isEmpty else { return }
+        pasteTextBeforeCursor(yankBuffer)
+    }
+
+    /// Inserts text like `P` — before the cursor (charwise) or above
+    /// the line (linewise, trailing "\n"). Cursor convention matches
+    /// pasteTextAfterCursor: after the last pasted char. Multiline
+    /// charwise text (a visual yank ending mid-line has no trailing
+    /// "\n") needs the same line/column delta math — a plain
+    /// `cursorCol += text.count` counts newlines as columns and pushes
+    /// the cursor past the line end.
+    private func pasteTextBeforeCursor(_ text: String) {
+        guard let buf = buffer, !text.isEmpty else { return }
         let offset: Int
-        if yankBuffer.hasSuffix("\n") {
+        if text.hasSuffix("\n") {
             offset = buf.lineStart(line: cursorLine)
-            buf.insert(yankBuffer, at: offset)
+            buf.insert(text, at: offset)
             cursorCol = 0
         } else {
             offset = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
-            buf.insert(yankBuffer, at: offset)
-            cursorCol += yankBuffer.count
+            buf.insert(text, at: offset)
+            let delta = MultilineInsert.cursorDelta(for: text)
+            cursorLine += delta.lines
+            cursorCol = delta.lines > 0 ? delta.tailCols : cursorCol + delta.tailCols
         }
-        recordAction(offset: offset, deleted: "", inserted: yankBuffer)
+        recordAction(offset: offset, deleted: "", inserted: text)
+        ensureCursorVisible()
     }
 
     private func yankVisualSelection() {
