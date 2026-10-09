@@ -14,8 +14,8 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
   - Built-in tokenizer for Swift, C, C++, Python, Rust, Go, JS/TS
   - Fast JSON highlighting
 - **File explorer** (`Ctrl+E`) — sidebar with directory tree; file names colored by git status (new — green, fully staged — blue, unstaged changes — teal)
-- **Git panel** (`Ctrl+G`) — staged/unstaged files, commits, diff with color highlighting; `a` opens the branch picker in create mode
-- **Branch picker** (`Ctrl+B`) — opens on the branch list; `Enter` switches, `Ctrl+Enter` switches and pulls, `a` creates a new branch (`git switch -c`), `d`/`D` deletes local / local+remote, `i` live-filters — the filter also finds remote branches fetched but not yet checked out (Enter creates the local tracking branch)
+- **Git panel** (`Ctrl+G`) — staged/unstaged files, commits, diff with color highlighting
+- **Branch picker** (`Ctrl+B`) — opens on the branch list; `Enter` switches, `Ctrl+Enter` switches and pulls, `a` creates a new branch (`git switch -c`), `m` merges (`side --no-ff` — name plus pass-through args; conflicts offer keep / ours / theirs / abort), `d`/`D` deletes local / local+remote, `i` live-filters — the filter also finds remote branches fetched but not yet checked out (Enter creates the local tracking branch)
 - **Git gutter** — editor line numbers colored by line status (added lines/files — green, staged — blue, unstaged — teal); diagnostics show as severity-colored circles after the line number (error + warning stack in one cell)
 - **Project search** (`Ctrl+F`) — recursive file search with grouped results
 - **Built-in terminal** (`Ctrl+T`) — run shell commands inside the editor: the prompt is the last line of the scrollback, arrows scroll the output, `Ctrl+Left/Right` recalls commands, `Tab` completes paths; `cd` and `clear` are handled by the window itself
@@ -74,7 +74,7 @@ swim <file>       # Open file
 | `v` | Normal | Enter Visual mode |
 | `:` | Any (not Insert) | Command line (via status bar) |
 | `/` | Normal | Search |
-| `r` / `R` | Normal | Next / previous search match |
+| `n` / `N` | Normal | Next / previous search match |
 | `h/j/k/l` | Normal | Navigation |
 | `dd` | Normal | Delete line |
 | `yy` | Normal | Yank line |

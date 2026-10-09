@@ -479,6 +479,11 @@ class Application: WindowDelegate {
             anyDirty = true
         }
         if gitPanel.visible && gitPanel.isRefreshing {
+            // No spinner anymore — but the tick keeps the idle loop
+            // alive for the panel: landed results are consumed by
+            // pollWindows (the anyDirty block below), so the opened
+            // panel's content appears when the fetch lands, not on
+            // the next keypress.
             gitPanel.dirty = true
             anyDirty = true
         }
@@ -499,6 +504,13 @@ class Application: WindowDelegate {
         }
         if anyDirty {
             lastSpinnerTick = now
+            // Consume landed background results before rendering —
+            // without this, results surface only on the next keypress
+            // (pollWindows runs in the key branch), and an idle-opened
+            // panel/branches list would sit blank until the user
+            // types. Polls are cheap mailbox checks when nothing
+            // landed.
+            spaces.current.pollWindows()
             spaces.current.update()
             render()
         }
@@ -912,6 +924,11 @@ class Application: WindowDelegate {
             // A diff left open when the panel was closed (`:q`, Ctrl+X)
             // would show stale content on reopen — return to the list.
             gitPanel.closeDiffView()
+            // Same for the previous visit's rows: the cleared body +
+            // loading spinner replace a stale list that the landing
+            // fetch would visibly shove around (files inserting above
+            // the old commits section).
+            gitPanel.prepareOpen()
             gitPanel.refresh()
             // Opening the panel signals interest in git state — the
             // decorations (gutter lines, explorer marks) may be stale
@@ -938,25 +955,18 @@ class Application: WindowDelegate {
 
     /// Opens the branch picker: fresh list, cursor on the newest
     /// branch (menu mode) — a branch may have moved since the last
-    /// visit. `createBranch` (the git panel's `a`) opens straight
-    /// into the name prompt instead.
-    private func openGitBranches(createBranch: Bool = false) {
+    /// visit. Branch operations live here only — the git panel does
+    /// not duplicate them.
+    private func openGitBranches() {
         if maximized != nil { restoreMaximized() }
         if spaces.current.id != "editor" { switchToSpace("editor") }
         gitBranches.prepare(workingDirectory: gitPanel.workingDirectory.isEmpty
             ? FileManager.default.currentDirectoryPath
-            : gitPanel.workingDirectory, createBranch: createBranch)
+            : gitPanel.workingDirectory)
         gitBranches.visible = true
         focus(gitBranches)
         recalculateLayout()
         spaces.markAllDirty()
-    }
-
-    /// The git panel's `a` — the branch picker with its new-branch
-    /// phase armed (the input line prompts for the name, Enter runs
-    /// `git switch -c`).
-    func requestCreateBranch() {
-        openGitBranches(createBranch: true)
     }
 
     private func toggleSearch() {

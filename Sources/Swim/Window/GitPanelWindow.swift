@@ -20,12 +20,16 @@ struct GitFileStatus {
 
     /// The panel row letter: staged rows speak `A` (everything in the
     /// index is added to the next commit) — except a staged DELETION,
-    /// which keeps `D`: an "A" on a removed file would be a lie;
-    /// unstaged rows show their real worktree letter (`M`/`D`);
-    /// untracked keeps the classic `?`. One source of truth for the
-    /// rendered row and the `yy` yank text.
+    /// which keeps `D`: an "A" on a removed file would be a lie — and
+    /// an UNMERGED entry (a merge conflict: `UU`), which speaks `C`
+    /// in BOTH sections: it is not an addition nor a plain change but
+    /// a conflict waiting for resolution (`U` would read as
+    /// "unstaged"); unstaged rows otherwise show their real worktree
+    /// letter (`M`/`D`); untracked keeps the classic `?`. One source
+    /// of truth for the rendered row and the `yy` yank text.
     var sectionLetter: Character {
         if status == "?" { return "?" }
+        if status == "U" { return "C" }
         if staged { return status == "D" ? "D" : "A" }
         return Character(status)
     }
@@ -149,6 +153,12 @@ class GitPanelWindow: Window {
     private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     private(set) var isRefreshing: Bool = false
+    /// True between `prepareOpen` and the landing of ITS fetch: the
+    /// open itself asked for the data, so the empty body shows the
+    /// loading spinner — background refreshes of an already-settled
+    /// panel (a finished command re-checking a clean list) keep their
+    /// stable "No changes" without a spinner flash.
+    private var isOpenLoading = false
     private let gitTask = BackgroundTask<GitRefreshResult>()
 
     /// Monotonic request clock, bumped on main thread by every
@@ -240,11 +250,21 @@ class GitPanelWindow: Window {
     }
 
     private func drawStatus() {
-        let branchLabel = isRefreshing ? "Git @ loading..." : "Git @ \(currentBranch)"
+        // No loading indicators — even a transient spinner/label is a
+        // visible flicker. During the open-driven fetch the plate has
+        // no branch and the body is blank; the missing parts (the
+        // list, the "@ branch") appear in one frame when the fetch
+        // lands.
+        let branchLabel: String
+        if isOpenLoading || currentBranch.isEmpty {
+            branchLabel = "Git"
+        } else {
+            branchLabel = "Git @ \(currentBranch)"
+        }
         if mode == .visualLine {
             headerPlate = HeaderPlate(text: " [ VISUAL ] \(branchLabel) ", fg: Theme.purple)
         } else {
-            headerPlate = HeaderPlate(text: " \(branchLabel) (s: stage/unstage, d: discard, c/C: commit / + last msg, a: new branch) ", fg: Theme.orange)
+            headerPlate = HeaderPlate(text: " \(branchLabel) (a: add, d: unstage/discard, c/C: commit / + last msg) ", fg: Theme.orange)
         }
         drawPlate()
 
@@ -269,8 +289,40 @@ class GitPanelWindow: Window {
         }
 
         if statusList.sections.isEmpty {
-            drawLine(" No changes", row: max(contentTop, row), fg: Theme.comment)
+            if !isOpenLoading {
+                // Blank while the open-driven fetch is in flight — the
+                // content appears when it lands; "No changes" is only
+                // the settled truth.
+                drawLine(" No changes", row: max(contentTop, row), fg: Theme.comment)
+            }
         }
+    }
+
+    /// Fresh-open state: the previous visit's rows must not flash on
+    /// screen while the first fetch is in flight — the opening frame
+    /// would render the STALE sections (say, commits-only after a
+    /// commit) and the landing fetch would then insert the file
+    /// sections above them, visibly shoving the list down. The open
+    /// path clears the body; the plate drops its "@ branch" until the
+    /// fetch lands — the missing parts appear in one frame, with no
+    /// transient loading indicators (even a spinner is a flicker).
+    /// Action refreshes (`a`/`d`/finished commands) do NOT come
+    /// through here — the list stays and updates in place, which is
+    /// not a jump.
+    func prepareOpen() {
+        stagedFiles = []
+        unstagedFiles = []
+        untrackedFiles = []
+        recentCommits = []
+        selectedSection = 0
+        selectedRow = 0
+        scrollOffset = 0
+        // A panel closed mid-visual (Ctrl+X skips the Esc exit) must
+        // not reopen into [ VISUAL ] over an empty list.
+        mode = .menu
+        pendingY = false
+        isOpenLoading = true
+        rebuildStatusList()
     }
 
     private func drawItemRow(_ item: StatusItem, row: Int, selected: Bool, section: StatusSection) {
@@ -323,8 +375,15 @@ class GitPanelWindow: Window {
         } else if isCommit {
             headerPlate = HeaderPlate(text: " \(title) (yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
         } else {
-            let hunkHint = diffUntracked ? "s: add file" : (diffStaged ? "s: unstage hunk" : "s: stage hunk")
-            headerPlate = HeaderPlate(text: " \(title) (\(hunkHint), d: discard, yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
+            let hunkHint: String
+            if diffUntracked {
+                hunkHint = "a: add file, d: delete"
+            } else if diffStaged {
+                hunkHint = "d: unstage hunk"
+            } else {
+                hunkHint = "a: stage hunk, d: discard hunk"
+            }
+            headerPlate = HeaderPlate(text: " \(title) (\(hunkHint), yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
         }
         drawPlate()
         let visibleLines = contentHeight
@@ -388,11 +447,17 @@ class GitPanelWindow: Window {
     /// the explorer names: staged additions stagedColor (teal),
     /// worktree changes unstagedColor (orange), untracked the classic
     /// muted `?`, with `D` in deleteColor on both sides — a deletion
-    /// reads on its own.
+    /// reads on its own — and an unmerged entry (a merge conflict,
+    /// shown as `C`) in red on both sides: it demands attention, not
+    /// staging.
     private func statusColorFor(_ file: GitFileStatus, in section: StatusSection) -> Color {
         switch section {
-        case .staged: return file.status == "D" ? Theme.deleteColor : Theme.stagedColor
-        case .unstaged: return file.status == "D" ? Theme.deleteColor : Theme.unstagedColor
+        case .staged:
+            if file.status == "U" { return Theme.red }
+            return file.status == "D" ? Theme.deleteColor : Theme.stagedColor
+        case .unstaged:
+            if file.status == "U" { return Theme.red }
+            return file.status == "D" ? Theme.deleteColor : Theme.unstagedColor
         case .untracked, .commits: return Theme.comment
         }
     }
@@ -451,12 +516,12 @@ class GitPanelWindow: Window {
                     diffCursorRow -= 1; ensureDiffCursorVisible(); dirty = true
                 }
                 pendingY = false
-            case .char("s"):
-                stageOrUnstageFromDiff()
+            case .char("a"):
                 pendingY = false
+                addFromDiff()
             case .char("d"):
                 pendingY = false
-                discardFromDiff()
+                dropFromDiff()
             case .char("y"):
                 if pendingY {
                     yankDiffLines(diffCursorRow...diffCursorRow)
@@ -492,24 +557,18 @@ class GitPanelWindow: Window {
         case .enter:
             mode = .menu; pendingY = false
             showDiffForSelected()
-        case .char("s"):
+        case .char("a"):
             mode = .menu; pendingY = false
-            stageOrUnstageSelected()
+            addSelected()
         case .char("d"):
             mode = .menu; pendingY = false
-            discardSelected()
+            dropSelected()
         case .char("c"):
             mode = .menu; pendingY = false
-            delegate?.requestCommitMessage(prefill: "")
+            delegate?.requestCommitMessage(prefill: preparedCommitMessage())
         case .char("C"):
             mode = .menu; pendingY = false
             delegate?.requestCommitMessage(prefill: lastCommitMessage())
-        case .char("a"):
-            // Branch creation lives in the picker — `a` opens it
-            // straight into its name-input phase (see
-            // GitBranchesWindow.beginCreateBranch).
-            mode = .menu; pendingY = false
-            delegate?.requestCreateBranch()
         case .char("y"):
             if pendingY {
                 if let item = selectedItem { Terminal.shared.osc52Copy(item.visibleText) }
@@ -544,7 +603,12 @@ class GitPanelWindow: Window {
         }
         if let selectedScreenRow = rowForSelectedItem() {
             if selectedScreenRow < scrollOffset + contentTop {
-                scrollOffset = selectedScreenRow - contentTop
+                // One row of context above the item: for a section's
+                // first entry that is its HEADER — pulling the item to
+                // the top edge used to strand the header one row above
+                // the window (the first section's header stayed hidden
+                // after scrolling back to the top).
+                scrollOffset = max(0, selectedScreenRow - contentTop - 1)
             } else if selectedScreenRow >= scrollOffset + height {
                 scrollOffset = selectedScreenRow - height + 1
             }
@@ -565,27 +629,77 @@ class GitPanelWindow: Window {
         }
     }
 
-    private func stageOrUnstageSelected() {
+    /// `a` — add: stage the worktree state of the selected file. On an
+    /// unmerged (`C`) row in EITHER section this is also "mark
+    /// resolved": `git add` writes the resolution into the index and
+    /// clears the unmerged stages — the one safe action for a
+    /// conflict. On an already-staged row the add is idempotent.
+    private func addSelected() {
         switch selectedItem {
         case .file(let file):
-            let section = statusList.sections[selectedSection].kind
-            if section == .staged {
-                // A staged rename is two index changes (delete old + add
-                // new); resetting only the new path would leave the
-                // deletion staged.
+            runGit(["add", "--", topPathspec(file.filePath)])
+        case .commit, nil:
+            break
+        }
+        refresh()
+        delegate?.gitWorktreeChanged()
+    }
+
+    /// `d` — drop the change from where it currently lives. Staged
+    /// section → unstage (`reset HEAD --`; a staged rename resets both
+    /// sides) — the worktree keeps the change. Unstaged → discard
+    /// (`checkout --`), untracked → delete from disk. A staged change
+    /// can never be destroyed with one press anymore: the destructive
+    /// half only exists where the change is NOT in the index yet —
+    /// discard-after-unstage is the explicit two-step.
+    private func dropSelected() {
+        let section = statusList.sections.indices.contains(selectedSection)
+            ? statusList.sections[selectedSection].kind : nil
+        switch selectedItem {
+        case .file(let file):
+            switch section {
+            case .staged:
                 var paths = [topPathspec(file.filePath)]
                 if file.status == "R", let old = file.origPath {
                     paths.insert(topPathspec(old), at: 0)
                 }
                 runGit(["reset", "HEAD", "--"] + paths)
-            } else {
-                runGit(["add", "--", topPathspec(file.filePath)])
+            case .unstaged:
+                if runGit(["checkout", "--", topPathspec(file.filePath)]).exitCode == 0 {
+                    notifyBufferReload(file.filePath)
+                }
+            case .untracked:
+                deleteFileOnDisk(file.filePath)
+            case .commits, nil:
+                break
             }
         case .commit, nil:
             break
         }
         refresh()
         delegate?.gitWorktreeChanged()
+        dirty = true
+    }
+
+    /// The commit message `c` opens with: during a merge (MERGE_HEAD
+    /// alive) git has already prepared it (`--git-path MERGE_MSG` —
+    /// "Merge branch 'x'"); concluding the merge is then edit-and-
+    /// save. Git's comment lines (the "# Conflicts:" block) are
+    /// annotations, not message — stripped. Outside a merge: empty.
+    private func preparedCommitMessage() -> String {
+        guard Shell.git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], workDir: workingDirectory).exitCode == 0 else {
+            return ""
+        }
+        let path = Shell.git(["rev-parse", "--git-path", "MERGE_MSG"], workDir: workingDirectory)
+            .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, !path.hasPrefix("fatal"),
+              let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return ""
+        }
+        return text.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.hasPrefix("#") }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func runDiff(for path: String, staged: Bool, untracked: Bool) {
@@ -706,25 +820,56 @@ class GitPanelWindow: Window {
         return patch
     }
 
-    private func stageOrUnstageFromDiff() {
-        guard !diffPath.isEmpty else { return }
+    /// `a` in a diff — add: stage the active hunk (`apply --cached`)
+    /// or the whole untracked file. On a STAGED diff the hunk is
+    /// already in the index — nothing to add, a quiet no-op.
+    private func addFromDiff() {
+        guard !diffPath.isEmpty, !diffStaged else { return }
 
         if diffUntracked {
             runGit(["add", "--", topPathspec(diffPath)])
         } else if let hunkIdx = activeHunkIndex() {
             let patch = buildPatchForHunk(diffHunks[hunkIdx])
             guard !patch.isEmpty else { return }
-            if diffStaged {
-                runGit(["apply", "--reverse", "--cached"], stdin: patch)
-            } else {
-                runGit(["apply", "--cached"], stdin: patch)
-            }
+            runGit(["apply", "--cached"], stdin: patch)
         }
 
         // The diff restarts immediately (loading spinner on this very
         // keypress, hunks cleared synchronously — a double press finds
         // nothing to act on); the completing refresh will NOT reload it
         // again — its request clock value is older than this request.
+        refresh()
+        delegate?.gitWorktreeChanged()
+        runDiff(for: diffPath, staged: diffStaged, untracked: diffUntracked)
+    }
+
+    /// `d` in a diff — drop the hunk from where it lives: a STAGED
+    /// diff unstages it (reverse-apply against the index only — the
+    /// worktree keeps the change; discarding it fully is the explicit
+    /// second `d` from the unstaged diff), an unstaged diff discards it
+    /// from the worktree (reverse-apply + reload of clean editor
+    /// tabs), an untracked file is deleted from disk.
+    private func dropFromDiff() {
+        guard !diffPath.isEmpty, diffCommitHash.isEmpty else { return }
+
+        if diffUntracked {
+            deleteFileOnDisk(diffPath)
+            showDiff = false
+            refresh()
+            return
+        }
+
+        guard let hunkIdx = activeHunkIndex() else { return }
+        let patch = buildPatchForHunk(diffHunks[hunkIdx])
+        guard !patch.isEmpty else { return }
+        if diffStaged {
+            runGit(["apply", "--reverse", "--cached"], stdin: patch)
+        } else {
+            if runGit(["apply", "--reverse"], stdin: patch).exitCode == 0 {
+                notifyBufferReload(diffPath)
+            }
+        }
+
         refresh()
         delegate?.gitWorktreeChanged()
         runDiff(for: diffPath, staged: diffStaged, untracked: diffUntracked)
@@ -744,99 +889,6 @@ class GitPanelWindow: Window {
     /// `Application.fileChangedOnDisk`).
     private func notifyBufferReload(_ repoRelativePath: String) {
         delegate?.fileChangedOnDisk(absolutePath(repoRelativePath))
-    }
-
-    private func discardSelected() {
-        let section = statusList.sections.indices.contains(selectedSection)
-            ? statusList.sections[selectedSection].kind : nil
-        switch selectedItem {
-        case .file(let file):
-            switch section {
-            case .staged:
-                switch file.status {
-                case "A":
-                    // Not in HEAD: drop from index and disk.
-                    if runGit(["rm", "-f", "--", topPathspec(file.filePath)]).exitCode == 0 {
-                        notifyBufferReload(file.filePath)
-                    }
-                case "R":
-                    // Staged rename: restore the old path, remove the new one.
-                    if let old = file.origPath {
-                        if runGit(["checkout", "HEAD", "--", topPathspec(old)]).exitCode == 0 {
-                            notifyBufferReload(old)
-                        }
-                        if runGit(["rm", "-f", "--", topPathspec(file.filePath)]).exitCode == 0 {
-                            notifyBufferReload(file.filePath)
-                        }
-                    } else {
-                        if runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)]).exitCode == 0 {
-                            notifyBufferReload(file.filePath)
-                        }
-                    }
-                case "C":
-                    // Staged copy: the source is untouched, drop only the copy.
-                    if runGit(["rm", "-f", "--", topPathspec(file.filePath)]).exitCode == 0 {
-                        notifyBufferReload(file.filePath)
-                    }
-                default:
-                    if runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)]).exitCode == 0 {
-                        notifyBufferReload(file.filePath)
-                    }
-                }
-            case .unstaged:
-                if runGit(["checkout", "--", topPathspec(file.filePath)]).exitCode == 0 {
-                    notifyBufferReload(file.filePath)
-                }
-            case .untracked:
-                deleteFileOnDisk(file.filePath)
-            case .commits, nil:
-                break
-            }
-        case .commit, nil:
-            break
-        }
-        refresh()
-        delegate?.gitWorktreeChanged()
-        dirty = true
-    }
-
-    private func discardFromDiff() {
-        guard !diffPath.isEmpty, diffCommitHash.isEmpty else { return }
-
-        if diffUntracked {
-            deleteFileOnDisk(diffPath)
-            showDiff = false
-            refresh()
-            return
-        }
-
-        guard let hunkIdx = activeHunkIndex() else { return }
-        let patch = buildPatchForHunk(diffHunks[hunkIdx])
-        guard !patch.isEmpty else { return }
-        if diffStaged {
-            let indexResult = runGit(["apply", "--reverse", "--cached"], stdin: patch)
-            if indexResult.exitCode == 0 {
-                // Worktree may have diverged from the index (partially
-                // staged region): a failure here leaves the hunk moved to
-                // unstaged instead of discarded — the user must know.
-                let worktreeResult = runGit(["apply", "--reverse"], stdin: patch)
-                if worktreeResult.exitCode == 0 {
-                    notifyBufferReload(diffPath)
-                }
-            }
-        } else {
-            if runGit(["apply", "--reverse"], stdin: patch).exitCode == 0 {
-                notifyBufferReload(diffPath)
-            }
-        }
-
-        // The diff restarts immediately (loading spinner on this very
-        // keypress, hunks cleared synchronously — a double press finds
-        // nothing to act on); the completing refresh will NOT reload it
-        // again — its request clock value is older than this request.
-        refresh()
-        delegate?.gitWorktreeChanged()
-        runDiff(for: diffPath, staged: diffStaged, untracked: diffUntracked)
     }
 
     private func ensureDiffCursorVisible() {
@@ -1003,6 +1055,7 @@ class GitPanelWindow: Window {
 
         if let result = gitTask.consume() {
             isRefreshing = false
+            isOpenLoading = false
             currentBranch = result.branch.hasPrefix("fatal") ? "not a git repo" : result.branch
             if !result.repoRoot.isEmpty, !result.repoRoot.hasPrefix("fatal") {
                 repoRoot = result.repoRoot

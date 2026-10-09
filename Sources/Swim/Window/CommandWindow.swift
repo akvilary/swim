@@ -19,6 +19,9 @@ class CommandWindow: Window {
     /// then pull). Dropped on failure or Esc-cancel — the
     /// predecessor's output stays on screen explaining why.
     private var followUp: (label: String, args: [String])?
+    /// The shape (user args + ref) of the LAST merge run here — a
+    /// conflicted finish offers ours/theirs retries that preserve it.
+    private var lastMergeShape: MergeShape?
 
     private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -33,6 +36,14 @@ class CommandWindow: Window {
         lastRunCancelled = false
         inputKind = nil
         followUp = chaining
+        // A new command supersedes an unanswered conflict choice —
+        // the conflicted state stays on disk untouched, git's own
+        // `git merge --abort` is the way out if that is what happened.
+        mergeConflict = nil
+        // Remember the merge's shape (user args + the ref after `--`)
+        // so a conflicted finish can offer ours/theirs retries that
+        // PRESERVE what the user asked for (--no-ff etc.).
+        lastMergeShape = args.first == "merge" ? parseMergeShape(args) : nil
         visible = true
         dirty = true
 
@@ -40,6 +51,38 @@ class CommandWindow: Window {
         let newSession = InteractiveShell()
         session = newSession
         newSession.start(executable: "/usr/bin/git", args: args, workDir: workDir)
+    }
+
+    /// The merge invocation's shape: the user's pass-through arguments
+    /// and the ref, split at the `--` separator the picker rebuilds
+    /// (`git merge <args> -- <name>`). Nil when the shape doesn't hold
+    /// (no `--`, no name) — the conflict offer is skipped then.
+    private struct MergeShape {
+        let userArgs: [String]
+        let name: String
+    }
+
+    private func parseMergeShape(_ args: [String]) -> MergeShape? {
+        // dash >= 1, not > 1: a no-arguments merge is
+        // ["merge", "--", name] — the separator sits right after the
+        // subcommand and the user-args slice is simply empty.
+        guard let dash = args.firstIndex(of: "--"), dash >= 1,
+              dash + 1 < args.count else { return nil }
+        return MergeShape(userArgs: Array(args[1..<dash]), name: args[dash + 1])
+    }
+
+    /// A merge finished with conflicts on disk: the window holds a
+    /// one-key choice until the user resolves it (k/o/t) or Esc aborts
+    /// the merge. The state is the offer itself — nothing runs until
+    /// a key picks.
+    private var mergeConflict: MergeShape?
+
+    /// Detects the conflicted state after a failed merge: `ls-files -u`
+    /// lists unmerged index entries (empty after --abort, empty on a
+    /// clean merge — self-gating against every other finished merge).
+    private func detectMergeConflicts() -> Bool {
+        let result = Shell.git(["ls-files", "-u"], workDir: workingDirectory)
+        return result.exitCode == 0 && !result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     override func poll() {
@@ -81,6 +124,16 @@ class CommandWindow: Window {
             return
         }
         followUp = nil
+        // A failed merge with unmerged index entries is not just an
+        // error to read — offer the resolution choice (the picker's
+        // `m` deliberately does not ask the policy blind). Runs only
+        // for a real conflict: -X retries cannot conflict and an
+        // --abort leaves ls-files -u empty.
+        if visible, !cancelled, result.exitCode != 0, let shape = lastMergeShape,
+           detectMergeConflicts() {
+            mergeConflict = shape
+            dirty = true
+        }
         delegate?.requestRender()
     }
 
@@ -102,6 +155,69 @@ class CommandWindow: Window {
             return true
         }
         return super.executeCommand(cmd)
+    }
+
+    override func handleKey(_ key: Key) -> Bool {
+        // The conflict choice is modal over this window: one key
+        // decides, anything else re-prompts (the write-confirm's
+        // discipline). k keeps the conflicted state for manual
+        // resolution in the editor (commit from the git panel when
+        // done); o/t abort and re-merge with -X ours/theirs,
+        // PRESERVING the user's own merge arguments (--no-ff etc.);
+        // Esc aborts the merge outright.
+        if let shape = mergeConflict {
+            switch key {
+            case .char("k"), .char("K"):
+                mergeConflict = nil
+                delegate?.reportError("Conflicts left for manual resolution — resolve in the editor, a in the git panel, then c")
+                dirty = true
+            case .char("o"), .char("O"):
+                mergeConflict = nil
+                retryMergeResolving("ours", shape: shape)
+            case .char("t"), .char("T"):
+                mergeConflict = nil
+                retryMergeResolving("theirs", shape: shape)
+            case .escape:
+                mergeConflict = nil
+                delegate?.runGitCommand(label: "git merge --abort", args: ["merge", "--abort"])
+            default:
+                break
+            }
+            return true
+        }
+        switch key {
+        case .char("j"), .down:
+            if !isRunning {
+                let visibleLines = max(0, height - 1)
+                if scrollOffset + visibleLines < outputLines.count {
+                    scrollOffset += 1; dirty = true
+                }
+            }
+        case .char("k"), .up:
+            if !isRunning {
+                if scrollOffset > 0 { scrollOffset -= 1; dirty = true }
+            }
+        case .escape:
+            return false
+        default: return false
+        }
+        return true
+    }
+
+    /// The o/t arm: abort the conflicted merge, then re-merge with the
+    /// `-X ours/theirs` hunk-level policy — the user's own arguments
+    /// ride along, so a `--no-ff` merge stays --no-ff through the
+    /// retry. The chain's follow-up contract runs the retry only
+    /// after a successful abort.
+    private func retryMergeResolving(_ strategy: String, shape: MergeShape) {
+        let userArgs = shape.userArgs.joined(separator: " ")
+        let argPrefix = userArgs.isEmpty ? "" : userArgs + " "
+        delegate?.runGitCommand(
+            label: "git merge --abort", args: ["merge", "--abort"],
+            then: (
+                label: "git merge \(argPrefix)-X \(strategy) \(shape.name)",
+                args: ["merge"] + shape.userArgs + ["-X", strategy, "--", shape.name]
+            ))
     }
 
     override func handleCommandModeKey(_ key: Key) -> Bool {
@@ -144,7 +260,20 @@ class CommandWindow: Window {
             return
         }
 
-        if isRunning {
+        if mergeConflict != nil {
+            // The choice is the plate; the merge's own CONFLICT output
+            // below explains WHAT conflicted — same rendering as the
+            // done branch.
+            drawHeader(" Merge conflicts — k: keep & resolve, o: ours, t: theirs, Esc: abort ", fg: Theme.red)
+            let visibleLines = max(0, height - 1)
+            for i in 0..<visibleLines {
+                let lineIdx = scrollOffset + i
+                guard lineIdx < outputLines.count else { break }
+                let line = outputLines[lineIdx]
+                let fg: Color = line.hasPrefix("fatal") || line.hasPrefix("error") ? Theme.red : Theme.fgDark
+                drawLine(String(line.prefix(width)), row: i + 1, fg: fg)
+            }
+        } else if isRunning {
             let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
             drawHeader(" \(spinner) \(title) ", fg: Theme.blue)
             let msg = "Running \(title)..."
@@ -170,26 +299,6 @@ class CommandWindow: Window {
                 drawLine(String(line.prefix(width)), row: i + 1, fg: fg)
             }
         }
-    }
-
-    override func handleKey(_ key: Key) -> Bool {
-        switch key {
-        case .char("j"), .down:
-            if !isRunning {
-                let visibleLines = max(0, height - 1)
-                if scrollOffset + visibleLines < outputLines.count {
-                    scrollOffset += 1; dirty = true
-                }
-            }
-        case .char("k"), .up:
-            if !isRunning {
-                if scrollOffset > 0 { scrollOffset -= 1; dirty = true }
-            }
-        case .escape:
-            return false
-        default: return false
-        }
-        return true
     }
 
 }

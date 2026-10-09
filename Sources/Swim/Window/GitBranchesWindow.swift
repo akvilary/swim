@@ -53,7 +53,14 @@ private struct BranchFetch {
 /// starts branch creation: the input line becomes a name prompt
 /// seeded with the current filter, Enter runs `git switch -c <name>`
 /// (create + switch, the common intent) through the command window
-/// and closes the picker, Esc returns to the plain list; `d` deletes
+/// and closes the picker, Esc returns to the plain list; `m` merges
+/// into the current branch: the input line takes `<name> [args...]`
+/// (the ref first, the rest pass through to git merge —
+/// `side --no-ff` works verbatim; the invocation is rebuilt as
+/// `git merge <args> -- <name>`, so user flags stay flags and a
+/// leading-dash name stays an operand), and a conflicted finish
+/// offers the policy in the command window (keep / ours / theirs /
+/// abort); `d` deletes
 /// the selected branch locally (`git branch -d` — git itself refuses
 /// unmerged branches), `D` also deletes its remote counterpart (the
 /// remote leg runs only after the local one succeeded) — the picker
@@ -94,19 +101,26 @@ class GitBranchesWindow: Window {
 
     private var filterBuffer: String = ""
     private var filterCursorPos: Int = 0
-    /// The create phase's own typing surface: a separate buffer, so
-    /// canceling creation (Esc) restores the filter exactly as it
-    /// was. Edits here never re-query git — the listing is idle
-    /// while the name is being typed.
-    private var createMode = false
+    /// The input line's intent while a NAME (not the filter) is being
+    /// typed: create a branch (`a`) or merge one into the current
+    /// branch (`m`). A separate buffer from the filter, so canceling
+    /// restores the filter exactly as it was. Name edits never
+    /// re-query git — the listing is idle while the name is typed.
+    private enum NamePhase { case createBranch, mergeBranch }
+    private var namePhase: NamePhase?
     private var nameBuffer: String = ""
     private var nameCursorPos: Int = 0
     private var selectedIndex: Int = 0
     private var scrollOffset: Int = 0
-    /// The input line's prompt — a constant per phase (filter vs
-    /// create) so the drawing and the caret math can never drift
-    /// apart.
-    private var activePrompt: String { createMode ? " New branch: " : " Branch: " }
+    /// The input line's prompt — a constant per phase (filter, create,
+    /// merge) so the drawing and the caret math can never drift apart.
+    private var activePrompt: String {
+        switch namePhase {
+        case nil: return " Branch: "
+        case .createBranch: return " New branch: "
+        case .mergeBranch: return " Merge branch: "
+        }
+    }
 
     var workingDirectory: String = "" {
         // Assigned only by prepare (a fresh open): the reload must
@@ -118,19 +132,18 @@ class GitBranchesWindow: Window {
     /// Fresh open state: empty filter, first page only, the index
     /// parked on the first row, list reloaded — a branch may have
     /// moved since the last visit. `Ctrl+B` lands in MENU mode (the
-    /// list itself, cursor on the newest branch); `createBranch` (the
-    /// git panel's `a`) opens straight into the name prompt instead.
-    func prepare(workingDirectory: String, createBranch: Bool = false) {
+    /// list itself, cursor on the newest branch).
+    func prepare(workingDirectory: String) {
         filterBuffer = ""
         filterCursorPos = 0
-        createMode = createBranch
+        namePhase = nil
         nameBuffer = ""
         nameCursorPos = 0
         selectedIndex = 0
         scrollOffset = 0
         listLimit = Self.pageSize
         isComplete = false
-        mode = createBranch ? .insert : .menu
+        mode = .menu
         self.workingDirectory = workingDirectory
         dirty = true
     }
@@ -209,8 +222,9 @@ class GitBranchesWindow: Window {
     /// graphemes occupy two cells), shared with the caret math below.
     private func drawFilterLine() {
         let prompt = activePrompt
-        let text = createMode ? nameBuffer : filterBuffer
-        let caret = createMode ? nameCursorPos : filterCursorPos
+        let nameInput = namePhase != nil
+        let text = nameInput ? nameBuffer : filterBuffer
+        let caret = nameInput ? nameCursorPos : filterCursorPos
         drawLine(prompt, row: 0, col: 0, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)
         let maxInput = max(0, width - prompt.count - 2)
         let win = InputLine.window(text: text, caret: caret, capacity: maxInput)
@@ -232,8 +246,9 @@ class GitBranchesWindow: Window {
     override func cursorRenderInfo() -> CursorRenderInfo? {
         guard visible, focused, mode == .insert else { return nil }
         let prompt = activePrompt
-        let text = createMode ? nameBuffer : filterBuffer
-        let caret = createMode ? nameCursorPos : filterCursorPos
+        let nameInput = namePhase != nil
+        let text = nameInput ? nameBuffer : filterBuffer
+        let caret = nameInput ? nameCursorPos : filterCursorPos
         let maxInput = max(0, width - prompt.count - 2)
         let win = InputLine.window(text: text, caret: caret, capacity: maxInput)
         let col = prompt.count + win.caretOffset
@@ -261,7 +276,7 @@ class GitBranchesWindow: Window {
             return
         }
         headerPlate = HeaderPlate(
-            text: " \(plateTitle) (Enter: switch, Ctrl+Enter: +pull, a: new, d/D: delete /+remote, i: filter, Esc: close) ",
+            text: " \(plateTitle) (Enter: switch, Ctrl+Enter: +pull, a: new, m: merge, d/D: delete /+remote, i: filter, Esc: close) ",
             fg: Theme.orange)
         drawPlate()
     }
@@ -360,7 +375,9 @@ class GitBranchesWindow: Window {
             filterCursorPos = filterBuffer.count
             dirty = true
         case .char("a"):
-            beginCreateBranch()
+            beginNameInput(.createBranch)
+        case .char("m"):
+            beginNameInput(.mergeBranch)
         case .char("d"):
             deleteSelected(alsoRemote: false)
         case .char("D"):
@@ -374,8 +391,8 @@ class GitBranchesWindow: Window {
     }
 
     private func handleInputKey(_ key: Key) -> Bool {
-        if createMode {
-            return handleCreateKey(key)
+        if namePhase != nil {
+            return handleNameKey(key)
         }
         switch key {
         case .escape:
@@ -420,33 +437,36 @@ class GitBranchesWindow: Window {
         return true
     }
 
-    /// Menu-mode `a` (or a fresh open with the create intent — the
-    /// git panel's `a`): the input line becomes a name prompt. The
+    /// Menu-mode `a`/`m`: the input line becomes a name prompt. The
     /// name is seeded with the current filter — typing a name that
-    /// matches nothing and pressing `a` keeps the typing instead of
-    /// discarding it.
-    private func beginCreateBranch() {
+    /// matches nothing and pressing the action key keeps the typing
+    /// instead of discarding it.
+    private func beginNameInput(_ phase: NamePhase) {
         nameBuffer = filterBuffer
         nameCursorPos = nameBuffer.count
-        createMode = true
+        namePhase = phase
         mode = .insert
         dirty = true
     }
 
-    /// The create phase's typing surface: Enter creates the branch,
-    /// Esc returns to the plain list (the filter survives — the name
-    /// lives in its own buffer); every other key goes through the
+    /// The name-input phase's typing surface: Enter commits the phase's
+    /// action, Esc returns to the plain list (the filter survives — the
+    /// name lives in its own buffer); every other key goes through the
     /// shared line editor. Name edits never re-query git — the
     /// listing is idle while the name is being typed. ↑/↓
     /// deliberately do NOT leave the phase (unlike the filter's
-    /// phase exits): re-entering `a` reseeds the name from the
+    /// phase exits): re-entering reseeds the name from the
     /// filter, so an accidental exit would discard the typing.
-    private func handleCreateKey(_ key: Key) -> Bool {
+    private func handleNameKey(_ key: Key) -> Bool {
         switch key {
         case .enter:
-            createSelected()
+            switch namePhase {
+            case .createBranch: createSelected()
+            case .mergeBranch: mergeSelected()
+            case nil: break
+            }
         case .escape:
-            createMode = false
+            namePhase = nil
             mode = .menu
             dirty = true
         default:
@@ -455,6 +475,31 @@ class GitBranchesWindow: Window {
             }
         }
         return true
+    }
+
+    /// Enter in the merge phase: `git merge [args] -- <name>`. The
+    /// input is `<name> [args...]` — the first token is the ref, the
+    /// rest pass through to git merge as-is (a power user's
+    /// `side --no-ff` or `origin/x --squash` works verbatim). The
+    /// rebuild puts the user's flags BEFORE the `--` separator and
+    /// the name AFTER it: flags stay flags, a leading-dash name stays
+    /// an operand — never an option — and validity stays git's to
+    /// judge (a local branch, `origin/x`, anything commit-ish;
+    /// errors visible in the command window). The conflict policy is
+    /// deliberately NOT asked blind: conflicts are detected after
+    /// the attempt and offered as a choice (see CommandWindow's
+    /// conflict prompt). The picker closes first.
+    private func mergeSelected() {
+        let input = nameBuffer.trimmingCharacters(in: .whitespaces)
+        var tokens = input.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let name = tokens.first, !tokens.isEmpty else {
+            delegate?.reportError("Branch name is empty")
+            return
+        }
+        tokens.removeFirst()
+        namePhase = nil
+        delegate?.requestClose(self)
+        delegate?.runGitCommand(label: "git merge \(input)", args: ["merge"] + tokens + ["--", name])
     }
 
     /// Enter in the create phase: `git switch -c <name>` — create and
@@ -486,7 +531,7 @@ class GitBranchesWindow: Window {
             delegate?.reportError(detail.isEmpty ? "'\(name)' is not a valid branch name" : detail)
             return
         }
-        createMode = false
+        namePhase = nil
         delegate?.requestClose(self)
         delegate?.runGitCommand(label: "git switch -c \(name)", args: ["switch", "-c", name])
     }

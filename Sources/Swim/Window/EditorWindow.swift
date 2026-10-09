@@ -509,15 +509,14 @@ class EditorWindow: Window {
         // the search then runs for the wrong query).
         case .char(":"): enterCommandMode()
         case .char("/"): enterCommandMode(prefill: "/")
-        // r/R — next/previous search match. Plain r owns no other
-        // normal-mode binding (redo is Ctrl+R; the write-confirm's
-        // reload-r lives in its own modal state). Like the default
-        // arm, both cancel any pending operator sequence (d/y/g) —
-        // a stale `d` must not turn the post-jump `d` into `dd`.
-        case .char("r"):
+        // n/N — next/previous search match (the vim standard). Like
+        // the default arm, both cancel any pending operator sequence
+        // (d/y/g) — a stale `d` must not turn the post-jump `d` into
+        // `dd`.
+        case .char("n"):
             pendingG = false; pendingD = false; pendingY = false
             searchNext()
-        case .char("R"):
+        case .char("N"):
             pendingG = false; pendingD = false; pendingY = false
             searchPrev()
         case .ctrl("j"), .ctrlDown: pageDown()
