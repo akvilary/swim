@@ -5,5 +5,7 @@ if [ "$(uname -s)" = "Linux" ]; then
 else
     swift build -c release
 fi
-cp .build/release/Swim ~/.local/bin/swim
+# Atomic rename: a plain cp fails with ETXTBSY while swim is running;
+# mv swaps the inode, the running process keeps the old binary.
+cp .build/release/Swim ~/.local/bin/swim.new && mv ~/.local/bin/swim.new ~/.local/bin/swim
 echo "Installed swim to ~/.local/bin/swim"

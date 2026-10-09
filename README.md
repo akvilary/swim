@@ -68,13 +68,24 @@ Custom install path:
 curl -fsSL https://raw.githubusercontent.com/akvilary/swim/main/install.sh | DESTDIR=~/.local/bin bash
 ```
 
-**Build from source** (requires Swift 6.0+):
+**Build from source** — the repo pins its toolchain in `.swift-version` (6.2.4); [swiftly](https://www.swift.org/install/) picks it up automatically inside the repo.
+
+Linux (Ubuntu / Pop!_OS / RHEL / Fedora):
 
 ```bash
-git clone https://github.com/akvilary/swim.git
-cd swim
-swift build -c release
-cp .build/release/Swim /usr/local/bin/swim
+curl -O https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz
+tar zxf swiftly-$(uname -m).tar.gz
+./swiftly init --platform <platform> && swiftly install 6.2.4
+bash build.sh
+```
+
+`<platform>`: `ubuntu22.04`, `ubuntu24.04`, `rhel9`, `ubi9`, `fedora39`, ... — omit the flag on stock distros (auto-detected); Pop!_OS needs it spelled out (`ubuntu22.04`) since swiftly does not recognize `ID=pop`. The resulting binary links only system libraries (`--static-swift-stdlib`) and runs on any glibc-compatible distro.
+
+macOS:
+
+```bash
+xcode-select --install   # or install Xcode; swiftly works here too
+bash build.sh
 ```
 
 ## Usage
