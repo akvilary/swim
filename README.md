@@ -23,6 +23,24 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
 - **Tokyo Night Storm theme**
 - **Status bar** — mode, filename, file type, encoding, cursor position
 
+## Screenshots
+
+**Editor** — syntax highlighting, line numbers, file explorer, tab bar:
+
+![Editor](docs/screenshots/editor.png)
+
+**Git panel** — staged / unstaged / untracked sections, recent commits, branch in the header:
+
+![Git panel](docs/screenshots/gitpanel.png)
+
+**Branch picker** — the branch list with the current branch marked, merge / create / delete at a keypress:
+
+![Branch picker](docs/screenshots/branches.png)
+
+**Project search** — grouped results with a preview pane:
+
+![Project search](docs/screenshots/search.png)
+
 ## Install
 
 **macOS (Homebrew):**
