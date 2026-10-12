@@ -1169,7 +1169,7 @@ class Application: WindowDelegate {
             statusBar.diagnosticMessage = nil
         }
         statusBar.cursorLine = statsSource.cursorLine
-        statusBar.cursorCol = statsSource.cursorCol
+        statusBar.cursorCol = statsSource.statusCursorCol
         statusBar.totalLines = statsSource.buffer?.lineCount ?? 0
         if let path = statsSource.filePath {
             let ext = (path as NSString).pathExtension

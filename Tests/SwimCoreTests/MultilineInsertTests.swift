@@ -34,3 +34,35 @@ import SwimCore
         #expect(delta("a\n\nb") == (2, 1))
     }
 }
+
+@Suite struct MultilineInsertCRLF {
+    @Test func crlfIsOneLineBreakScalarWise() {
+        let d = MultilineInsert.cursorDelta(for: "aa\r\n")
+        #expect(d.lines == 1 && d.tailCols == 0)
+    }
+
+    @Test func crlfMidTextCountsLineAndTail() {
+        let d = MultilineInsert.cursorDelta(for: "a\r\nb")
+        #expect(d.lines == 1 && d.tailCols == 1)
+    }
+
+    @Test func mixedLfAndCrlf() {
+        let d = MultilineInsert.cursorDelta(for: "a\nb\r\ncd")
+        #expect(d.lines == 2 && d.tailCols == 2)
+    }
+
+    @Test func noNewlineUnchanged() {
+        let d = MultilineInsert.cursorDelta(for: "abc")
+        #expect(d.lines == 0 && d.tailCols == 3)
+    }
+}
+
+@Suite struct EndsWithLineBreakTests {
+    @Test func crlfIsLineBreakScalarWise() {
+        #expect(MultilineInsert.endsWithLineBreak("aa\r\n"))
+        #expect(MultilineInsert.endsWithLineBreak("aa\n"))
+        #expect(!MultilineInsert.endsWithLineBreak("aa"))
+        #expect(!MultilineInsert.endsWithLineBreak("aa\r"))
+        #expect(!MultilineInsert.endsWithLineBreak(""))
+    }
+}

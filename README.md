@@ -6,7 +6,7 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
 
 ## Features
 
-- **Modal editing** — Normal, Insert, Visual, and Command modes with familiar Vim keybindings (`h/j/k/l`, `dd`, `yy`, `p`, `i`, `v`, `:`, `/`, etc.); `:` opens the command line from any window (typed via the status bar)
+- **Modal editing** — Normal, Insert, Visual (charwise, linewise and blockwise `Ctrl+V` — a real rectangle in terminal cells that survives short and empty lines), and Command modes with familiar Vim keybindings (`h/j/k/l`, `dd`, `yy`, `p`, `i`, `v`, `:`, `/`, etc.); `:` opens the command line from any window (typed via the status bar)
 - **Window stack** — focusing a window raises it to the top of the stack; `:q` / `Ctrl+X` / `Esc` close the focused window (an editor tab or a panel), falling back to the window beneath; closing the last window exits
 - **Piece Table** — efficient text data structure (same as VS Code)
 - **Syntax highlighting** — three levels:
@@ -102,6 +102,8 @@ swim <file>       # Open file
 | `i` | Normal | Enter Insert mode |
 | `Esc` | Any | Return to Normal mode / close focused panel |
 | `v` | Normal | Enter Visual mode |
+| `V` | Normal | Enter Visual-line mode |
+| `Ctrl+V` | Normal | Enter Visual-block mode (rectangular selection in terminal cells; survives short/empty lines; `y` yanks a blockwise register, `d`/`x` delete the block, `p` pastes it as a rectangle) |
 | `:` | Any (not Insert) | Command line (via status bar) |
 | `/` | Normal | Search |
 | `n` / `N` | Normal | Next / previous search match |

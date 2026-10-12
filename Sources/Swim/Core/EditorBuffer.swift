@@ -31,6 +31,11 @@ final class EditorBuffer {
     var scrollY: Int = 0
     var visualStartLine: Int = 0
     var visualStartCol: Int = 0
+    /// Виртуальная колонка visual-block (display-клетки, см.
+    /// SwimCore/VisualBlock): правый/левый угол курсора, НЕ клэмпится
+    /// по длине строки — только в `.visualBlock`; вне его мертва и
+    /// переинициализируется при следующем входе.
+    var visualBlockCol: Int = 0
     var undoStack: [(offset: Int, deleted: String, inserted: String)] = []
     var redoStack: [(offset: Int, deleted: String, inserted: String)] = []
     var lspPendingChanges: [LSPTextChange] = []
@@ -159,6 +164,7 @@ final class BufferManager {
         fresh.cursorLine = min(tab.cursorLine, lastLine)
         fresh.cursorCol = min(tab.cursorCol, max(0, table.lineCharLength(line: fresh.cursorLine)))
         fresh.desiredCol = tab.desiredCol
+        fresh.visualBlockCol = tab.visualBlockCol
         fresh.scrollY = min(tab.scrollY, lastLine)
         fresh.scrollX = tab.scrollX
         buffers[idx] = fresh

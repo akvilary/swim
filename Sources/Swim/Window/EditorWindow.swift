@@ -4,7 +4,7 @@ import Foundation
 class EditorWindow: Window {
     let tabs = BufferManager()
 
-    override var availableModes: [WindowMode] { [.normal, .insert, .visual, .visualLine, .command] }
+    override var availableModes: [WindowMode] { [.normal, .insert, .visual, .visualLine, .visualBlock, .command] }
 
     // Per-buffer state forwarded to the active tab
     var buffer: PieceTable? { tabs.active.buffer }
@@ -41,6 +41,12 @@ class EditorWindow: Window {
         get { tabs.active.visualStartCol }
         set { tabs.active.visualStartCol = newValue }
     }
+    /// Виртуальная колонка visual-block (display-клетки) — см.
+    /// EditorBuffer.visualBlockCol.
+    var visualBlockCol: Int {
+        get { tabs.active.visualBlockCol }
+        set { tabs.active.visualBlockCol = newValue }
+    }
     var modified: Bool {
         get { tabs.active.modified }
         set { tabs.active.modified = newValue }
@@ -72,12 +78,36 @@ class EditorWindow: Window {
     var yankBuffer: String = ""
     var searchQuery: String = ""
     var lastSearchForward: Bool = true
-    var pendingG: Bool = false
-    var pendingD: Bool = false
-    var pendingY: Bool = false
-    /// Vim-style numeric count prefix (`20gg`, `5G`); nil while unused.
-    var pendingCount: Int?
+    /// Отложенная командная последовательность normal-режима: счёт
+    /// (`20gg`) + префикс-оператор (g/d/y) — SwimCore.NormalPending,
+    /// тестируется. Сброс — одна точка (defer handleNormal).
+    var pending = NormalPending()
+    /// Ctrl+V-кавычка insert-режима (i_CTRL-V): следующий ключ
+    /// вставляется литерально. Insert-режимное состояние — живёт
+    /// отдельно от NormalPending (normal-последовательности) по
+    /// жизненному циклу: modes differ, смешивать их в одном
+    /// аккумуляторе нельзя.
+    var pendingLiteralNext = false
     private var isUndoRedoing = false
+
+    /// Литеральный символ для Ctrl+V-кавычки в insert (i_CTRL-V vim):
+    /// ключ в своём «сыром» виде — то, что insert-режим иначе
+    /// перехватывает со своей семантикой. Nil — ключ не вставляем
+    /// буквально (движение): кавычка снята, ключ идёт обычным путём.
+    private static func literalInsertChar(for key: Key) -> Character? {
+        switch key {
+        case .char(let c): return c
+        case .tab: return "\t"
+        case .enter: return "\r"
+        case .escape: return "\u{1b}"
+        case .ctrl(let c):
+            // .ctrl(c) парсится из байта b+96 (1...26) — обратное
+            // преобразование даёт управляющий символ.
+            guard let a = c.asciiValue, a >= 97, a <= 122 else { return nil }
+            return Character(UnicodeScalar(a - 96))
+        default: return nil
+        }
+    }
 
     /// Converted (grapheme-indexed) LSP tokens of the ACTIVE tab, by line.
     /// Invariant: always mirrors the active tab's `semanticTokens` — rebuilt
@@ -105,6 +135,12 @@ class EditorWindow: Window {
 
     var lastError: String?
     var tabCount: Int { tabs.count }
+
+    /// Колонка для статус-бара: в block-режиме — ВИРТУАЛЬНАЯ (vim
+    /// показывает vcol, не клэмп по строке), иначе реальная.
+    var statusCursorCol: Int {
+        mode == .visualBlock ? visualBlockCol : cursorCol
+    }
 
     private func rebuildLSPIndexes() {
         tokenIndex.removeAll(keepingCapacity: true)
@@ -256,8 +292,16 @@ class EditorWindow: Window {
         delegate?.requestGoBack()
     }
 
-    private func yank(_ text: String) {
+    /// Register content + its vim-style type: a blockwise yank (visual
+    /// block `y`, блоковая вставка поверх выделения) marks the register,
+    /// and `p`/`P` then paste it as a block (в display-колонку курсора,
+    /// строки регистра на последовательные строки). Every other yank
+    /// resets the flag — тип регистра принадлежит последнему yank.
+    private var yankIsBlockwise = false
+
+    func yank(_ text: String, blockwise: Bool = false) {
         yankBuffer = text
+        yankIsBlockwise = blockwise
         Terminal.shared.osc52Copy(text)
     }
 
@@ -444,7 +488,8 @@ class EditorWindow: Window {
             // dead — the same reset handleNormal's defer applies to any
             // non-count key. The interception sits before handleNormal,
             // so without this a stale count would leak into the next key.
-            pendingCount = nil; pendingG = false; pendingD = false; pendingY = false
+            pending.reset()
+            pendingLiteralNext = false
             // External text only: tabs follow the file's indent policy
             // (one tab = one indent step). The internal p/P round-trip
             // never passes through here — register content stays verbatim.
@@ -452,7 +497,7 @@ class EditorWindow: Window {
             switch mode {
             case .insert: insertPasteAtCursor(text)
             case .normal: pasteTextAfterCursor(text)
-            case .visual, .visualLine: replaceSelectionWithPaste(text)
+            case .visual, .visualLine, .visualBlock: replaceSelectionWithPaste(text)
             case .command: return handleCommandModeKey(key)
             case .menu: return false
             }
@@ -465,25 +510,31 @@ class EditorWindow: Window {
         case .insert: return handleInsert(key)
         case .visual: return handleVisual(key)
         case .visualLine: return handleVisualLine(key)
+        case .visualBlock: return handleVisualBlock(key)
         case .command: return handleCommandModeKey(key)
         case .menu: return false
         }
     }
 
     private func handleNormal(_ key: Key) -> Bool {
-        // Vim-style count prefix: 1-9 starts a count, 0 extends it (a bare 0
-        // still jumps to start of line). Consumed by gg/G below; every other
-        // key discards it so a stale count never leaks into later commands.
+        // Числовой префикс: 1-9 начинает счёт, 0 продолжает; голый 0 —
+        // прыжок в начало строки (appendDigit возвращает false).
         if case .char(let c) = key, c.isASCII, c.isNumber {
-            let d = c.wholeNumberValue!
-            guard d > 0 || pendingCount != nil else {
-                cursorCol = 0; desiredCol = 0; scrollX = 0; dirty = true; return true
+            if !pending.appendDigit(c.wholeNumberValue!) {
+                cursorCol = 0; desiredCol = 0; scrollX = 0; dirty = true
             }
-            pendingCount = (pendingCount ?? 0) * 10 + d
             return true
         }
-        var keepCount = false
-        defer { if !keepCount { pendingCount = nil } }
+        // Дисциплина одной точки сброса: arm ЛИБО явно сохраняет
+        // последовательность (keepPending — взведение g/d/y, счёт
+        // живёт до потребления gg/G), ЛИБО она умирает на этом defer —
+        // посторонний ключ и любой уход из normal (insert/visual/
+        // командная строка) не оставляют «дозаказа». Классы утечек,
+        // закрытые этой точкой: `d v … Esc d` → `dd`, `d i … Esc d`,
+        // `g x g` → `gg` (stale-префикс переживал посторонний ключ),
+        // `y d y` → `yy` (d и y взведены одновременно).
+        var keepPending = false
+        defer { if !keepPending { pending.reset() } }
         switch key {
         case .char("h"), .left: moveCursorLeft()
         case .char("j"), .down: moveCursorDown()
@@ -491,22 +542,25 @@ class EditorWindow: Window {
         case .char("l"), .right: moveCursorRight()
         case .char("w"): moveWordForward()
         case .char("b"):
-            if pendingG { pendingG = false; goBack() }
+            if pending.takeOp(.g) { goBack() }
             else { moveWordBackward() }
         case .home: cursorCol = 0; scrollX = 0
         case .char("$"), .end: moveToEndOfLine()
         case .char("g"):
-            if pendingG {
-                pendingG = false
+            if pending.takeOp(.g) {
                 goToCountedLine(defaultLine: 0)
-            } else { pendingD = false; pendingY = false; pendingG = true; keepCount = true; return true }
+            } else {
+                pending.arm(.g)
+                keepPending = true
+                return true
+            }
         case .char("t"):
-            guard pendingG else { pendingG = false; pendingD = false; pendingY = false; return false }
-            pendingG = false
+            guard pending.op == .g else { return false }
+            pending.takeOp(.g)
             cycleTab(1)
         case .char("T"):
-            guard pendingG else { pendingG = false; pendingD = false; pendingY = false; return false }
-            pendingG = false
+            guard pending.op == .g else { return false }
+            pending.takeOp(.g)
             cycleTab(-1)
         case .char("G"):
             goToCountedLine(defaultLine: max(0, buffer!.lineCount - 1))
@@ -518,40 +572,37 @@ class EditorWindow: Window {
         case .char("I"): cursorCol = 0; mode = .insert
         case .char("x"): deleteCharAtCursor()
         case .char("d"):
-            if pendingG { pendingG = false; goToDefinition() }
-            else if pendingD { deleteCurrentLine(); pendingD = false }
-            else { pendingD = true; keepCount = true; return true }
+            if pending.takeOp(.g) { goToDefinition() }
+            else if pending.takeOp(.d) { deleteCurrentLine() }
+            else { pending.arm(.d); keepPending = true; return true }
         case .char("y"):
-            pendingG = false
-            if pendingY { yankCurrentLine(); pendingY = false }
-            else { pendingY = true; keepCount = true; return true }
+            if pending.takeOp(.y) { yankCurrentLine() }
+            else { pending.arm(.y); keepPending = true; return true }
         case .char("p"): pasteAfter()
         case .char("P"): pasteBefore()
         case .char("u"): undo()
         case .ctrl("r"): redo()
-        case .char("v"): mode = .visual; visualStartLine = cursorLine; visualStartCol = cursorCol
-        case .char("V"): mode = .visualLine; visualStartLine = cursorLine
+        case .char("v"): switchVisualMode(to: .visual)
+        case .char("V"): switchVisualMode(to: .visualLine)
+        case .ctrl("v"): switchVisualMode(to: .visualBlock)
         // Both go through enterCommandMode: it resets commandCursorPos to
         // the prefill length — setting the buffer by hand leaves the caret
         // at 0 and typed text lands BEFORE the `/` prefix ("/" → "foo/",
         // the search then runs for the wrong query).
         case .char(":"): enterCommandMode()
         case .char("/"): enterCommandMode(prefill: "/")
-        // n/N — next/previous search match (the vim standard). Like
-        // the default arm, both cancel any pending operator sequence
-        // (d/y/g) — a stale `d` must not turn the post-jump `d` into
-        // `dd`.
+        // n/N — next/previous search match (the vim standard).
+        // Отложенная последовательность умирает на defer — явных
+        // сбросов не нужно.
         case .char("n"):
-            pendingG = false; pendingD = false; pendingY = false
             searchNext()
         case .char("N"):
-            pendingG = false; pendingD = false; pendingY = false
             searchPrev()
         case .ctrl("j"), .ctrlDown: pageDown()
         case .ctrl("k"), .ctrlUp: pageUp()
         case .ctrl("h"), .ctrlLeft: cycleTab(-1)
         case .ctrl("l"), .ctrlRight: cycleTab(1)
-        default: pendingG = false; pendingD = false; pendingY = false; return false
+        default: return false
         }
         if !isVerticalKey(key, insertMode: false) { desiredCol = cursorCol }
         dirty = true
@@ -559,27 +610,41 @@ class EditorWindow: Window {
     }
 
     /// `Ngg` / `NG` — jumps to line N (1-based), falling back to `defaultLine`
-    /// when no count is pending. Consumes the count.
+    /// (0-based line index) when no count is pending. Consumes the count.
     private func goToCountedLine(defaultLine: Int) {
         guard let buf = buffer else { return }
-        if let n = pendingCount {
-            pendingCount = nil
-            cursorLine = min(max(0, n - 1), max(0, buf.lineCount - 1))
-        } else {
-            cursorLine = defaultLine
-        }
+        let target = pending.takeCount().map { $0 - 1 } ?? defaultLine
+        cursorLine = min(max(0, target), max(0, buf.lineCount - 1))
         cursorCol = 0
         desiredCol = 0
         ensureCursorVisible()
     }
 
     private func handleInsert(_ key: Key) -> Bool {
+        // Ctrl+V literal-next (i_CTRL-V vim): следующий ключ вставляется
+        // литерально — в сыром виде, минуя перехват insert-режима: Tab —
+        // настоящий "\t" (а не шаг отступа), Enter — "\r" без
+        // авто-отступа, Esc — 0x1b, Ctrl+<c> — управляющий байт.
+        // Управляющие символы в строке невидимы (нуль-ширинные, как
+        // комбинирующие — колоночная математика консистентна во всех
+        // проходах через Character.displayStep); b"\t" виден раскрытием.
+        // Незакавыченный ключ (движение) обрабатывается обычным путём.
+        if pendingLiteralNext {
+            pendingLiteralNext = false
+            if let literal = Self.literalInsertChar(for: key) {
+                insertText(String(literal))
+                desiredCol = cursorCol
+                dirty = true
+                return true
+            }
+        }
         switch key {
         case .escape: mode = .normal
         case .enter: insertNewLineAtCursor()
         case .backspace: deleteBeforeCursor()
         case .tab: insertText(tabInsertText())
         case .char(let c): insertText(String(c))
+        case .ctrl("v"): pendingLiteralNext = true
         case .left: moveCursorLeft()
         case .right: moveCursorRightInsert()
         case .up: moveCursorUp()
@@ -589,38 +654,6 @@ class EditorWindow: Window {
         default: return false
         }
         if !isVerticalKey(key, insertMode: true) { desiredCol = cursorCol }
-        dirty = true
-        return true
-    }
-
-    private func handleVisual(_ key: Key) -> Bool {
-        switch key {
-        case .escape: mode = .normal
-        case .char("h"), .left: moveCursorLeft()
-        case .char("j"), .down: moveCursorDown()
-        case .char("k"), .up: moveCursorUp()
-        case .char("l"), .right: moveCursorRight()
-        case .char("y"): yankVisualSelection(); mode = .normal
-        case .char("d"): deleteVisualSelection(); mode = .normal
-        default: return false
-        }
-        if !isVerticalKey(key, insertMode: false) { desiredCol = cursorCol }
-        dirty = true
-        return true
-    }
-
-    private func handleVisualLine(_ key: Key) -> Bool {
-        switch key {
-        case .escape: mode = .normal
-        case .char("j"), .down: moveCursorDown()
-        case .char("k"), .up: moveCursorUp()
-        case .char("y"): yankVisualLineSelection(); mode = .normal
-        case .char("d"): deleteVisualLineSelection(); mode = .normal
-        case .char("H"), .shiftLeft: shiftVisualLines(by: -indentSize())
-        case .char("L"), .shiftRight: shiftVisualLines(by: indentSize())
-        default: return false
-        }
-        if !isVerticalKey(key, insertMode: false) { desiredCol = cursorCol }
         dirty = true
         return true
     }
@@ -772,8 +805,8 @@ class EditorWindow: Window {
     /// while the user answers it.
     private var pendingWriteConfirm = false
 
-    private func moveCursorLeft() { if cursorCol > 0 { cursorCol -= 1 }; ensureCursorVisible() }
-    private func moveCursorRight() {
+    func moveCursorLeft() { if cursorCol > 0 { cursorCol -= 1 }; ensureCursorVisible() }
+    func moveCursorRight() {
         guard let buf = buffer else { return }
         let maxCol = max(0, buf.lineCharLength(line: cursorLine) - 1)
         if cursorCol < maxCol { cursorCol += 1 }
@@ -784,8 +817,8 @@ class EditorWindow: Window {
         if cursorCol < buf.lineCharLength(line: cursorLine) { cursorCol += 1 }
         ensureCursorVisible()
     }
-    private func moveCursorUp() { moveVertically(-1) }
-    private func moveCursorDown() { moveVertically(1) }
+    func moveCursorUp() { moveVertically(-1) }
+    func moveCursorDown() { moveVertically(1) }
 
     /// Vertical moves never recompute the column from the previous clamped
     /// value — they apply the sticky desired column (vim curswant), so the
@@ -803,7 +836,7 @@ class EditorWindow: Window {
     /// Keys that only move vertically — excluded from the desired-column
     /// refresh at the handler tails so the want survives them. In insert
     /// mode j/k are literal text, not movement.
-    private func isVerticalKey(_ key: Key, insertMode: Bool) -> Bool {
+    func isVerticalKey(_ key: Key, insertMode: Bool) -> Bool {
         switch key {
         case .up, .down, .pageUp, .pageDown, .ctrlUp, .ctrlDown: return true
         case .char("j"), .char("k"), .ctrl("j"), .ctrl("k"): return !insertMode
@@ -837,7 +870,7 @@ class EditorWindow: Window {
         ensureCursorVisible()
     }
 
-    private func recordAction(offset: Int, deleted: String, inserted: String) {
+    func recordAction(offset: Int, deleted: String, inserted: String) {
         guard !isUndoRedoing else { return }
         undoStack.append((offset: offset, deleted: deleted, inserted: inserted))
         redoStack.removeAll()
@@ -929,46 +962,6 @@ class EditorWindow: Window {
         ensureCursorVisible()
     }
 
-    /// Paste over a visual / visual-line selection — vim's visual `p`:
-    /// the replaced text is yanked (register + OSC 52, like `d`), the
-    /// pasted text takes its place, and the whole replace is ONE undo
-    /// action (delete + insert merged — undo restores the selection in
-    /// a single step, like vim).
-    private func replaceSelectionWithPaste(_ text: String) {
-        guard let buf = buffer, !text.isEmpty else { return }
-        let startOffset: Int, endOffset: Int, startLine: Int, startCol: Int
-        if mode == .visualLine {
-            let (first, last) = visualLineRange()
-            startOffset = buf.lineStart(line: first)
-            endOffset = min(buf.lineEnd(line: last), buf.totalLength)
-            startLine = first; startCol = 0
-        } else {
-            let (first, firstCol, last, lastCol) = visualRange()
-            startOffset = buf.lineStart(line: first)
-                + buf.charToByteOffsetInLine(line: first, charIndex: firstCol)
-            endOffset = min(buf.lineStart(line: last)
-                + buf.charToByteOffsetInLine(line: last, charIndex: lastCol + 1), buf.totalLength)
-            startLine = first; startCol = firstCol
-        }
-        let deleted = buf.getText(range: startOffset..<endOffset)
-        yank(deleted)
-        buf.delete(at: startOffset, length: endOffset - startOffset)
-        buf.insert(text, at: startOffset)
-        recordAction(offset: startOffset, deleted: deleted, inserted: text)
-        if text.hasSuffix("\n") {
-            // Linewise-ish paste: cursor on the FIRST pasted line —
-            // parity with `p`'s linewise branch (pasteTextAfterCursor).
-            cursorLine = min(startLine, max(0, buf.lineCount - 1))
-            cursorCol = 0
-        } else {
-            let delta = MultilineInsert.cursorDelta(for: text)
-            cursorLine = min(startLine + delta.lines, max(0, buf.lineCount - 1))
-            cursorCol = delta.lines > 0 ? delta.tailCols : startCol + delta.tailCols
-        }
-        mode = .normal
-        ensureCursorVisible()
-    }
-
     private func insertText(_ text: String) {
         guard let buf = buffer else { return }
         let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
@@ -979,7 +972,7 @@ class EditorWindow: Window {
         ensureCursorVisible()
     }
 
-    private func indentSize() -> Int {
+    func indentSize() -> Int {
         let ext = (filePath as NSString?)?.pathExtension ?? ""
         switch ext {
         case "swift", "cpp", "hpp", "cc", "cxx", "h", "dart": return 2
@@ -1093,17 +1086,27 @@ class EditorWindow: Window {
         let start = buf.lineStart(line: cursorLine)
         let len = buf.lineEnd(line: cursorLine) - start
         let deletedText = buf.getText(range: start..<(start + len))
-        yank(deletedText)
+        yankLinewiseRegister(deletedText)
         buf.delete(at: start, length: len)
         recordAction(offset: start, deleted: deletedText, inserted: "")
         if cursorLine >= buf.lineCount { cursorLine = max(0, buf.lineCount - 1) }
         cursorCol = 0
     }
 
-    private func yankCurrentLine() { guard let buf = buffer else { return }; yank(buf.getLine(cursorLine) + "\n") }
+    /// `yy` — построчный yank с терминаторами файла (CRLF-файл даёт
+    /// CRLF-регистр; последняя строка без перевода — принудительный
+    /// "\n", чтобы регистр остался linewise; см. registerTerminator).
+    private func yankCurrentLine() {
+        guard let buf = buffer else { return }
+        yank(buf.getLine(cursorLine) + registerTerminator(after: cursorLine))
+    }
 
     private func pasteAfter() {
         guard !yankBuffer.isEmpty else { return }
+        // Блоковый регистр вставляется блоком: для него p и P
+        // совпадают — «до/после» не имеет смысла для прямоугольника,
+        // вставка идёт в колонку курсора (см. pasteBlock).
+        if yankIsBlockwise { pasteBlock(); return }
         pasteTextAfterCursor(yankBuffer)
     }
 
@@ -1113,7 +1116,7 @@ class EditorWindow: Window {
     private func pasteTextAfterCursor(_ text: String) {
         guard let buf = buffer, !text.isEmpty else { return }
         let offset: Int
-        if text.hasSuffix("\n") {
+        if MultilineInsert.endsWithLineBreak(text) {
             offset = buf.lineEnd(line: cursorLine)
             buf.insert(text, at: offset)
             cursorLine += 1; cursorCol = 0
@@ -1131,6 +1134,7 @@ class EditorWindow: Window {
 
     private func pasteBefore() {
         guard !yankBuffer.isEmpty else { return }
+        if yankIsBlockwise { pasteBlock(); return }
         pasteTextBeforeCursor(yankBuffer)
     }
 
@@ -1144,7 +1148,7 @@ class EditorWindow: Window {
     private func pasteTextBeforeCursor(_ text: String) {
         guard let buf = buffer, !text.isEmpty else { return }
         let offset: Int
-        if text.hasSuffix("\n") {
+        if MultilineInsert.endsWithLineBreak(text) {
             offset = buf.lineStart(line: cursorLine)
             buf.insert(text, at: offset)
             cursorCol = 0
@@ -1156,134 +1160,6 @@ class EditorWindow: Window {
             cursorCol = delta.lines > 0 ? delta.tailCols : cursorCol + delta.tailCols
         }
         recordAction(offset: offset, deleted: "", inserted: text)
-        ensureCursorVisible()
-    }
-
-    private func yankVisualSelection() {
-        guard let buf = buffer else { return }
-        let (startLine, startCol, endLine, endCol) = visualRange()
-        let startOffset = buf.lineStart(line: startLine) + buf.charToByteOffsetInLine(line: startLine, charIndex: startCol)
-        let endOffset = buf.lineStart(line: endLine) + buf.charToByteOffsetInLine(line: endLine, charIndex: endCol + 1)
-        yank(buf.getText(range: startOffset..<min(endOffset, buf.totalLength)))
-    }
-
-    private func deleteVisualSelection() {
-        guard let buf = buffer else { return }
-        let (startLine, startCol, endLine, endCol) = visualRange()
-        let startOffset = buf.lineStart(line: startLine) + buf.charToByteOffsetInLine(line: startLine, charIndex: startCol)
-        let endOffset = buf.lineStart(line: endLine) + buf.charToByteOffsetInLine(line: endLine, charIndex: endCol + 1)
-        let len = min(endOffset, buf.totalLength) - startOffset
-        let deletedText = buf.getText(range: startOffset..<(startOffset + len))
-        yank(deletedText)
-        buf.delete(at: startOffset, length: len)
-        recordAction(offset: startOffset, deleted: deletedText, inserted: "")
-        cursorLine = startLine; cursorCol = startCol
-    }
-
-    private func visualRange() -> (startLine: Int, startCol: Int, endLine: Int, endCol: Int) {
-        if visualStartLine < cursorLine || (visualStartLine == cursorLine && visualStartCol < cursorCol) {
-            return (visualStartLine, visualStartCol, cursorLine, cursorCol)
-        }
-        return (cursorLine, cursorCol, visualStartLine, visualStartCol)
-    }
-
-    private func visualLineRange() -> (startLine: Int, endLine: Int) {
-        if visualStartLine <= cursorLine {
-            return (visualStartLine, cursorLine)
-        }
-        return (cursorLine, visualStartLine)
-    }
-
-    private func yankVisualLineSelection() {
-        guard let buf = buffer else { return }
-        let (startLine, endLine) = visualLineRange()
-        var text = ""
-        for line in startLine...endLine {
-            text += buf.getLine(line) + "\n"
-        }
-        yank(text)
-    }
-
-    private func deleteVisualLineSelection() {
-        guard let buf = buffer else { return }
-        let (startLine, endLine) = visualLineRange()
-        let start = buf.lineStart(line: startLine)
-        let end = buf.lineEnd(line: endLine)
-        let len = end - start
-        let deletedText = buf.getText(range: start..<min(end, buf.totalLength))
-        yank(deletedText)
-        buf.delete(at: start, length: len)
-        recordAction(offset: start, deleted: deletedText, inserted: "")
-        cursorLine = min(startLine, max(0, buf.lineCount - 1))
-        cursorCol = 0
-    }
-
-    /// Shifts the visual-line selection by the per-language indent width:
-    /// positive indents, negative outdents (removes at most |delta| leading
-    /// spaces per line). Applied as a single undo action; the selection and
-    /// mode are kept so the shift can be repeated.
-    private func shiftVisualLines(by delta: Int) {
-        guard let buf = buffer else { return }
-        let (startLine, rawEndLine) = visualLineRange()
-        // The phantom empty line after a trailing newline (its start sits
-        // at totalLength) is a buffer artifact, not content — vim's visual
-        // line selection never includes it; shifting it would rewrite the
-        // file's trailing-newline structure. A selection consisting of the
-        // phantom alone (cursor on the last empty line) shifts nothing.
-        var endLine = rawEndLine
-        if buf.lineStart(line: endLine) == buf.totalLength {
-            if endLine == startLine { return }
-            endLine -= 1
-        }
-        var newLines = [String]()
-        var changed = false
-        var cursorDelta = 0
-        for line in startLine...endLine {
-            let content = buf.getLine(line)
-            if delta > 0 {
-                newLines.append(String(repeating: " ", count: delta) + content)
-                changed = true
-                if line == cursorLine { cursorDelta = delta }
-            } else {
-                var spaces = 0
-                for c in content { if c == " " { spaces += 1 } else { break } }
-                let remove = min(spaces, -delta)
-                newLines.append(String(content.dropFirst(remove)))
-                if remove > 0 {
-                    changed = true
-                    if line == cursorLine { cursorDelta = -remove }
-                }
-            }
-        }
-        guard changed else { return }
-        let start = buf.lineStart(line: startLine)
-        let end = buf.lineEnd(line: endLine)
-        let deletedText = buf.getText(range: start..<min(end, buf.totalLength))
-        // Each line is rebuilt with its own terminator — "\n" or "\r\n",
-        // detected from the byte gap between content end and the next line
-        // start (checked against the ORIGINAL line length; suffix sniffing
-        // on deletedText would double-add the newline when the last
-        // selected line is the phantom empty line after a trailing one).
-        var terminators = [String]()
-        for line in startLine...endLine {
-            let content = buf.getLine(line)
-            let contentEnd = buf.lineStart(line: line) + content.utf8.count
-            let nextStart = line < endLine ? buf.lineStart(line: line + 1) : end
-            if contentEnd < nextStart {
-                terminators.append(nextStart - contentEnd == 2 ? "\r\n" : "\n")
-            } else {
-                terminators.append("")
-            }
-        }
-        var insertedText = ""
-        for (i, content) in newLines.enumerated() {
-            insertedText += content + terminators[i]
-        }
-        buf.delete(at: start, length: end - start)
-        buf.insert(insertedText, at: start)
-        recordAction(offset: start, deleted: deletedText, inserted: insertedText)
-        cursorCol = min(max(0, cursorCol + cursorDelta), buf.lineCharLength(line: cursorLine))
-        desiredCol = cursorCol
         ensureCursorVisible()
     }
 
@@ -1372,7 +1248,11 @@ class EditorWindow: Window {
         }
         if cursorLine < scrollY { scrollY = cursorLine }
         else if cursorLine >= scrollY + contentHeight { scrollY = cursorLine - contentHeight + 1 }
-        let dispCol = displayColForChar(line: cursorLine, charCol: cursorCol)
+        // В block-режиме скролл следует за ВИРТУАЛЬНОЙ колонкой — грань
+        // прямоугольника видима даже за концом короткой строки.
+        let dispCol = mode == .visualBlock
+            ? visualBlockCol
+            : displayColForChar(line: cursorLine, charCol: cursorCol)
         if dispCol < scrollX { scrollX = dispCol }
         else if dispCol >= scrollX + width - lineNumberWidth() - 1 {
             scrollX = dispCol - width + lineNumberWidth() + 2
@@ -1403,37 +1283,27 @@ class EditorWindow: Window {
     }
 
     /// Ширина табуляции в клетках для текущего файла (tabstop). Go — 2, прочее — 4.
-    private var tabWidth: Int {
+    var tabWidth: Int {
         ((filePath as NSString?)?.pathExtension == "go") ? 2 : 4
     }
 
-    private func charDisplayStep(_ ch: Character, atDisplayCol col: Int) -> Int {
-        if ch == "\t" { let t = tabWidth; return t - (col % t) }
-        let w = ch.displayWidth
-        return w > 0 ? w : 0
+    /// Шаг display-колонки — делегат общего авторитета (Character.
+    /// displayStep в SwimCore): и рендер, и скролл, и visual-block
+    /// считают табы/wide одинаково.
+    func charDisplayStep(_ ch: Character, atDisplayCol col: Int) -> Int {
+        ch.displayStep(atDisplayCol: col, tabWidth: tabWidth)
     }
 
     /// display-колонка (ширина в клетках терминала), с которой начинается символ charCol на строке line.
     func displayColForChar(line: Int, charCol: Int) -> Int {
         guard let buf = buffer else { return 0 }
-        let chars = buf.getLineChars(line)
-        var col = 0
-        for i in 0..<min(charCol, chars.count) {
-            col += charDisplayStep(chars[i], atDisplayCol: col)
-        }
-        return col
+        return VisualBlock.displayCol(ofCharIndex: charCol, chars: buf.getLineChars(line), tabWidth: tabWidth)
     }
 
     /// Индекс первого символа строки, чья display-колонка >= target (для горизонтального скролла).
     func charIndexAtDisplayCol(line: Int, target: Int) -> Int {
         guard let buf = buffer else { return 0 }
-        let chars = buf.getLineChars(line)
-        var col = 0
-        for (i, ch) in chars.enumerated() {
-            if col >= target { return i }
-            col += charDisplayStep(ch, atDisplayCol: col)
-        }
-        return chars.count
+        return VisualBlock.charIndex(atDisplayCol: target, chars: buf.getLineChars(line), tabWidth: tabWidth)
     }
 
     override func update() {
@@ -1578,8 +1448,7 @@ class EditorWindow: Window {
             }
         }
 
-        if mode == .visual { drawVisualHighlight(lnWidth: lnWidth) }
-        if mode == .visualLine { drawVisualLineHighlight(lnWidth: lnWidth) }
+        if isVisualMode { drawVisualSelection(lnWidth: lnWidth) }
         drawCursor(lnWidth: lnWidth)
     }
 
@@ -1635,51 +1504,23 @@ class EditorWindow: Window {
     private func drawCursor(lnWidth: Int) {
         guard cursorLine >= scrollY && cursorLine < scrollY + contentHeight else { return }
         let screenRow = cursorLine - scrollY + contentTop
-        let screenCol = displayColForChar(line: cursorLine, charCol: cursorCol) - scrollX
+        // В block-режиме каретка стоит на ВИРТУАЛЬНОЙ клетке (в т.ч. за
+        // концом строки); попав в клетку-продолжение wide-глифа,
+        // сдвигаемся на его начало — продолжение рендерер не рисует,
+        // каретка стала бы невидимой.
+        let dispCol = mode == .visualBlock
+            ? visualBlockCol
+            : displayColForChar(line: cursorLine, charCol: cursorCol)
+        let screenCol = dispCol - scrollX
         guard screenCol >= 0 && screenCol + lnWidth < width else { return }
-        let absCol = lnWidth + screenCol
+        var absCol = lnWidth + screenCol
+        if absCol > lnWidth, getCell(screenRow, absCol).wideContinuation {
+            absCol -= 1
+        }
         if mode == .insert { return }
         var cell = getCell(screenRow, absCol)
         cell.reverse = true
         setCell(screenRow, absCol, cell)
-    }
-
-    private func drawVisualHighlight(lnWidth: Int) {
-        let (startLine, startCol, endLine, endCol) = visualRange()
-        for lineNum in startLine...endLine {
-            let screenRow = lineNum - scrollY + contentTop
-            guard screenRow >= contentTop && screenRow < height else { continue }
-            guard let buf = buffer else { continue }
-            let lineEnd = max(0, buf.lineCharLength(line: lineNum) - 1)
-            let colStart = (lineNum == startLine) ? startCol : 0
-            let colEnd = (lineNum == endLine) ? min(endCol, lineEnd) : lineEnd
-            let startDisp = displayColForChar(line: lineNum, charCol: colStart)
-            let endDisp = displayColForChar(line: lineNum, charCol: min(colEnd + 1, buf.lineCharLength(line: lineNum)))
-            let scLo = startDisp - scrollX
-            let scHi = endDisp - scrollX
-            if scLo < scHi {
-                for sc in scLo..<scHi {
-                    guard sc >= 0 && sc + lnWidth < width else { continue }
-                    let absCol = lnWidth + sc
-                    var cell = getCell(screenRow, absCol)
-                    cell.bg = Theme.visualBg
-                    setCell(screenRow, absCol, cell)
-                }
-            }
-        }
-    }
-
-    private func drawVisualLineHighlight(lnWidth: Int) {
-        let (startLine, endLine) = visualLineRange()
-        for lineNum in startLine...endLine {
-            let screenRow = lineNum - scrollY + contentTop
-            guard screenRow >= contentTop && screenRow < height else { continue }
-            for col in 0..<width {
-                var cell = getCell(screenRow, col)
-                cell.bg = Theme.visualBg
-                setCell(screenRow, col, cell)
-            }
-        }
     }
 
     private func semanticTokensFor(line: Int) -> [SemanticToken] {

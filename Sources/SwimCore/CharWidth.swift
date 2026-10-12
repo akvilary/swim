@@ -24,6 +24,18 @@ extension Character {
         return isWide ? 2 : 1
     }
 
+    /// Шаг display-колонки при выводе символа в строке с позиции
+    /// `col`: таб — до следующей границы tabstop (ширина зависит от
+    /// позиции), wide — 2, нуль-ширинные (комбинирующие, ZWJ) — 0,
+    /// прочие — 1. Единый авторитет колоночной арифметики: рендер
+    /// строк, горизонтальный скролл и visual-block (SwimCore.
+    /// VisualBlock) считают шаги только через него.
+    public func displayStep(atDisplayCol col: Int, tabWidth: Int) -> Int {
+        if self == "\t" { return tabWidth - (col % tabWidth) }
+        let w = displayWidth
+        return w > 0 ? w : 0
+    }
+
     /// Wide-диапазоны Unicode East Asian Width (отсортированы по возрастанию).
     /// Бинарный поиск по таблице вместо цепочки `if` — O(log n) (~6 сравнений).
     private static let wideRanges: [(low: UInt32, high: UInt32)] = [

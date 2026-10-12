@@ -7,10 +7,32 @@
 public enum MultilineInsert {
 
     public static func cursorDelta(for text: String) -> (lines: Int, tailCols: Int) {
-        guard let lastNL = text.lastIndex(of: "\n") else {
-            return (0, text.count)
+        // Переводы строк считаются на уровне СКАЛЯРОВ: в Swift CRLF —
+        // одна графема, и сравнение Character == "\n" пропускает её
+        // (латентный баг, вскрытый CRLF-регистрами: cursorDelta
+        // "\r\n"-текста давал lines=0). Хвост считается в графемах —
+        // курсорные колонки графемные.
+        var lines = 0
+        var lastNL: String.Index? = nil
+        var idx = text.startIndex
+        while idx < text.endIndex {
+            if text[idx].unicodeScalars.contains(where: { $0 == "\n" }) {
+                lines += 1
+                lastNL = idx
+            }
+            idx = text.index(after: idx)
         }
-        let lines = text.reduce(0) { $0 + ($1 == "\n" ? 1 : 0) }
-        return (lines, text.distance(from: text.index(after: lastNL), to: text.endIndex))
+        guard let last = lastNL else { return (0, text.count) }
+        return (lines, text.distance(from: text.index(after: last), to: text.endIndex))
+    }
+
+    /// Текст завершается переводом строки — на уровне СКАЛЯРОВ: в
+    /// Swift CRLF — ОДНА графема, и `hasSuffix("\n")` для CRLF-текста
+    /// ложен (латентный баг, замаскированный, пока linewise-янки
+    /// нормализовали терминаторы в LF; вскрыт CRLF-регистрами:
+    /// вставка деградировала в charwise и рвала строки посреди).
+    /// Единая точка linewise-снифа для всех paste-путей редактора.
+    public static func endsWithLineBreak(_ text: String) -> Bool {
+        text.unicodeScalars.last == "\n"
     }
 }

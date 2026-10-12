@@ -6,8 +6,8 @@ import Foundation
 /// - `menu` — the standard behavior of the list windows (git panel,
 ///   explorer, search results): j/k line navigation, Enter performs the
 ///   primary action, other action keys are window-specific extras.
-/// - `normal`, `insert`, `visual`, `visualLine` — editor modes; menu
-///   windows reuse `visualLine` for line selection.
+/// - `normal`, `insert`, `visual`, `visualLine`, `visualBlock` — editor
+///   modes; menu windows reuse `visualLine` for line selection.
 /// - `command` — the command line owned by the window that entered it:
 ///   `:q`/`:q!` close that window, an editor's `:w` saves it.
 enum WindowMode {
@@ -16,6 +16,7 @@ enum WindowMode {
     case insert
     case visual
     case visualLine
+    case visualBlock
     case command
 }
 

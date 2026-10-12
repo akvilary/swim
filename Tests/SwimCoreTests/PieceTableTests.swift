@@ -104,3 +104,12 @@ struct PieceTableTests {
         }
     }
 }
+
+@Suite struct PieceTableCRLF {
+    @Test func insertAtLineEndCRLF() {
+        let t = PieceTable(text: "aa\r\nbb\r\n")
+        #expect(t.lineStart(line: 1) == 4)
+        t.insert("aa\r\n", at: t.lineEnd(line: 0))
+        #expect(t.getAllText() == "aa\r\naa\r\nbb\r\n")
+    }
+}

@@ -60,6 +60,9 @@ class StatusBarWindow: Window {
             case "VISUAL LINE":
                 modeLabel = " V-LINE "
                 modeBgColor = Theme.magenta
+            case "VISUAL BLOCK":
+                modeLabel = " V-BLOCK "
+                modeBgColor = Theme.magenta
             case "COMMAND":
                 modeLabel = " COMMAND "
                 modeBgColor = Theme.orange
@@ -202,6 +205,7 @@ class StatusBarWindow: Window {
         case .insert: return "INSERT"
         case .visual: return "VISUAL"
         case .visualLine: return "VISUAL LINE"
+        case .visualBlock: return "VISUAL BLOCK"
         case .command: return "COMMAND"
         }
     }
