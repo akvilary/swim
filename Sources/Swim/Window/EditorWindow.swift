@@ -296,7 +296,7 @@ class EditorWindow: Window {
         cursorLine = min(max(0, line), max(0, buf.lineCount - 1))
         cursorCol = min(buf.charIndexForUtf16(line: cursorLine, colUtf16: colUtf16),
                         buf.lineCharLength(line: cursorLine))
-        desiredCol = cursorCol
+        syncDesiredCol()
         ensureCursorVisible()
         dirty = true
     }
@@ -485,7 +485,7 @@ class EditorWindow: Window {
         guard let buf = buffer else { return }
         if cursorLine >= buf.lineCount { cursorLine = max(0, buf.lineCount - 1) }
         cursorCol = min(cursorCol, buf.lineCharLength(line: cursorLine))
-        desiredCol = cursorCol
+        syncDesiredCol()
         ensureCursorVisible()
         dirty = true
         if filePath != lastActiveFilePath {
@@ -521,7 +521,7 @@ class EditorWindow: Window {
             case .command: return handleCommandModeKey(key)
             case .menu: return false
             }
-            desiredCol = cursorCol
+            syncDesiredCol()
             dirty = true
             return true
         }
@@ -568,7 +568,7 @@ class EditorWindow: Window {
             handled = handlePlainNormal(key, keepPending: &keepPending)
         }
         guard handled else { return false }
-        if !isVerticalKey(key, insertMode: false) { desiredCol = cursorCol }
+        if !isVerticalKey(key, insertMode: false) { syncDesiredCol() }
         dirty = true
         return true
     }
@@ -668,8 +668,8 @@ class EditorWindow: Window {
             searchNext()
         case .char("N"):
             searchPrev()
-        case .ctrl("j"), .ctrlDown: pageDown()
-        case .ctrl("k"), .ctrlUp: pageUp()
+        case .ctrl("j"), .ctrlDown, .pageDown: pageCursorDown()
+        case .ctrl("k"), .ctrlUp, .pageUp: pageCursorUp()
         case .ctrl("h"), .ctrlLeft: cycleTab(-1)
         case .ctrl("l"), .ctrlRight: cycleTab(1)
         default: return false
@@ -702,7 +702,7 @@ class EditorWindow: Window {
             pendingLiteralNext = false
             if let literal = Self.literalInsertChar(for: key) {
                 insertText(String(literal))
-                desiredCol = cursorCol
+                syncDesiredCol()
                 dirty = true
                 return true
             }
@@ -718,11 +718,13 @@ class EditorWindow: Window {
         case .right: moveCursorRightInsert()
         case .up: moveCursorUp()
         case .down: moveCursorDown()
+        case .pageDown: pageCursorDown()
+        case .pageUp: pageCursorUp()
         case .home: cursorCol = 0; ensureCursorVisible()
         case .end: moveToEndOfLineForInsert()
         default: return false
         }
-        if !isVerticalKey(key, insertMode: true) { desiredCol = cursorCol }
+        if !isVerticalKey(key, insertMode: true) { syncDesiredCol() }
         dirty = true
         return true
     }
@@ -754,6 +756,7 @@ class EditorWindow: Window {
                 if let buf = buffer {
                     cursorLine = min(max(0, line - 1), max(0, buf.lineCount - 1))
                     cursorCol = 0
+                    desiredCol = 0
                     ensureCursorVisible()
                     dirty = true
                 }
@@ -901,8 +904,22 @@ class EditorWindow: Window {
     private func moveVertically(_ delta: Int) {
         guard let buf = buffer else { return }
         cursorLine = min(max(cursorLine + delta, 0), max(0, buf.lineCount - 1))
-        cursorCol = min(desiredCol, buf.lineCharLength(line: cursorLine))
+        // curswant в display-клетках: разрешение в графему через
+        // charIndex(atDisplayCol:) — раскладка табов ЦЕЛЕВОЙ строки не
+        // сдвигает желаемую экранную колонку (vim-паритет). Цель внутри
+        // таба/за концом — первая графема на/после неё (или one-past-end).
+        cursorCol = charIndexAtDisplayCol(line: cursorLine, target: desiredCol)
         ensureCursorVisible()
+    }
+
+    /// Единая точка записи curswant после горизонтальных движений и
+    /// правок: desiredCol живёт в display-клетках (экранная колонка,
+    /// как curswant vim), не в графемах — вертикальные ходы читают её
+    /// через charIndexAtDisplayCol, поэтому переход на строку с другой
+    /// раскладкой табов не сдвигает желаемую колонку. Вертикальные
+    /// ключи сюда НЕ попадают (липкость, см. isVerticalKey).
+    func syncDesiredCol() {
+        desiredCol = displayColForChar(line: cursorLine, charCol: cursorCol)
     }
 
     /// Keys that only move vertically — excluded from the desired-column
@@ -925,6 +942,10 @@ class EditorWindow: Window {
         let (line, byteCol) = buf.offsetToLineCol(offset)
         cursorLine = line
         cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol)
+        // Примитив установки курсора владеет curswant: прыжок поиском из
+        // командного режима идёт мимо хвоста handleNormal — без этого
+        // desiredCol протухал бы до следующего горизонтального ключа.
+        syncDesiredCol()
         ensureCursorVisible()
     }
 
@@ -1220,8 +1241,15 @@ class EditorWindow: Window {
         }
     }
 
-    private func pageDown() { moveVertically(contentHeight - 2) }
-    private func pageUp() { moveVertically(-(contentHeight - 2)) }
+    /// Прыжок пейджинга (vim Ctrl-F/Ctrl-B): страница минус две строки
+    /// контекста, минимум одна. Дельта общая для всех режимов:
+    /// normal/insert/visual/visualLine идут через moveVertically
+    /// (курсорные примитивы), visual-block — через moveBlockVertically
+    /// (клэмп графем moveVertically ломал бы виртуальный угол).
+    var pageDelta: Int { max(1, contentHeight - 2) }
+
+    func pageCursorDown() { moveVertically(pageDelta) }
+    func pageCursorUp() { moveVertically(-pageDelta) }
 
     private func applyInverse(_ action: (offset: Int, deleted: String, inserted: String)) {
         guard let buf = buffer else { return }

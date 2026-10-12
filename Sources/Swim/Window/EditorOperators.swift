@@ -146,7 +146,7 @@ extension EditorWindow {
         recordAction(offset: start, deleted: deletedText, inserted: indent)
         cursorLine = min(lo, max(0, buf.lineCount - 1))
         cursorCol = indent.count
-        desiredCol = cursorCol
+        syncDesiredCol()
         if op != .c {
             cursorCol = 0
             desiredCol = 0
@@ -182,7 +182,7 @@ extension EditorWindow {
         // курсор к началу слова — vim)
         cursorLine = startLine
         cursorCol = startCol
-        desiredCol = startCol
+        syncDesiredCol()
         if op == .c { mode = .insert }
         ensureCursorVisible()
     }

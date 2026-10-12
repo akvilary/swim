@@ -69,16 +69,23 @@ extension EditorWindow {
         return (cursorLine, visualStartLine)
     }
 
-    /// Строки и display-границы текущего блока: якорь — реальная точка
-    /// входа, курсорный угол — виртуальная колонка (клетка курсора
-    /// инклюзивна, как в vim: Ctrl+V + l = две клетки). Колонки — в
-    /// клетках терминала (VisualBlock.Span), поэтому строки с табами и
-    /// wide-символами дают честный прямоугольник, не сжимающийся на
-    /// коротких строках.
+    /// Строки и display-границы текущего блока — чистая проводка
+    /// per-tab состояния в тестируемую VisualBlock.blockGeometry:
+    /// реальный якорь (графема якорной строки, `?? []` без буфера —
+    /// паритет прежнего guard'а: якорь в клетке 0) + виртуальный угол
+    /// (клетки) → строки min/max + спан с инклюзивными углами.
+    /// Математики здесь не остаётся — регрессия «пропущенная клетка
+    /// при Ctrl+V + h» жила в этой композиции, теперь она в SwimCore
+    /// под тестами. Колонки — в клетках терминала, поэтому строки с
+    /// табами и wide-символами дают честный прямоугольник.
     func blockRowsAndSpan() -> (rows: ClosedRange<Int>, span: VisualBlock.Span) {
-        let anchorDisp = displayColForChar(line: visualStartLine, charCol: visualStartCol)
-        return (min(visualStartLine, cursorLine)...max(visualStartLine, cursorLine),
-                VisualBlock.Span(anchorDisp, visualBlockCol + 1))
+        let anchorChars = buffer?.getLineChars(visualStartLine) ?? []
+        return VisualBlock.blockGeometry(anchorLine: visualStartLine,
+                                         anchorCharCol: visualStartCol,
+                                         cursorLine: cursorLine,
+                                         cursorBlockCol: visualBlockCol,
+                                         anchorChars: anchorChars,
+                                         tabWidth: tabWidth)
     }
 
     /// Срез блока на строке (графемный диапазон, nil — строка блока не
@@ -128,8 +135,17 @@ extension EditorWindow {
             case .visualLine: visualStartCol = cursorCol
             default: break // из visual — якорь сохраняется
             }
+            // Угол блока: из normal — фактическая позиция курсора (свежая
+            // сессия, якорь = угол, как Ctrl+V в vim); из visual/visualLine —
+            // ЛИПКИЙ curswant (desiredCol, display-клетки): колонка пережила
+            // v/V-промежуток и вертикальные ходы, середина таба/wide-глифа
+            // не съезжает на следующую границу графемы (vim-паритет,
+            // верифицировано: ^V h v ^V d == ^V h d).
+            let fromVisual = mode == .visual || mode == .visualLine
             mode = .visualBlock
-            visualBlockCol = displayColForChar(line: cursorLine, charCol: cursorCol)
+            visualBlockCol = fromVisual
+                ? desiredCol
+                : displayColForChar(line: cursorLine, charCol: cursorCol)
         default: break
         }
     }
@@ -138,7 +154,8 @@ extension EditorWindow {
 
     /// Блоковое вертикальное движение: строка клэмпится по буферу
     /// (фантомная строка легальна — вклад пуст, прямоугольник не
-    /// сжимается), виртуальная колонка не трогается.
+    /// сжимается), виртуальная колонка не трогается. Включая пейджинг —
+    /// общей дельтой pageDelta, мимо moveVertically (клэмп графем).
     func moveBlockVertically(_ delta: Int) {
         guard let buf = buffer else { return }
         cursorLine = min(max(cursorLine + delta, 0), max(0, buf.lineCount - 1))
@@ -147,13 +164,17 @@ extension EditorWindow {
     /// Реальная позиция для виртуальной колонки: граница первой
     /// графемы на/после visualBlockCol (≤ длины строки). Держит
     /// инвариант «cursorCol всегда реален» для рендера каретки,
-    /// статус-бара и всех остальных потребителей.
+    /// статус-бара и всех остальных потребителей. curswant (desiredCol,
+    /// display-клетки) синхронизируется той же ВИРТУАЛЬНОЙ колонкой —
+    /// не реальным cursorCol: раунд-трип Ctrl+V → v → Ctrl+V обязан
+    /// вернуть угол в середину таба/wide-глифа, где он стоял (vim
+    /// держит curswant; вход в блок из visual берёт desiredCol).
     func syncCursorToBlockCol() {
         guard let buf = buffer else { return }
         cursorCol = VisualBlock.charIndex(atDisplayCol: visualBlockCol,
                                           chars: buf.getLineChars(cursorLine),
                                           tabWidth: tabWidth)
-        desiredCol = cursorCol
+        desiredCol = visualBlockCol
     }
 
     // MARK: - Обработчики клавиш
@@ -165,13 +186,15 @@ extension EditorWindow {
         case .char("j"), .down: moveCursorDown()
         case .char("k"), .up: moveCursorUp()
         case .char("l"), .right: moveCursorRight()
+        case .ctrl("j"), .ctrlDown, .pageDown: pageCursorDown()
+        case .ctrl("k"), .ctrlUp, .pageUp: pageCursorUp()
         case .char("y"): yankSelection()
         case .char("d"), .char("x"): deleteSelection()
         case .char("V"): switchVisualMode(to: .visualLine)
         case .ctrl("v"): switchVisualMode(to: .visualBlock)
         default: return false
         }
-        if !isVerticalKey(key, insertMode: false) { desiredCol = cursorCol }
+        if !isVerticalKey(key, insertMode: false) { syncDesiredCol() }
         dirty = true
         return true
     }
@@ -181,6 +204,8 @@ extension EditorWindow {
         case .escape: mode = .normal
         case .char("j"), .down: moveCursorDown()
         case .char("k"), .up: moveCursorUp()
+        case .ctrl("j"), .ctrlDown, .pageDown: pageCursorDown()
+        case .ctrl("k"), .ctrlUp, .pageUp: pageCursorUp()
         case .char("y"): yankSelection()
         case .char("d"), .char("x"): deleteSelection()
         case .char("H"), .shiftLeft: shiftVisualLines(by: -indentSize())
@@ -189,7 +214,7 @@ extension EditorWindow {
         case .ctrl("v"): switchVisualMode(to: .visualBlock)
         default: return false
         }
-        if !isVerticalKey(key, insertMode: false) { desiredCol = cursorCol }
+        if !isVerticalKey(key, insertMode: false) { syncDesiredCol() }
         dirty = true
         return true
     }
@@ -208,13 +233,23 @@ extension EditorWindow {
         case .char("l"), .right: visualBlockCol += 1
         case .char("j"), .down: moveBlockVertically(1)
         case .char("k"), .up: moveBlockVertically(-1)
+        case .ctrl("j"), .ctrlDown, .pageDown: moveBlockVertically(pageDelta)
+        case .ctrl("k"), .ctrlUp, .pageUp: moveBlockVertically(-pageDelta)
         case .char("y"): yankSelection()
         case .char("d"), .char("x"): deleteSelection()
         case .char("v"): switchVisualMode(to: .visual)
         case .char("V"): switchVisualMode(to: .visualLine)
         default: return false
         }
-        if mode == .visualBlock { syncCursorToBlockCol() }
+        if mode == .visualBlock {
+            syncCursorToBlockCol()
+            // Блоковое движение сознательно мимо moveVertically (клэмп
+            // графем ломал бы виртуальный угол) — но её скролл мимо не
+            // должен идти: подтягиваем видимость по ОБЕИМ осям после
+            // каждого движения (ensureCursorVisible в block-режиме
+            // читает виртуальную колонку угла и строку курсора).
+            ensureCursorVisible()
+        }
         dirty = true
         return true
     }
@@ -247,7 +282,8 @@ extension EditorWindow {
             if !text.isEmpty { yank(text) }
         case .blockwise(let rows, let span):
             guard buffer != nil else { return }
-            let text = VisualBlock.blockText(rows: rows.map { blockSlice(line: $0, span: span) })
+            let text = VisualBlock.blockText(rows: rows.map { blockSlice(line: $0, span: span) },
+                                          span: span, tabWidth: tabWidth)
             if !text.isEmpty { yank(text, blockwise: true) }
         }
         mode = .normal
@@ -311,7 +347,8 @@ extension EditorWindow {
             // ДО правки — applyBlockEdit пересобирает строки, срезов
             // потом не будет. Пустой вклад (блок целиком за EOL)
             // регистр не затирает.
-            let text = VisualBlock.blockText(rows: rows.map { blockSlice(line: $0, span: span) })
+            let text = VisualBlock.blockText(rows: rows.map { blockSlice(line: $0, span: span) },
+                                          span: span, tabWidth: tabWidth)
             if !text.isEmpty { yank(text, blockwise: true) }
             _ = applyBlockEdit(rows: rows, span: span, replacement: { _, _ in "" })
         }
@@ -349,7 +386,8 @@ extension EditorWindow {
             // Заменяемый блок — в регистр ДО правки (срезов после не
             // будет); пустой вклад регистр не затирает (вставка "\n"
             // поверх блока целиком за EOL — правка no-op).
-            let replaced = VisualBlock.blockText(rows: target.map { blockSlice(line: $0, span: span) })
+            let replaced = VisualBlock.blockText(rows: target.map { blockSlice(line: $0, span: span) },
+                                               span: span, tabWidth: tabWidth)
             if !replaced.isEmpty { yank(replaced, blockwise: true) }
             // До смены режима: applyBlockEdit внутри синхронизирует
             // виртуальную колонку и зовёт ensureCursorVisible, пока
@@ -466,10 +504,11 @@ extension EditorWindow {
 
         cursorLine = firstLine
         cursorCol = min(firstPlan.caret, buf.lineCharLength(line: firstLine))
-        desiredCol = cursorCol
         // Блоковая правка ставит РЕАЛЬНЫЙ курсор — виртуальная колонка
-        // следует за ним (ensureCursorVisible ниже читает её в block-режиме).
+        // следует за ним (ensureCursorVisible ниже читает её в block-режиме);
+        // curswant — той же клеткой.
         visualBlockCol = displayColForChar(line: firstLine, charCol: cursorCol)
+        desiredCol = visualBlockCol
         ensureCursorVisible()
         return true
     }
@@ -540,7 +579,7 @@ extension EditorWindow {
         buf.insert(insertedText, at: start)
         recordAction(offset: start, deleted: deletedText, inserted: insertedText)
         cursorCol = min(max(0, cursorCol + cursorDelta), buf.lineCharLength(line: cursorLine))
-        desiredCol = cursorCol
+        syncDesiredCol()
         ensureCursorVisible()
     }
 
@@ -606,37 +645,39 @@ extension EditorWindow {
         }
     }
 
-    /// Прямоугольная подсветка блока: красятся ВСЕ клетки [left, right)
-    /// — с глифами и пустые за концом строки (в cell-буфере это
-    /// пробелы, меняется только bg) — выделение читается как честный
-    /// прямоугольник и на коротких/пустых строках. Когерентность
-    /// глифов на гранях: глиф, пересекающий грань, красится целиком
-    /// (таб — всё своё раскрытие, wide — обе клетки), даже если по
-    /// правилу принадлежности (старт в [left, right)) он вне блока —
-    /// разрезанный глиф в терминале не существует.
+    /// Прямоугольная подсветка блока — ровно то, что затрагивают
+    /// правки: правило пересечения клеток (VisualBlock), раскола
+    /// «красится, но не оперируется» больше не существует. Таб красится
+    /// ПОКРЫТЫМИ клетками (раскалывается — клетки таба независимы в
+    /// cell-буфере, рендерер рисует их пробелами), прочие глифы —
+    /// целиком (атомарны, операции их тоже берут целиком, даже если
+    /// клетки выходят за грань). Пустые клетки за концом строки внутри
+    /// полосы красятся и далее — прямоугольник читается на коротких
+    /// строках.
     private func drawBlockwiseHighlight(rows: ClosedRange<Int>, span: VisualBlock.Span,
                                         lnWidth: Int) {
         guard let buf = buffer else { return }
         for lineNum in rows {
             guard let screenRow = selectionScreenRow(lineNum) else { continue }
-            // Проход по графемам: расширение прямоугольника на
-            // straddling-глифы (left-1 у пересекающих левую грань,
-            // конец — у пересекающих правую).
-            var paintFrom = span.left
-            var paintTo = span.right
-            var col = 0
-            for ch in buf.getLineChars(lineNum) {
-                let step = charDisplayStep(ch, atDisplayCol: col)
-                if col >= span.right { break }
-                if col < span.left && col + step > span.left {
-                    paintFrom = min(paintFrom, col)
+            let chars = buf.getLineChars(lineNum)
+            let cells = VisualBlock.glyphCells(chars, tabWidth: tabWidth)
+            for (i, ch) in chars.enumerated() {
+                let c = cells[i]
+                guard c.start < span.right && c.end > span.left else { continue }
+                if ch == "\t" {
+                    paintSelectionCells(screenRow: screenRow,
+                                        dispFrom: max(c.start, span.left),
+                                        dispTo: min(c.end, span.right), lnWidth: lnWidth)
+                } else {
+                    paintSelectionCells(screenRow: screenRow, dispFrom: c.start, dispTo: c.end,
+                                        lnWidth: lnWidth)
                 }
-                if col < span.right && col + step > span.right {
-                    paintTo = max(paintTo, col + step)
-                }
-                col += step
             }
-            paintSelectionCells(screenRow: screenRow, dispFrom: paintFrom, dispTo: paintTo, lnWidth: lnWidth)
+            let lineEnd = cells.last?.end ?? 0
+            if lineEnd < span.right {
+                paintSelectionCells(screenRow: screenRow, dispFrom: max(span.left, lineEnd),
+                                    dispTo: span.right, lnWidth: lnWidth)
+            }
         }
     }
 }

@@ -108,6 +108,7 @@ swim <file>       # Open file
 | `/` | Normal | Search |
 | `n` / `N` | Normal | Next / previous search match |
 | `h/j/k/l` | Normal | Navigation (with `[count]`) |
+| `Ctrl+J` / `Ctrl+K`, `PageUp` / `PageDown` | Normal, Insert, Visual | Page down / up (a screenful minus two context lines; in visual modes extends the selection) |
 | `w` / `b` / `e` | Normal | Word motions (with `[count]`) |
 | `dd` / `yy` / `cc` | Normal | Delete / yank / change `[count]` lines (`cc` keeps the indent) |
 | `d{motion}` / `y{motion}` / `c{motion}` | Normal | Operator over a motion: `w` `b` `e` `$` `0` `h` `l` `j` `k` `G` `gg` (e.g. `dw`, `d$`, `dG`; counts multiply: `2d3w` = 6) |
