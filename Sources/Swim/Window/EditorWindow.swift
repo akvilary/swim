@@ -643,10 +643,13 @@ class EditorWindow: Window {
             pending.arm(.y); keepPending = true; return true
         case .char("c"):
             pending.arm(.c); keepPending = true; return true
-        // vim-алиасы (со счётом): D = d$, C = c$, Y = yy, S = cc
+        // vim-алиасы (со счётом): D = d$, C = c$, S = cc; Y = y$ —
+        // осознанное отличие от vim (там Y = yy, исторический wart,
+        // см. :h Y): семейство D/C/Y согласовано — все действуют с
+        // курсора до конца строки, счёт как у движения (3Y = 3y$).
         case .char("D"): applyOperator(.d, motion: .endOfLine, count: pending.takeCount())
         case .char("C"): applyOperator(.c, motion: .endOfLine, count: pending.takeCount())
-        case .char("Y"): applyLinewise(op: .y, count: pending.takeCount() ?? 1)
+        case .char("Y"): applyOperator(.y, motion: .endOfLine, count: pending.takeCount())
         case .char("S"): applyLinewise(op: .c, count: pending.takeCount() ?? 1)
         case .char("p"): pasteRegister(pending.takeCount() ?? 1, before: false)
         case .char("P"): pasteRegister(pending.takeCount() ?? 1, before: true)

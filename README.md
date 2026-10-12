@@ -112,7 +112,7 @@ swim <file>       # Open file
 | `w` / `b` / `e` | Normal | Word motions (with `[count]`) |
 | `dd` / `yy` / `cc` | Normal | Delete / yank / change `[count]` lines (`cc` keeps the indent) |
 | `d{motion}` / `y{motion}` / `c{motion}` | Normal | Operator over a motion: `w` `b` `e` `$` `0` `h` `l` `j` `k` `G` `gg` (e.g. `dw`, `d$`, `dG`; counts multiply: `2d3w` = 6) |
-| `D` / `C` / `Y` / `S` | Normal | Aliases: `d$` / `c$` / `yy` / `cc` |
+| `D` / `C` / `Y` / `S` | Normal | Aliases: `d$` / `c$` / `y$` / `cc` (`Y` yanks to end of line, a deliberate improvement over vim's `yy`) |
 | `x` | Normal | Delete `[count]` chars (yanks, like vim) |
 | `p` | Normal | Paste (`[count]` times) |
 | `Ctrl+E` | Any | File explorer |
