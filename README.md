@@ -107,10 +107,13 @@ swim <file>       # Open file
 | `:` | Any (not Insert) | Command line (via status bar) |
 | `/` | Normal | Search |
 | `n` / `N` | Normal | Next / previous search match |
-| `h/j/k/l` | Normal | Navigation |
-| `dd` | Normal | Delete line |
-| `yy` | Normal | Yank line |
-| `p` | Normal | Paste |
+| `h/j/k/l` | Normal | Navigation (with `[count]`) |
+| `w` / `b` / `e` | Normal | Word motions (with `[count]`) |
+| `dd` / `yy` / `cc` | Normal | Delete / yank / change `[count]` lines (`cc` keeps the indent) |
+| `d{motion}` / `y{motion}` / `c{motion}` | Normal | Operator over a motion: `w` `b` `e` `$` `0` `h` `l` `j` `k` `G` `gg` (e.g. `dw`, `d$`, `dG`; counts multiply: `2d3w` = 6) |
+| `D` / `C` / `Y` / `S` | Normal | Aliases: `d$` / `c$` / `yy` / `cc` |
+| `x` | Normal | Delete `[count]` chars (yanks, like vim) |
+| `p` | Normal | Paste (`[count]` times) |
 | `Ctrl+E` | Any | File explorer |
 | `Ctrl+G` | Any | Git panel |
 | `Ctrl+B` | Any | Branch picker |

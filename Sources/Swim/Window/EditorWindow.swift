@@ -78,10 +78,30 @@ class EditorWindow: Window {
     var yankBuffer: String = ""
     var searchQuery: String = ""
     var lastSearchForward: Bool = true
-    /// Отложенная командная последовательность normal-режима: счёт
-    /// (`20gg`) + префикс-оператор (g/d/y) — SwimCore.NormalPending,
-    /// тестируется. Сброс — одна точка (defer handleNormal).
+    /// Отложенная командная последовательность normal-режима — vim-
+    /// грамматика `[count1] оператор [count2] движение`: счёт до и
+    /// после оператора (перемножаются: 2d3d = 6 строк), оператор d/y/c
+    /// (operator-pending), g-префикс двухбуквенных команд.
+    /// SwimCore.NormalPending, тестируется. Сброс — одна точка в
+    /// handleNormal (defer хвоста) + interruptPending для перехватов,
+    /// обходящих handleKey.
     var pending = NormalPending()
+
+    /// Точка сброса pending ВНЕ handleNormal: глобальные перехваты
+    /// Application (Ctrl-хоткеи, Tab-фокус, чужие окна) обходят
+    /// handleKey редактора — без этого `d Ctrl+G … d` даёт неожиданный
+    /// `dd` (класс утечки; тот же принцип, что paste-перехват ниже).
+    func interruptPending() {
+        pending.reset()
+    }
+
+    /// Командная строка открывается и глобально (`:` в Application
+    /// мимо handleKey окна) — тот же класс утечки: `d : Esc d`.
+    override func enterCommandMode(prefill: String = "") {
+        pending.reset()
+        super.enterCommandMode(prefill: prefill)
+    }
+
     /// Ctrl+V-кавычка insert-режима (i_CTRL-V): следующий ключ
     /// вставляется литерально. Insert-режимное состояние — живёт
     /// отдельно от NormalPending (normal-последовательности) по
@@ -517,69 +537,119 @@ class EditorWindow: Window {
     }
 
     private func handleNormal(_ key: Key) -> Bool {
-        // Числовой префикс: 1-9 начинает счёт, 0 продолжает; голый 0 —
-        // прыжок в начало строки (appendDigit возвращает false).
+        // Числовой префикс: 1-9 начинает счёт активного слота (оператор
+        // взведён → счёт ПОСЛЕ него, d3d; иначе — до, 3dd), 0 продолжает.
+        // Голый ведущий 0 — не счёт: падает ниже как движение «в начало
+        // строки» (normal — колонка 0, operator-pending — d0). Ранний
+        // return ДО defer: накопление счёта не убивает последовательность.
         if case .char(let c) = key, c.isASCII, c.isNumber {
-            if !pending.appendDigit(c.wholeNumberValue!) {
-                cursorCol = 0; desiredCol = 0; scrollX = 0; dirty = true
-            }
-            return true
+            if pending.appendDigit(c.wholeNumberValue!) { return true }
         }
-        // Дисциплина одной точки сброса: arm ЛИБО явно сохраняет
-        // последовательность (keepPending — взведение g/d/y, счёт
-        // живёт до потребления gg/G), ЛИБО она умирает на этом defer —
-        // посторонний ключ и любой уход из normal (insert/visual/
-        // командная строка) не оставляют «дозаказа». Классы утечек,
-        // закрытые этой точкой: `d v … Esc d` → `dd`, `d i … Esc d`,
-        // `g x g` → `gg` (stale-префикс переживал посторонний ключ),
-        // `y d y` → `yy` (d и y взведены одновременно).
+        // Дисциплина одной точки сброса: arm-точка ЛИБО явно сохраняет
+        // последовательность (keepPending — взведение оператора/g-
+        // префикса), ЛИБО она умирает на этом defer — посторонний ключ
+        // и любой уход из normal (insert/visual/командная строка) не
+        // оставляют «дозаказа». Классы утечек, закрытые этой точкой:
+        // `d v … Esc d` → `dd`, `d i … Esc d`, `g x g` → `gg`,
+        // `y d y` → `yy`; обход handleKey глобальными перехватами —
+        // interruptPending/enterCommandMode.
         var keepPending = false
         defer { if !keepPending { pending.reset() } }
+        // Vim-порядок диспетчеризации: gPrefix (двухбуквенная команда
+        // в сборке) → operator-pending (оператор перехватывает ЛЮБОЙ
+        // ключ — движение под ним не может «проехать мимо») → обычные
+        // команды normal.
+        let handled: Bool
+        if pending.gPrefix {
+            handled = handleGPrefix(key)
+        } else if pending.op != nil {
+            handled = handleOperatorPending(key, keepPending: &keepPending)
+        } else {
+            handled = handlePlainNormal(key, keepPending: &keepPending)
+        }
+        guard handled else { return false }
+        if !isVerticalKey(key, insertMode: false) { desiredCol = cursorCol }
+        dirty = true
+        return true
+    }
+
+    /// Вторая клавиша g-команды (`gg`/`gt`/`gT`/`gb`/`gd`). Под
+    /// взведённым оператором валидно только `gg` — движение, аргумент
+    /// оператора (`dgg`); g-команды требуют отсутствия оператора.
+    private func handleGPrefix(_ key: Key) -> Bool {
         switch key {
-        case .char("h"), .left: moveCursorLeft()
-        case .char("j"), .down: moveCursorDown()
-        case .char("k"), .up: moveCursorUp()
-        case .char("l"), .right: moveCursorRight()
-        case .char("w"): moveWordForward()
-        case .char("b"):
-            if pending.takeOp(.g) { goBack() }
-            else { moveWordBackward() }
-        case .home: cursorCol = 0; scrollX = 0
-        case .char("$"), .end: moveToEndOfLine()
         case .char("g"):
-            if pending.takeOp(.g) {
-                goToCountedLine(defaultLine: 0)
+            _ = pending.takeGPrefix()
+            let count = pending.takeCount()
+            if let armed = pending.op {
+                applyOperator(armed, motion: .fileStart, count: count)
             } else {
-                pending.arm(.g)
-                keepPending = true
-                return true
+                goToCountedLine(defaultLine: 0, count: count)
             }
         case .char("t"):
-            guard pending.op == .g else { return false }
-            pending.takeOp(.g)
+            guard pending.op == nil else { return false }
+            _ = pending.takeGPrefix()
             cycleTab(1)
         case .char("T"):
-            guard pending.op == .g else { return false }
-            pending.takeOp(.g)
+            guard pending.op == nil else { return false }
+            _ = pending.takeGPrefix()
             cycleTab(-1)
+        case .char("b"):
+            guard pending.op == nil else { return false }
+            _ = pending.takeGPrefix()
+            goBack()
+        case .char("d"):
+            guard pending.op == nil else { return false }
+            _ = pending.takeGPrefix()
+            goToDefinition()
+        default:
+            return false
+        }
+        return true
+    }
+
+    /// Команды normal-режима без взведённого оператора: движения со
+    /// счётом, взведение d/y/c, правки и vim-алиасы. false — ключ не
+    /// наш (последовательность умирает на defer хвоста handleNormal).
+    private func handlePlainNormal(_ key: Key, keepPending: inout Bool) -> Bool {
+        switch key {
+        case .char("h"), .left: moveCursorLeft(pending.takeCount() ?? 1)
+        case .char("j"), .down: moveVertically(pending.takeCount() ?? 1)
+        case .char("k"), .up: moveVertically(-(pending.takeCount() ?? 1))
+        case .char("l"), .right: moveCursorRight(pending.takeCount() ?? 1)
+        case .char("w"): moveByMotion(.wordForward, count: pending.takeCount())
+        case .char("b"): moveByMotion(.wordBackward, count: pending.takeCount())
+        case .char("e"): moveByMotion(.wordEnd, count: pending.takeCount())
+        case .char("$"), .end: moveByMotion(.endOfLine, count: pending.takeCount())
+        case .char("0"), .home: cursorCol = 0; desiredCol = 0; scrollX = 0
+        case .char("g"):
+            pending.armGPrefix()
+            keepPending = true
+            return true
         case .char("G"):
-            goToCountedLine(defaultLine: max(0, buffer!.lineCount - 1))
+            goToCountedLine(defaultLine: max(0, buffer!.lineCount - 1), count: pending.takeCount())
         case .char("i"): mode = .insert
-        case .char("a"): moveCursorRight(); mode = .insert
+        // insert-вариант right: на последнем символе — one-past-end
+        // (vim `a` аппендит, а не вставляет перед последним графемом)
+        case .char("a"): moveCursorRightInsert(); mode = .insert
         case .char("o"): insertNewLineBelow(); mode = .insert
         case .char("O"): insertNewLineAbove(); mode = .insert
         case .char("A"): moveToEndOfLineForInsert(); mode = .insert
         case .char("I"): cursorCol = 0; mode = .insert
-        case .char("x"): deleteCharAtCursor()
+        case .char("x"): deleteCharsAtCursor(pending.takeCount() ?? 1)
         case .char("d"):
-            if pending.takeOp(.g) { goToDefinition() }
-            else if pending.takeOp(.d) { deleteCurrentLine() }
-            else { pending.arm(.d); keepPending = true; return true }
+            pending.arm(.d); keepPending = true; return true
         case .char("y"):
-            if pending.takeOp(.y) { yankCurrentLine() }
-            else { pending.arm(.y); keepPending = true; return true }
-        case .char("p"): pasteAfter()
-        case .char("P"): pasteBefore()
+            pending.arm(.y); keepPending = true; return true
+        case .char("c"):
+            pending.arm(.c); keepPending = true; return true
+        // vim-алиасы (со счётом): D = d$, C = c$, Y = yy, S = cc
+        case .char("D"): applyOperator(.d, motion: .endOfLine, count: pending.takeCount())
+        case .char("C"): applyOperator(.c, motion: .endOfLine, count: pending.takeCount())
+        case .char("Y"): applyLinewise(op: .y, count: pending.takeCount() ?? 1)
+        case .char("S"): applyLinewise(op: .c, count: pending.takeCount() ?? 1)
+        case .char("p"): pasteRegister(pending.takeCount() ?? 1, before: false)
+        case .char("P"): pasteRegister(pending.takeCount() ?? 1, before: true)
         case .char("u"): undo()
         case .ctrl("r"): redo()
         case .char("v"): switchVisualMode(to: .visual)
@@ -604,16 +674,15 @@ class EditorWindow: Window {
         case .ctrl("l"), .ctrlRight: cycleTab(1)
         default: return false
         }
-        if !isVerticalKey(key, insertMode: false) { desiredCol = cursorCol }
-        dirty = true
         return true
     }
 
-    /// `Ngg` / `NG` — jumps to line N (1-based), falling back to `defaultLine`
-    /// (0-based line index) when no count is pending. Consumes the count.
-    private func goToCountedLine(defaultLine: Int) {
+    /// `Ngg` / `NG` — jumps to line N (1-based), falling back to
+    /// `defaultLine` (0-based line index) when no count was given.
+    /// Счёт разрешает вызывающий (единственная точка takeCount).
+    private func goToCountedLine(defaultLine: Int, count: Int?) {
         guard let buf = buffer else { return }
-        let target = pending.takeCount().map { $0 - 1 } ?? defaultLine
+        let target = count.map { $0 - 1 } ?? defaultLine
         cursorLine = min(max(0, target), max(0, buf.lineCount - 1))
         cursorCol = 0
         desiredCol = 0
@@ -805,11 +874,14 @@ class EditorWindow: Window {
     /// while the user answers it.
     private var pendingWriteConfirm = false
 
-    func moveCursorLeft() { if cursorCol > 0 { cursorCol -= 1 }; ensureCursorVisible() }
-    func moveCursorRight() {
+    func moveCursorLeft(_ n: Int = 1) {
+        cursorCol = max(0, cursorCol - n)
+        ensureCursorVisible()
+    }
+    func moveCursorRight(_ n: Int = 1) {
         guard let buf = buffer else { return }
         let maxCol = max(0, buf.lineCharLength(line: cursorLine) - 1)
-        if cursorCol < maxCol { cursorCol += 1 }
+        if cursorCol < maxCol { cursorCol = min(cursorCol + n, maxCol) }
         ensureCursorVisible()
     }
     private func moveCursorRightInsert() {
@@ -843,23 +915,9 @@ class EditorWindow: Window {
         default: return false
         }
     }
-    private func moveToEndOfLine() {
-        guard let buf = buffer else { return }
-        cursorCol = max(0, buf.lineCharLength(line: cursorLine) - 1)
-    }
     private func moveToEndOfLineForInsert() {
         guard let buf = buffer else { return }
         cursorCol = buf.lineCharLength(line: cursorLine)
-    }
-    private func moveWordForward() {
-        guard let buf = buffer else { return }
-        let offset = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
-        moveCursorToOffset(buf.wordForward(from: offset))
-    }
-    private func moveWordBackward() {
-        guard let buf = buffer else { return }
-        let offset = buf.lineStart(line: cursorLine) + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
-        moveCursorToOffset(buf.wordBackward(from: offset))
     }
 
     private func moveCursorToOffset(_ offset: Int) {
@@ -1044,18 +1102,6 @@ class EditorWindow: Window {
         cursorCol = 0; ensureCursorVisible()
     }
 
-    private func deleteCharAtCursor() {
-        guard let buf = buffer else { return }
-        let chars = buf.getLineChars(cursorLine)
-        guard cursorCol < chars.count else { return }
-        let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
-        let offset = buf.lineStart(line: cursorLine) + byteOff
-        let deleteLen = chars[cursorCol].utf8.count
-        let deletedText = String(chars[cursorCol])
-        buf.delete(at: offset, length: deleteLen)
-        recordAction(offset: offset, deleted: deletedText, inserted: "")
-    }
-
     private func deleteBeforeCursor() {
         guard let buf = buffer else { return }
         if cursorCol > 0 {
@@ -1081,26 +1127,6 @@ class EditorWindow: Window {
         }
     }
 
-    private func deleteCurrentLine() {
-        guard let buf = buffer, buf.lineCount > 0 else { return }
-        let start = buf.lineStart(line: cursorLine)
-        let len = buf.lineEnd(line: cursorLine) - start
-        let deletedText = buf.getText(range: start..<(start + len))
-        yankLinewiseRegister(deletedText)
-        buf.delete(at: start, length: len)
-        recordAction(offset: start, deleted: deletedText, inserted: "")
-        if cursorLine >= buf.lineCount { cursorLine = max(0, buf.lineCount - 1) }
-        cursorCol = 0
-    }
-
-    /// `yy` — построчный yank с терминаторами файла (CRLF-файл даёт
-    /// CRLF-регистр; последняя строка без перевода — принудительный
-    /// "\n", чтобы регистр остался linewise; см. registerTerminator).
-    private func yankCurrentLine() {
-        guard let buf = buffer else { return }
-        yank(buf.getLine(cursorLine) + registerTerminator(after: cursorLine))
-    }
-
     private func pasteAfter() {
         guard !yankBuffer.isEmpty else { return }
         // Блоковый регистр вставляется блоком: для него p и P
@@ -1108,6 +1134,19 @@ class EditorWindow: Window {
         // вставка идёт в колонку курсора (см. pasteBlock).
         if yankIsBlockwise { pasteBlock(); return }
         pasteTextAfterCursor(yankBuffer)
+    }
+
+    /// `p`/`P` со счётом (vim): регистр вставляется N раз одной правкой
+    /// (один undo-шаг). Блоковый регистр счёт игнорирует — для
+    /// прямоугольника «после» не имеет смысла, он и так идёт в колонку.
+    private func pasteRegister(_ count: Int, before: Bool) {
+        guard !yankBuffer.isEmpty else { return }
+        if yankIsBlockwise {
+            if before { pasteBefore() } else { pasteAfter() }
+            return
+        }
+        let text = count > 1 ? String(repeating: yankBuffer, count: count) : yankBuffer
+        if before { pasteTextBeforeCursor(text) } else { pasteTextAfterCursor(text) }
     }
 
     /// Inserts text like `p` — after the cursor (charwise) or below the

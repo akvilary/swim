@@ -113,3 +113,56 @@ struct PieceTableTests {
         #expect(t.getAllText() == "aa\r\naa\r\nbb\r\n")
     }
 }
+
+/// Word-примитивы движений (w/b/e) — двухклассная модель
+/// (word-символ / прочие), границы буфера, EOF без перевода.
+@Suite struct PieceTableWordMotions {
+    @Test func wordEndBasics() {
+        let t = PieceTable(text: "foo bar baz")
+        #expect(t.wordEnd(from: 0) == 2)   // внутри foo → 'o'
+        #expect(t.wordEnd(from: 2) == 6)   // на конце foo → конец bar
+        #expect(t.wordEnd(from: 3) == 6)   // на пробеле → конец bar
+        #expect(t.wordEnd(from: 4) == 6)   // внутри bar → 'r'
+    }
+
+    @Test func wordEndMultipleSpacesAndPunct() {
+        let t = PieceTable(text: "foo   bar")
+        #expect(t.wordEnd(from: 0) == 2)
+        #expect(t.wordEnd(from: 2) == 8)   // через пробельный ран
+        let p = PieceTable(text: "foo, bar")
+        #expect(p.wordEnd(from: 0) == 2)   // конец foo
+        #expect(p.wordEnd(from: 3) == 7)   // с запятой → конец bar ('r')
+    }
+
+    @Test func wordEndAtBufferEdges() {
+        let last = PieceTable(text: "ab cd")
+        #expect(last.wordEnd(from: 3) == 4) // последний ран
+        let only = PieceTable(text: "word")
+        #expect(only.wordEnd(from: 0) == 3)
+        #expect(only.wordEnd(from: 3) == 3) // дальше слов нет — на месте
+        let empty = PieceTable(text: "")
+        #expect(empty.wordEnd(from: 0) == 0)
+        let blanks = PieceTable(text: "   ")
+        #expect(blanks.wordEnd(from: 1) == 1) // слов нет — без движения
+    }
+
+    @Test func wordEndAcrossLines() {
+        let t = PieceTable(text: "foo\r\nbar\r\n")
+        #expect(t.wordEnd(from: 0) == 2)
+        #expect(t.wordEnd(from: 2) == 7)   // через CRLF → конец bar ('r')
+        #expect(t.wordEnd(from: 6) == 7)   // внутри bar → его конец
+        #expect(t.wordEnd(from: 7) == 7)   // дальше слов нет — на месте
+    }
+
+    @Test func wordForwardClampVersusUnclamped() {
+        // Курсорный w остаётся на последнем байте; операторный (dw)
+        // идёт до конца текста — exclusive-конец снимает adjustment'ом.
+        let t = PieceTable(text: "ab cd")
+        #expect(t.wordForward(from: 0) == 3)
+        #expect(t.wordForward(from: 3) == 4)
+        #expect(t.wordForwardUnclamped(from: 3) == 5)
+        let only = PieceTable(text: "ab")
+        #expect(only.wordForward(from: 0) == 1)
+        #expect(only.wordForwardUnclamped(from: 0) == 2)
+    }
+}

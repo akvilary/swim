@@ -705,62 +705,15 @@ class Application: WindowDelegate {
             return
         }
 
-        switch key {
-        case .ctrl("e"):
-            toggleFileExplorer()
+        // Глобальные хоткеи потребляются приложением целиком, окно
+        // ключа не видит. Любой такой перехват убивает отложенную
+        // normal-последовательность редактора: `d Ctrl+G … d` не
+        // должен давать неожиданный `dd` (класс утечки, обходящий
+        // handleKey; тот же принцип, что paste-перехват в
+        // EditorWindow.handleKey).
+        if handleGlobalOnly(key) {
+            editor.interruptPending()
             return
-        case .ctrl("g"):
-            toggleGitPanel()
-            return
-        case .ctrl("b"):
-            toggleGitBranches()
-            return
-        case .ctrl("o"):
-            // Git pull from any window (the same funnel as the git
-            // panel's old `p`): output, credentials and the finished
-            // hook all come with the command window.
-            runGitCommand(label: "git pull", args: ["pull"])
-            return
-        case .ctrl("p"):
-            runGitCommand(label: "git push", args: ["push"])
-            return
-        case .ctrl("y"):
-            copyCurrentBranchToClipboard()
-            return
-        case .ctrl("f"):
-            toggleSearch()
-            return
-        case .ctrl("t"):
-            toggleTerminal()
-            return
-        case .ctrl("c"):
-            running = false
-            return
-        case .ctrl("x"):
-            if let focused = spaces.current.focused, focused !== editor,
-               focused !== statusBar, focused !== tabBar {
-                closeWindow(focused)
-            } else if editor.visible {
-                closeCurrentTab(force: false)
-            }
-            return
-        case .ctrl("z"):
-            if editor.visible {
-                closeOtherTabs()
-            }
-            return
-        case .ctrl("s"):
-            if spaces.current.focused !== editor {
-                toggleHalfScreen()
-                return
-            }
-        case .ctrl("w"):
-            if maximized != nil || spaces.current.focused !== editor {
-                toggleMaximize()
-                return
-            }
-        default:
-            break
         }
 
         // Tab cycles focus, but only from modes that don't take text:
@@ -771,15 +724,21 @@ class Application: WindowDelegate {
            let focused = spaces.current.focused,
            focused.mode == .menu || focused.mode == .normal {
             cycleFocus()
+            editor.interruptPending()
             return
         }
 
         if case .char(":") = key, canOpenCommandLine() {
+            // enterCommandMode редактора сам сбрасывает pending —
+            // командная строка открывается и отсюда, мимо handleKey
             openCommandLine()
             return
         }
 
         let focused = spaces.current.focused ?? editor
+        // Ключ уходит другому окну — редактор его не видел, его
+        // последовательность обязана умереть (`d Tab … d` не даёт dd)
+        if focused !== editor { editor.interruptPending() }
         if focused.handleKey(key) {
             if focused === editor {
                 updateStatusBar()
@@ -787,6 +746,72 @@ class Application: WindowDelegate {
             }
         } else if case .escape = key, focused !== editor {
             closeWindow(focused)
+        }
+    }
+
+    /// Глобальные хоткеи, потребляемые приложением ДО диспетчеризации
+    /// окнам (false — ключ проваливается дальше). Выделены в
+    /// bool-форму: единая точка «потреблено глобально» в
+    /// handleGlobalKey сбрасывает pending редактора.
+    private func handleGlobalOnly(_ key: Key) -> Bool {
+        switch key {
+        case .ctrl("e"):
+            toggleFileExplorer()
+            return true
+        case .ctrl("g"):
+            toggleGitPanel()
+            return true
+        case .ctrl("b"):
+            toggleGitBranches()
+            return true
+        case .ctrl("o"):
+            // Git pull from any window (the same funnel as the git
+            // panel's old `p`): output, credentials and the finished
+            // hook all come with the command window.
+            runGitCommand(label: "git pull", args: ["pull"])
+            return true
+        case .ctrl("p"):
+            runGitCommand(label: "git push", args: ["push"])
+            return true
+        case .ctrl("y"):
+            copyCurrentBranchToClipboard()
+            return true
+        case .ctrl("f"):
+            toggleSearch()
+            return true
+        case .ctrl("t"):
+            toggleTerminal()
+            return true
+        case .ctrl("c"):
+            running = false
+            return true
+        case .ctrl("x"):
+            if let focused = spaces.current.focused, focused !== editor,
+               focused !== statusBar, focused !== tabBar {
+                closeWindow(focused)
+            } else if editor.visible {
+                closeCurrentTab(force: false)
+            }
+            return true
+        case .ctrl("z"):
+            if editor.visible {
+                closeOtherTabs()
+            }
+            return true
+        case .ctrl("s"):
+            if spaces.current.focused !== editor {
+                toggleHalfScreen()
+                return true
+            }
+            return false
+        case .ctrl("w"):
+            if maximized != nil || spaces.current.focused !== editor {
+                toggleMaximize()
+                return true
+            }
+            return false
+        default:
+            return false
         }
     }
 
