@@ -5,10 +5,10 @@ import Darwin
 #endif
 import SwimCore
 
-/// Ширина символа в клетках терминала (`displayWidth`) и wide-таблица
-/// Unicode East Asian Width живут в SwimCore (CharWidth.swift) —
-/// единый авторитет для рендерера, панелей и скролла поверхностей
-/// ввода; тестируется в Tests/SwimCoreTests.
+/// Character width in terminal cells (`displayWidth`) and the Unicode
+/// East Asian Width wide table live in SwimCore (CharWidth.swift) —
+/// a single authority for the renderer, panels and input-surface
+/// scrolling; tested in Tests/SwimCoreTests.
 
 enum Color: Equatable {
     case `default`

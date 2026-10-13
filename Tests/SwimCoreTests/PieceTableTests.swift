@@ -114,49 +114,49 @@ struct PieceTableTests {
     }
 }
 
-/// Word-примитивы движений (w/b/e) — двухклассная модель
-/// (word-символ / прочие), границы буфера, EOF без перевода.
+/// Word-motion primitives (w/b/e) — the two-class model
+/// (word-char / everything else), buffer edges, EOF without a newline.
 @Suite struct PieceTableWordMotions {
     @Test func wordEndBasics() {
         let t = PieceTable(text: "foo bar baz")
-        #expect(t.wordEnd(from: 0) == 2)   // внутри foo → 'o'
-        #expect(t.wordEnd(from: 2) == 6)   // на конце foo → конец bar
-        #expect(t.wordEnd(from: 3) == 6)   // на пробеле → конец bar
-        #expect(t.wordEnd(from: 4) == 6)   // внутри bar → 'r'
+        #expect(t.wordEnd(from: 0) == 2)   // inside foo → 'o'
+        #expect(t.wordEnd(from: 2) == 6)   // at the end of foo → end of bar
+        #expect(t.wordEnd(from: 3) == 6)   // on a space → end of bar
+        #expect(t.wordEnd(from: 4) == 6)   // inside bar → 'r'
     }
 
     @Test func wordEndMultipleSpacesAndPunct() {
         let t = PieceTable(text: "foo   bar")
         #expect(t.wordEnd(from: 0) == 2)
-        #expect(t.wordEnd(from: 2) == 8)   // через пробельный ран
+        #expect(t.wordEnd(from: 2) == 8)   // across a whitespace run
         let p = PieceTable(text: "foo, bar")
-        #expect(p.wordEnd(from: 0) == 2)   // конец foo
-        #expect(p.wordEnd(from: 3) == 7)   // с запятой → конец bar ('r')
+        #expect(p.wordEnd(from: 0) == 2)   // end of foo
+        #expect(p.wordEnd(from: 3) == 7)   // with a comma → end of bar ('r')
     }
 
     @Test func wordEndAtBufferEdges() {
         let last = PieceTable(text: "ab cd")
-        #expect(last.wordEnd(from: 3) == 4) // последний ран
+        #expect(last.wordEnd(from: 3) == 4) // the last run
         let only = PieceTable(text: "word")
         #expect(only.wordEnd(from: 0) == 3)
-        #expect(only.wordEnd(from: 3) == 3) // дальше слов нет — на месте
+        #expect(only.wordEnd(from: 3) == 3) // no more words — stays put
         let empty = PieceTable(text: "")
         #expect(empty.wordEnd(from: 0) == 0)
         let blanks = PieceTable(text: "   ")
-        #expect(blanks.wordEnd(from: 1) == 1) // слов нет — без движения
+        #expect(blanks.wordEnd(from: 1) == 1) // no words — no movement
     }
 
     @Test func wordEndAcrossLines() {
         let t = PieceTable(text: "foo\r\nbar\r\n")
         #expect(t.wordEnd(from: 0) == 2)
-        #expect(t.wordEnd(from: 2) == 7)   // через CRLF → конец bar ('r')
-        #expect(t.wordEnd(from: 6) == 7)   // внутри bar → его конец
-        #expect(t.wordEnd(from: 7) == 7)   // дальше слов нет — на месте
+        #expect(t.wordEnd(from: 2) == 7)   // across CRLF → end of bar ('r')
+        #expect(t.wordEnd(from: 6) == 7)   // inside bar → its end
+        #expect(t.wordEnd(from: 7) == 7)   // no more words — stays put
     }
 
     @Test func wordForwardClampVersusUnclamped() {
-        // Курсорный w остаётся на последнем байте; операторный (dw)
-        // идёт до конца текста — exclusive-конец снимает adjustment'ом.
+        // The cursor w stays on the last byte; the operator one (dw)
+        // goes to the end of the text — the adjustment removes the exclusive end.
         let t = PieceTable(text: "ab cd")
         #expect(t.wordForward(from: 0) == 3)
         #expect(t.wordForward(from: 3) == 4)

@@ -705,11 +705,11 @@ class Application: WindowDelegate {
             return
         }
 
-        // Глобальные хоткеи потребляются приложением целиком, окно
-        // ключа не видит. Любой такой перехват убивает отложенную
-        // normal-последовательность редактора: `d Ctrl+G … d` не
-        // должен давать неожиданный `dd` (класс утечки, обходящий
-        // handleKey; тот же принцип, что paste-перехват в
+        // Global hotkeys are consumed by the application in full; the
+        // window never sees the key. Any such interception kills the
+        // editor's pending normal sequence: `d Ctrl+G … d` must not
+        // produce an unexpected `dd` (a leak class bypassing
+        // handleKey; the same principle as the paste interception in
         // EditorWindow.handleKey).
         if handleGlobalOnly(key) {
             editor.interruptPending()
@@ -729,15 +729,15 @@ class Application: WindowDelegate {
         }
 
         if case .char(":") = key, canOpenCommandLine() {
-            // enterCommandMode редактора сам сбрасывает pending —
-            // командная строка открывается и отсюда, мимо handleKey
+            // The editor's enterCommandMode resets pending itself —
+            // the command line is opened from here too, bypassing handleKey
             openCommandLine()
             return
         }
 
         let focused = spaces.current.focused ?? editor
-        // Ключ уходит другому окну — редактор его не видел, его
-        // последовательность обязана умереть (`d Tab … d` не даёт dd)
+        // The key goes to another window — the editor never saw it, its
+        // sequence must die (`d Tab … d` does not produce dd)
         if focused !== editor { editor.interruptPending() }
         if focused.handleKey(key) {
             if focused === editor {
@@ -749,10 +749,10 @@ class Application: WindowDelegate {
         }
     }
 
-    /// Глобальные хоткеи, потребляемые приложением ДО диспетчеризации
-    /// окнам (false — ключ проваливается дальше). Выделены в
-    /// bool-форму: единая точка «потреблено глобально» в
-    /// handleGlobalKey сбрасывает pending редактора.
+    /// Global hotkeys consumed by the application BEFORE dispatch to
+    /// windows (false — the key falls through). Factored into a
+    /// bool form: the single "consumed globally" point in
+    /// handleGlobalKey resets the editor's pending.
     private func handleGlobalOnly(_ key: Key) -> Bool {
         switch key {
         case .ctrl("e"):

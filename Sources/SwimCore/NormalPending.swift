@@ -1,32 +1,32 @@
 import Foundation
 
-/// Незавершённая командная последовательность normal-режима — vim-модель
-/// грамматики `[count1] оператор [count2] движение`:
-/// - `count` — счёт ДО оператора (`3dd`);
-/// - `op` — взведённый оператор d/y/c (operator-pending);
-/// - `opCount` — счёт ПОСЛЕ оператора (`d3d`);
-/// - `gPrefix` — g-префикс двухбуквенных команд (`gg`/`gt`/`gT`/`gb`/`gd`).
-///   Живёт отдельно от оператора: `dgg` взводит d и g одновременно —
-///   g это часть движения, а не оператор, и не должен его вытеснять.
+/// An incomplete normal-mode command sequence — the vim model of the
+/// grammar `[count1] operator [count2] motion`:
+/// - `count` — the count BEFORE the operator (`3dd`);
+/// - `op` — the armed operator d/y/c (operator-pending);
+/// - `opCount` — the count AFTER the operator (`d3d`);
+/// - `gPrefix` — the g-prefix of two-letter commands (`gg`/`gt`/`gT`/`gb`/`gd`).
+///   Lives separately from the operator: `dgg` arms d and g at once —
+///   g is part of the motion, not an operator, and must not displace it.
 ///
-/// Дисциплина (инвариант потребителя): обработчик ключа ЛИБО явно
-/// сохраняет последовательность (`keepPending`-флаг в arm-точке —
-/// взведение оператора/g-префикса, накопление счёта — ранний return
-/// ДО defer), ЛИБО она умирает одним сбросом на хвосте — посторонний
-/// ключ и любой уход в другой режим (insert/visual/командная строка)
-/// не оставляют «дозаказа» (класс утечки: `d v … Esc d` → `dd`).
-/// Глобальные перехваты Application обходят handleKey — их точки
-/// сбрасывают через `EditorWindow.interruptPending()`/`enterCommandMode`.
+/// Discipline (a consumer invariant): the key handler EITHER explicitly
+/// keeps the sequence (the `keepPending` flag at the arm point — arming
+/// an operator/g-prefix, accumulating a count — an early return BEFORE
+/// the defer), OR it dies in a single reset on the tail — a stray key
+/// and any departure into another mode (insert/visual/command line)
+/// leaves no "standing order" behind (a leak class: `d v … Esc d` → `dd`).
+/// Application-level global intercepts bypass handleKey — their points
+/// reset via `EditorWindow.interruptPending()`/`enterCommandMode`.
 ///
-/// Слоты оператора и g-префикса независимы; операторов три: d/y/c
-/// (last-wins внутри слота). Счёты vim-правило перемножает при
-/// потреблении: `2d3d` = 6 строк.
+/// The operator and g-prefix slots are independent; there are three
+/// operators: d/y/c (last-wins within the slot). The vim rule multiplies
+/// the counts at consumption: `2d3d` = 6 lines.
 public struct NormalPending: Equatable {
     public enum Op: Equatable {
         case d, y, c
     }
 
-    /// Максимальный счёт (как в vim) — защита repeat-циклов потребителя.
+    /// The maximum count (as in vim) — protects the consumer's repeat loops.
     public static let countCap = 999_999
 
     public private(set) var count: Int?
@@ -38,9 +38,10 @@ public struct NormalPending: Equatable {
 
     public var isEmpty: Bool { count == nil && opCount == nil && op == nil && !gPrefix }
 
-    /// Цифра счёта в АКТИВНЫЙ слот: оператор взведён → `opCount` (`d3d`),
-    /// иначе → `count` (`3dd`). Голый ведущий `0` в активном слоте — не
-    /// цифра (движение в начало строки, `d0`): false без мутаций.
+    /// A count digit into the ACTIVE slot: operator armed → `opCount`
+    /// (`d3d`), otherwise → `count` (`3dd`). A bare leading `0` in the
+    /// active slot is not a digit (motion to beginning of line, `d0`):
+    /// false with no mutations.
     @discardableResult
     public mutating func appendDigit(_ d: Int) -> Bool {
         let target = op != nil ? opCount : count
@@ -50,16 +51,16 @@ public struct NormalPending: Equatable {
         return true
     }
 
-    /// Взвести оператор — замещает любой предыдущий (last-wins).
-    /// Потребление явного API не имеет: оператор читается напрямую
-    /// (`pending.op`), слот умирает на хвостовом defer/reset —
-    /// take-паттерн остался только у счёта (единственная точка
-    /// потребления на ключ).
+    /// Arm an operator — replaces any previous one (last-wins).
+    /// Consumption has no explicit API: the operator is read directly
+    /// (`pending.op`), the slot dies in the tail defer/reset — the
+    /// take pattern remains for the count and the g-prefix
+    /// (takeCount/takeGPrefix, one consumption point per key).
     public mutating func arm(_ op: Op) {
         self.op = op
     }
 
-    /// Взвести / потребить g-префикс.
+    /// Arm / consume the g-prefix.
     public mutating func armGPrefix() { gPrefix = true }
 
     @discardableResult
@@ -69,11 +70,12 @@ public struct NormalPending: Equatable {
         return true
     }
 
-    /// Эффективный счёт: vim перемножает счёты по обе стороны оператора
-    /// (`2d3w` = 6); nil — счёта не было вовсе. Без fallback-параметра
-    /// сознательно: смешение 1-based счёта со значением в домене
-    /// вызывающего (0-based строка) — острый край, уже давший off-by-one;
-    /// домен falling back'а принадлежит вызывающему (`?? 1`).
+    /// The effective count: vim multiplies the counts on both sides of
+    /// the operator (`2d3w` = 6); nil — no count was given at all.
+    /// No fallback parameter by design: mixing a 1-based count with a
+    /// value in the caller's domain (a 0-based line) is a sharp edge
+    /// that has already caused an off-by-one; the domain of the
+    /// fallback belongs to the caller (`?? 1`).
     public mutating func takeCount() -> Int? {
         defer {
             count = nil
@@ -87,7 +89,7 @@ public struct NormalPending: Equatable {
         }
     }
 
-    /// Полный сброс (хвост обработчика, перехват paste).
+    /// Full reset (handler tail, paste interception).
     public mutating func reset() {
         count = nil
         opCount = nil

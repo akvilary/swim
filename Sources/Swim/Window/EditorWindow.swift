@@ -41,7 +41,7 @@ class EditorWindow: Window {
         get { tabs.active.visualStartCol }
         set { tabs.active.visualStartCol = newValue }
     }
-    /// Виртуальная колонка visual-block (display-клетки) — см.
+    /// The virtual visual-block column (display cells) — see
     /// EditorBuffer.visualBlockCol.
     var visualBlockCol: Int {
         get { tabs.active.visualBlockCol }
@@ -78,42 +78,43 @@ class EditorWindow: Window {
     var yankBuffer: String = ""
     var searchQuery: String = ""
     var lastSearchForward: Bool = true
-    /// Отложенная командная последовательность normal-режима — vim-
-    /// грамматика `[count1] оператор [count2] движение`: счёт до и
-    /// после оператора (перемножаются: 2d3d = 6 строк), оператор d/y/c
-    /// (operator-pending), g-префикс двухбуквенных команд.
-    /// SwimCore.NormalPending, тестируется. Сброс — одна точка в
-    /// handleNormal (defer хвоста) + interruptPending для перехватов,
-    /// обходящих handleKey.
+    /// The pending normal-mode command sequence — the vim grammar
+    /// `[count1] operator [count2] motion`: a count before and after
+    /// the operator (multiplied: 2d3d = 6 lines), the operator d/y/c
+    /// (operator-pending), the g-prefix of two-letter commands.
+    /// SwimCore.NormalPending, tested. The reset — a single point in
+    /// handleNormal (the tail defer) + interruptPending for
+    /// interceptions that bypass handleKey.
     var pending = NormalPending()
 
-    /// Точка сброса pending ВНЕ handleNormal: глобальные перехваты
-    /// Application (Ctrl-хоткеи, Tab-фокус, чужие окна) обходят
-    /// handleKey редактора — без этого `d Ctrl+G … d` даёт неожиданный
-    /// `dd` (класс утечки; тот же принцип, что paste-перехват ниже).
+    /// The pending reset point OUTSIDE handleNormal: Application's
+    /// global interceptions (Ctrl hotkeys, Tab focus, other windows)
+    /// bypass the editor's handleKey — without this `d Ctrl+G … d`
+    /// yields an unexpected `dd` (a leak class; the same principle as
+    /// the paste interception below).
     func interruptPending() {
         pending.reset()
     }
 
-    /// Командная строка открывается и глобально (`:` в Application
-    /// мимо handleKey окна) — тот же класс утечки: `d : Esc d`.
+    /// The command line is opened globally too (`:` in Application
+    /// bypassing the window's handleKey) — the same leak class: `d : Esc d`.
     override func enterCommandMode(prefill: String = "") {
         pending.reset()
         super.enterCommandMode(prefill: prefill)
     }
 
-    /// Ctrl+V-кавычка insert-режима (i_CTRL-V): следующий ключ
-    /// вставляется литерально. Insert-режимное состояние — живёт
-    /// отдельно от NormalPending (normal-последовательности) по
-    /// жизненному циклу: modes differ, смешивать их в одном
-    /// аккумуляторе нельзя.
+    /// The insert-mode Ctrl+V quote (i_CTRL-V): the next key is
+    /// inserted literally. Insert-mode state — lives separately from
+    /// NormalPending (normal sequences) by lifecycle: modes differ,
+    /// they must not be mixed in one accumulator.
     var pendingLiteralNext = false
     private var isUndoRedoing = false
 
-    /// Литеральный символ для Ctrl+V-кавычки в insert (i_CTRL-V vim):
-    /// ключ в своём «сыром» виде — то, что insert-режим иначе
-    /// перехватывает со своей семантикой. Nil — ключ не вставляем
-    /// буквально (движение): кавычка снята, ключ идёт обычным путём.
+    /// The literal character for the insert Ctrl+V quote (vim i_CTRL-V):
+    /// the key in its "raw" form — what insert mode would otherwise
+    /// intercept with its own semantics. Nil — the key is not inserted
+    /// literally (a motion): the quote is dropped, the key takes the
+    /// usual route.
     private static func literalInsertChar(for key: Key) -> Character? {
         switch key {
         case .char(let c): return c
@@ -121,8 +122,8 @@ class EditorWindow: Window {
         case .enter: return "\r"
         case .escape: return "\u{1b}"
         case .ctrl(let c):
-            // .ctrl(c) парсится из байта b+96 (1...26) — обратное
-            // преобразование даёт управляющий символ.
+            // .ctrl(c) is parsed from the byte b+96 (1...26) — the
+            // inverse conversion yields the control character.
             guard let a = c.asciiValue, a >= 97, a <= 122 else { return nil }
             return Character(UnicodeScalar(a - 96))
         default: return nil
@@ -156,8 +157,8 @@ class EditorWindow: Window {
     var lastError: String?
     var tabCount: Int { tabs.count }
 
-    /// Колонка для статус-бара: в block-режиме — ВИРТУАЛЬНАЯ (vim
-    /// показывает vcol, не клэмп по строке), иначе реальная.
+    /// The column for the status bar: in block mode — VIRTUAL (vim
+    /// shows vcol, not the per-line clamp), otherwise real.
     var statusCursorCol: Int {
         mode == .visualBlock ? visualBlockCol : cursorCol
     }
@@ -313,10 +314,11 @@ class EditorWindow: Window {
     }
 
     /// Register content + its vim-style type: a blockwise yank (visual
-    /// block `y`, блоковая вставка поверх выделения) marks the register,
-    /// and `p`/`P` then paste it as a block (в display-колонку курсора,
-    /// строки регистра на последовательные строки). Every other yank
-    /// resets the flag — тип регистра принадлежит последнему yank.
+    /// block `y`, block paste over a selection) marks the register,
+    /// and `p`/`P` then paste it as a block (at the cursor's display
+    /// column, the register's lines onto consecutive lines). Every
+    /// other yank resets the flag — the register type belongs to the
+    /// last yank.
     private var yankIsBlockwise = false
 
     func yank(_ text: String, blockwise: Bool = false) {
@@ -537,28 +539,30 @@ class EditorWindow: Window {
     }
 
     private func handleNormal(_ key: Key) -> Bool {
-        // Числовой префикс: 1-9 начинает счёт активного слота (оператор
-        // взведён → счёт ПОСЛЕ него, d3d; иначе — до, 3dd), 0 продолжает.
-        // Голый ведущий 0 — не счёт: падает ниже как движение «в начало
-        // строки» (normal — колонка 0, operator-pending — d0). Ранний
-        // return ДО defer: накопление счёта не убивает последовательность.
+        // Numeric prefix: 1-9 starts the count of the active slot (an
+        // operator armed → the count comes AFTER it, d3d; otherwise —
+        // before, 3dd), 0 continues it.
+        // A bare leading 0 is not a count: it falls through as the
+        // "start of line" motion (normal — column 0, operator-pending —
+        // d0). The early return comes BEFORE the defer: accumulating a
+        // count does not kill the sequence.
         if case .char(let c) = key, c.isASCII, c.isNumber {
             if pending.appendDigit(c.wholeNumberValue!) { return true }
         }
-        // Дисциплина одной точки сброса: arm-точка ЛИБО явно сохраняет
-        // последовательность (keepPending — взведение оператора/g-
-        // префикса), ЛИБО она умирает на этом defer — посторонний ключ
-        // и любой уход из normal (insert/visual/командная строка) не
-        // оставляют «дозаказа». Классы утечек, закрытые этой точкой:
-        // `d v … Esc d` → `dd`, `d i … Esc d`, `g x g` → `gg`,
-        // `y d y` → `yy`; обход handleKey глобальными перехватами —
+        // The single-reset-point discipline: an arm point EITHER
+        // explicitly keeps the sequence (keepPending — arming an
+        // operator/g-prefix), OR it dies on this defer — a foreign key
+        // and any departure from normal (insert/visual/command line)
+        // leaves no "standing order". Leak classes closed by this
+        // point: `d v … Esc d` → `dd`, `d i … Esc d`, `g x g` → `gg`,
+        // `y d y` → `yy`; bypassing handleKey via global interceptions —
         // interruptPending/enterCommandMode.
         var keepPending = false
         defer { if !keepPending { pending.reset() } }
-        // Vim-порядок диспетчеризации: gPrefix (двухбуквенная команда
-        // в сборке) → operator-pending (оператор перехватывает ЛЮБОЙ
-        // ключ — движение под ним не может «проехать мимо») → обычные
-        // команды normal.
+        // Vim dispatch order: gPrefix (a two-letter command in the
+        // making) → operator-pending (the operator intercepts ANY
+        // key — a motion under it cannot slip past) → plain normal
+        // commands.
         let handled: Bool
         if pending.gPrefix {
             handled = handleGPrefix(key)
@@ -573,9 +577,9 @@ class EditorWindow: Window {
         return true
     }
 
-    /// Вторая клавиша g-команды (`gg`/`gt`/`gT`/`gb`/`gd`). Под
-    /// взведённым оператором валидно только `gg` — движение, аргумент
-    /// оператора (`dgg`); g-команды требуют отсутствия оператора.
+    /// The second key of a g-command (`gg`/`gt`/`gT`/`gb`/`gd`). Under
+    /// an armed operator only `gg` is valid — a motion, the operator's
+    /// argument (`dgg`); g-commands require no operator.
     private func handleGPrefix(_ key: Key) -> Bool {
         switch key {
         case .char("g"):
@@ -608,9 +612,9 @@ class EditorWindow: Window {
         return true
     }
 
-    /// Команды normal-режима без взведённого оператора: движения со
-    /// счётом, взведение d/y/c, правки и vim-алиасы. false — ключ не
-    /// наш (последовательность умирает на defer хвоста handleNormal).
+    /// Normal-mode commands without an armed operator: motions with a
+    /// count, arming d/y/c, edits and vim aliases. false — the key is
+    /// not ours (the sequence dies on handleNormal's tail defer).
     private func handlePlainNormal(_ key: Key, keepPending: inout Bool) -> Bool {
         switch key {
         case .char("h"), .left: moveCursorLeft(pending.takeCount() ?? 1)
@@ -629,8 +633,8 @@ class EditorWindow: Window {
         case .char("G"):
             goToCountedLine(defaultLine: max(0, buffer!.lineCount - 1), count: pending.takeCount())
         case .char("i"): mode = .insert
-        // insert-вариант right: на последнем символе — one-past-end
-        // (vim `a` аппендит, а не вставляет перед последним графемом)
+        // The insert variant of right: on the last character — one-past-end
+        // (vim `a` appends rather than inserting before the last grapheme)
         case .char("a"): moveCursorRightInsert(); mode = .insert
         case .char("o"): insertNewLineBelow(); mode = .insert
         case .char("O"): insertNewLineAbove(); mode = .insert
@@ -643,10 +647,11 @@ class EditorWindow: Window {
             pending.arm(.y); keepPending = true; return true
         case .char("c"):
             pending.arm(.c); keepPending = true; return true
-        // vim-алиасы (со счётом): D = d$, C = c$, S = cc; Y = y$ —
-        // осознанное отличие от vim (там Y = yy, исторический wart,
-        // см. :h Y): семейство D/C/Y согласовано — все действуют с
-        // курсора до конца строки, счёт как у движения (3Y = 3y$).
+        // vim aliases (with a count): D = d$, C = c$, S = cc; Y = y$ —
+        // a deliberate difference from vim (there Y = yy, a historical
+        // wart, see :h Y): the D/C/Y family is consistent — all act
+        // from the cursor to the end of the line, the count as with a
+        // motion (3Y = 3y$).
         case .char("D"): applyOperator(.d, motion: .endOfLine, count: pending.takeCount())
         case .char("C"): applyOperator(.c, motion: .endOfLine, count: pending.takeCount())
         case .char("Y"): applyOperator(.y, motion: .endOfLine, count: pending.takeCount())
@@ -665,8 +670,8 @@ class EditorWindow: Window {
         case .char(":"): enterCommandMode()
         case .char("/"): enterCommandMode(prefill: "/")
         // n/N — next/previous search match (the vim standard).
-        // Отложенная последовательность умирает на defer — явных
-        // сбросов не нужно.
+        // The pending sequence dies on the defer — no explicit
+        // resets needed.
         case .char("n"):
             searchNext()
         case .char("N"):
@@ -682,7 +687,7 @@ class EditorWindow: Window {
 
     /// `Ngg` / `NG` — jumps to line N (1-based), falling back to
     /// `defaultLine` (0-based line index) when no count was given.
-    /// Счёт разрешает вызывающий (единственная точка takeCount).
+    /// The count is resolved by the caller (the single takeCount point).
     private func goToCountedLine(defaultLine: Int, count: Int?) {
         guard let buf = buffer else { return }
         let target = count.map { $0 - 1 } ?? defaultLine
@@ -693,14 +698,15 @@ class EditorWindow: Window {
     }
 
     private func handleInsert(_ key: Key) -> Bool {
-        // Ctrl+V literal-next (i_CTRL-V vim): следующий ключ вставляется
-        // литерально — в сыром виде, минуя перехват insert-режима: Tab —
-        // настоящий "\t" (а не шаг отступа), Enter — "\r" без
-        // авто-отступа, Esc — 0x1b, Ctrl+<c> — управляющий байт.
-        // Управляющие символы в строке невидимы (нуль-ширинные, как
-        // комбинирующие — колоночная математика консистентна во всех
-        // проходах через Character.displayStep); b"\t" виден раскрытием.
-        // Незакавыченный ключ (движение) обрабатывается обычным путём.
+        // Ctrl+V literal-next (vim i_CTRL-V): the next key is inserted
+        // literally — in raw form, bypassing insert-mode interception:
+        // Tab — a real "\t" (not an indent step), Enter — "\r" without
+        // auto-indent, Esc — 0x1b, Ctrl+<c> — the control byte.
+        // Control characters in the text are invisible (zero-width,
+        // like combining marks — the column math stays consistent in
+        // every pass through Character.displayStep); b"\t" is visible
+        // through its expansion.
+        // A key that is not quoted (a motion) takes the usual route.
         if pendingLiteralNext {
             pendingLiteralNext = false
             if let literal = Self.literalInsertChar(for: key) {
@@ -907,20 +913,21 @@ class EditorWindow: Window {
     private func moveVertically(_ delta: Int) {
         guard let buf = buffer else { return }
         cursorLine = min(max(cursorLine + delta, 0), max(0, buf.lineCount - 1))
-        // curswant в display-клетках: разрешение в графему через
-        // charIndex(atDisplayCol:) — раскладка табов ЦЕЛЕВОЙ строки не
-        // сдвигает желаемую экранную колонку (vim-паритет). Цель внутри
-        // таба/за концом — первая графема на/после неё (или one-past-end).
+        // curswant in display cells: resolved into a grapheme via
+        // charIndex(atDisplayCol:) — the TARGET line's tab layout does
+        // not shift the wanted screen column (vim parity). A target
+        // inside a tab/past the end — the first grapheme at/after it
+        // (or one-past-end).
         cursorCol = charIndexAtDisplayCol(line: cursorLine, target: desiredCol)
         ensureCursorVisible()
     }
 
-    /// Единая точка записи curswant после горизонтальных движений и
-    /// правок: desiredCol живёт в display-клетках (экранная колонка,
-    /// как curswant vim), не в графемах — вертикальные ходы читают её
-    /// через charIndexAtDisplayCol, поэтому переход на строку с другой
-    /// раскладкой табов не сдвигает желаемую колонку. Вертикальные
-    /// ключи сюда НЕ попадают (липкость, см. isVerticalKey).
+    /// The single point that records curswant after horizontal moves and
+    /// edits: desiredCol lives in display cells (the screen column,
+    /// like vim's curswant), not in graphemes — vertical moves read it
+    /// through charIndexAtDisplayCol, so moving to a line with a
+    /// different tab layout does not shift the wanted column. Vertical
+    /// keys do NOT reach here (stickiness, see isVerticalKey).
     func syncDesiredCol() {
         desiredCol = displayColForChar(line: cursorLine, charCol: cursorCol)
     }
@@ -945,9 +952,9 @@ class EditorWindow: Window {
         let (line, byteCol) = buf.offsetToLineCol(offset)
         cursorLine = line
         cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol)
-        // Примитив установки курсора владеет curswant: прыжок поиском из
-        // командного режима идёт мимо хвоста handleNormal — без этого
-        // desiredCol протухал бы до следующего горизонтального ключа.
+        // The cursor-setting primitive owns curswant: a search jump from
+        // command mode bypasses handleNormal's tail — without this
+        // desiredCol would go stale until the next horizontal key.
         syncDesiredCol()
         ensureCursorVisible()
     }
@@ -1153,16 +1160,17 @@ class EditorWindow: Window {
 
     private func pasteAfter() {
         guard !yankBuffer.isEmpty else { return }
-        // Блоковый регистр вставляется блоком: для него p и P
-        // совпадают — «до/после» не имеет смысла для прямоугольника,
-        // вставка идёт в колонку курсора (см. pasteBlock).
+        // A blockwise register pastes as a block: for it p and P
+        // coincide — "before/after" is meaningless for a rectangle,
+        // the paste goes into the cursor's column (see pasteBlock).
         if yankIsBlockwise { pasteBlock(); return }
         pasteTextAfterCursor(yankBuffer)
     }
 
-    /// `p`/`P` со счётом (vim): регистр вставляется N раз одной правкой
-    /// (один undo-шаг). Блоковый регистр счёт игнорирует — для
-    /// прямоугольника «после» не имеет смысла, он и так идёт в колонку.
+    /// `p`/`P` with a count (vim): the register is pasted N times in one
+    /// edit (a single undo step). A blockwise register ignores the
+    /// count — "after" is meaningless for a rectangle, it goes into
+    /// the column anyway.
     private func pasteRegister(_ count: Int, before: Bool) {
         guard !yankBuffer.isEmpty else { return }
         if yankIsBlockwise {
@@ -1174,8 +1182,9 @@ class EditorWindow: Window {
     }
 
     /// Inserts text like `p` — after the cursor (charwise) or below the
-    /// line (linewise, trailing "\n"). Multiline charwise text moves the
-    /// cursor to the char after the last pasted one.
+    /// line (linewise, trailing "\n"). Multiline charwise text leaves the
+    /// cursor ON the last pasted grapheme (vim `p`); `P` in
+    /// pasteTextBeforeCursor instead ends one past it.
     private func pasteTextAfterCursor(_ text: String) {
         guard let buf = buffer, !text.isEmpty else { return }
         let offset: Int
@@ -1202,8 +1211,10 @@ class EditorWindow: Window {
     }
 
     /// Inserts text like `P` — before the cursor (charwise) or above
-    /// the line (linewise, trailing "\n"). Cursor convention matches
-    /// pasteTextAfterCursor: after the last pasted char. Multiline
+    /// the line (linewise, trailing "\n"). Cursor convention: one past
+    /// the last pasted char (pasteTextAfterCursor instead leaves the
+    /// cursor ON the last pasted grapheme — the two differ by one).
+    /// Multiline
     /// charwise text (a visual yank ending mid-line has no trailing
     /// "\n") needs the same line/column delta math — a plain
     /// `cursorCol += text.count` counts newlines as columns and pushes
@@ -1244,11 +1255,12 @@ class EditorWindow: Window {
         }
     }
 
-    /// Прыжок пейджинга (vim Ctrl-F/Ctrl-B): страница минус две строки
-    /// контекста, минимум одна. Дельта общая для всех режимов:
-    /// normal/insert/visual/visualLine идут через moveVertically
-    /// (курсорные примитивы), visual-block — через moveBlockVertically
-    /// (клэмп графем moveVertically ломал бы виртуальный угол).
+    /// The paging jump (vim Ctrl-F/Ctrl-B): a page minus two context
+    /// lines, at least one. The delta is shared by all modes:
+    /// normal/insert/visual/visualLine go through moveVertically
+    /// (cursor primitives), visual-block — through moveBlockVertically
+    /// (moveVertically's grapheme clamping would break the virtual
+    /// corner).
     var pageDelta: Int { max(1, contentHeight - 2) }
 
     func pageCursorDown() { moveVertically(pageDelta) }
@@ -1318,8 +1330,8 @@ class EditorWindow: Window {
         }
         if cursorLine < scrollY { scrollY = cursorLine }
         else if cursorLine >= scrollY + contentHeight { scrollY = cursorLine - contentHeight + 1 }
-        // В block-режиме скролл следует за ВИРТУАЛЬНОЙ колонкой — грань
-        // прямоугольника видима даже за концом короткой строки.
+        // In block mode the scroll follows the VIRTUAL column — the
+        // rectangle's edge stays visible even past a short line's end.
         let dispCol = mode == .visualBlock
             ? visualBlockCol
             : displayColForChar(line: cursorLine, charCol: cursorCol)
@@ -1352,25 +1364,25 @@ class EditorWindow: Window {
         return count
     }
 
-    /// Ширина табуляции в клетках для текущего файла (tabstop). Go — 2, прочее — 4.
+    /// The tab width in cells for the current file (tabstop). Go — 2, everything else — 4.
     var tabWidth: Int {
         ((filePath as NSString?)?.pathExtension == "go") ? 2 : 4
     }
 
-    /// Шаг display-колонки — делегат общего авторитета (Character.
-    /// displayStep в SwimCore): и рендер, и скролл, и visual-block
-    /// считают табы/wide одинаково.
+    /// The display-column step — a delegate of the shared authority
+    /// (Character.displayStep in SwimCore): rendering, scrolling and
+    /// visual-block all count tabs/wide characters identically.
     func charDisplayStep(_ ch: Character, atDisplayCol col: Int) -> Int {
         ch.displayStep(atDisplayCol: col, tabWidth: tabWidth)
     }
 
-    /// display-колонка (ширина в клетках терминала), с которой начинается символ charCol на строке line.
+    /// The display column (width in terminal cells) where charCol starts on line.
     func displayColForChar(line: Int, charCol: Int) -> Int {
         guard let buf = buffer else { return 0 }
         return VisualBlock.displayCol(ofCharIndex: charCol, chars: buf.getLineChars(line), tabWidth: tabWidth)
     }
 
-    /// Индекс первого символа строки, чья display-колонка >= target (для горизонтального скролла).
+    /// The index of the line's first character whose display column is >= target (for horizontal scrolling).
     func charIndexAtDisplayCol(line: Int, target: Int) -> Int {
         guard let buf = buffer else { return 0 }
         return VisualBlock.charIndex(atDisplayCol: target, chars: buf.getLineChars(line), tabWidth: tabWidth)
@@ -1574,10 +1586,11 @@ class EditorWindow: Window {
     private func drawCursor(lnWidth: Int) {
         guard cursorLine >= scrollY && cursorLine < scrollY + contentHeight else { return }
         let screenRow = cursorLine - scrollY + contentTop
-        // В block-режиме каретка стоит на ВИРТУАЛЬНОЙ клетке (в т.ч. за
-        // концом строки); попав в клетку-продолжение wide-глифа,
-        // сдвигаемся на его начало — продолжение рендерер не рисует,
-        // каретка стала бы невидимой.
+        // In block mode the caret sits on the VIRTUAL cell (including
+        // past the line's end); if it lands on a wide glyph's
+        // continuation cell, shift to the glyph's start — the renderer
+        // does not draw the continuation, the caret would become
+        // invisible.
         let dispCol = mode == .visualBlock
             ? visualBlockCol
             : displayColForChar(line: cursorLine, charCol: cursorCol)

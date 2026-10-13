@@ -2,34 +2,35 @@
 //  EditorOperators.swift
 //  Swim
 //
-//  Operator-pending механика normal-режима (vim): взведённый оператор
-//  (d/y/c) + движение → действие над диапазоном. Диспетчер handleNormal
-//  (EditorWindow.swift) маршрутизирует в порядке gPrefix → operator-
-//  pending → обычные команды — при взведённом операторе обычные ветки
-//  недостижимы, движение не может «проехать мимо» оператора (баг
-//  прошлого: dw двигал курсор). Диапазоны и назначения — чистый
-//  SwimCore.NormalMotion (тестируется); здесь только применение:
-//  yank/delete/change одним undo-шагом, курсор и регистры.
+//  Operator-pending mechanics of normal mode (vim): an armed operator
+//  (d/y/c) + motion → an action over a range. The handleNormal
+//  dispatcher (EditorWindow.swift) routes in the order gPrefix →
+//  operator-pending → plain commands — with an operator armed, the
+//  plain branches are unreachable, a motion cannot slip past the
+//  operator (a past bug: dw moved the cursor). Ranges and destinations
+//  are pure SwimCore.NormalMotion (tested); here only the application:
+//  yank/delete/change as a single undo step, cursor and registers.
 //
 
 import SwimCore
 
 extension EditorWindow {
 
-    // MARK: - Диспетчер operator-pending
+    // MARK: - Operator-pending dispatcher
 
-    /// Ключ при взведённом операторе. Удвоение (dd/yy/cc) — linewise на
-    /// N строк; `g` взводит g-префикс движения (`dgg`); движения —
-    /// аргументы оператора; прочий ключ — смерть последовательности
-    /// (false → defer-сброс хвоста handleNormal, как ошибка vim).
-    /// Слот оператора не берётся явно: сброс делает хвостовой defer.
+    /// A key while an operator is armed. Doubling (dd/yy/cc) — linewise
+    /// over N lines; `g` arms the motion's g-prefix (`dgg`); motions are
+    /// the operator's arguments; any other key — death of the sequence
+    /// (false → the defer reset in handleNormal's tail, like a vim
+    /// error). The operator slot is not cleared explicitly: the reset
+    /// is done by the trailing defer.
     func handleOperatorPending(_ key: Key, keepPending: inout Bool) -> Bool {
         switch key {
         case .escape:
-            // Тихий abort (vim: ESC в operator-pending) — потреблён
+            // Silent abort (vim: ESC in operator-pending) — consumed
             return true
         case .char("g"):
-            // dgg/ygg/cgg: g-префикс, под оператором валидно только `gg`
+            // dgg/ygg/cgg: g-prefix; under an operator only `gg` is valid
             pending.armGPrefix()
             keepPending = true
             return true
@@ -51,11 +52,13 @@ extension EditorWindow {
         return true
     }
 
-    /// Ключ → движение normal-режима (та же таблица работает перемещением
-    /// в normal и аргументом оператора в operator-pending). `gg` приходит
-    /// через g-префикс (handleGPrefix), здесь только одиночные клавиши.
-    /// Enter — linewise вниз (vim: d<CR> == dj); в plain-режиме .enter
-    /// сюда не доходит (не наш ключ) — поведение обычного Enter не меняется.
+    /// Key → normal-mode motion, consumed as the operator's argument in
+    /// operator-pending (plain-normal movement maps keys itself in
+    /// handlePlainNormal and does not consult this table). `gg`
+    /// arrives through the g-prefix (handleGPrefix); here only single
+    /// keys. Enter — linewise down (vim: d<CR> == dj); in plain mode
+    /// .enter never reaches here (not our key) — plain Enter behavior
+    /// is unchanged.
     static func normalMotion(for key: Key) -> NormalMotion? {
         switch key {
         case .char("h"), .left: return .left
@@ -73,17 +76,17 @@ extension EditorWindow {
         }
     }
 
-    // MARK: - Применение операторов
+    // MARK: - Applying operators
 
-    /// Оператор + движение со счётом (nil — счёта не было; дефолты
-    /// движений — в NormalMotion.destination): диапазон от NormalMotion,
-    /// действие по категории. Пустой диапазон — no-op (`c` просто
-    /// входит в insert).
+    /// Operator + motion with a count (nil — no count was given; motion
+    /// defaults live in NormalMotion.destination): the range comes from
+    /// NormalMotion, the action by category. An empty range is a no-op
+    /// (`c` simply enters insert).
     func applyOperator(_ op: NormalPending.Op, motion: NormalMotion, count: Int?) {
         guard let buf = buffer else { return }
         var m = motion
         if op == .c, case .wordForward = motion, cursorOnNonBlank(buf) {
-            m = .wordEnd // vim i_cw: cw на не-бланке ведёт себя как ce
+            m = .wordEnd // vim i_cw: cw on a non-blank behaves like ce
         }
         let dest = NormalMotion.destination(of: m, in: buf, line: cursorLine, col: cursorCol, count: count)
         guard let range = NormalMotion.operatorRange(cursorLine: cursorLine, cursorCol: cursorCol,
@@ -99,23 +102,26 @@ extension EditorWindow {
         }
     }
 
-    /// Удвоенный оператор (dd/yy/cc) — linewise на N строк от курсора.
+    /// A doubled operator (dd/yy/cc) — linewise over N lines from the cursor.
     func applyLinewise(op: NormalPending.Op, count: Int) {
         guard let buf = buffer else { return }
         let last = max(0, buf.lineCount - 1)
         applyLinewiseRange(op, lower: cursorLine, upper: min(cursorLine + count - 1, last))
     }
 
-    /// Linewise-действие над диапазоном строк. Фантомная строка
-    /// (start == totalLength) — артефакт буфера, не контент (та же
-    /// политика, что shiftVisualLines): Ndd/Nyy/dj/dG, заезжающие на
-    /// неё, не тянут её в диапазон и регистр (vim: 3dd на
-    /// предпоследней строке даёт двухстрочный регистр). Yank — с
-    /// терминаторами исходного файла (CRLF-round-trip, linewise-
-    /// гарантия последней строки без перевода). Delete/change — один
-    /// buf.delete + один undo-шаг; `cc` пере-вставляет отступ первой
-    /// строки тем же шагом (vim auto-indent). Пустой диапазон
-    /// (курсор на фантоме) — честный no-op без undo-записи.
+    /// Linewise action over a range of lines. The phantom line
+    /// (start == totalLength) is a buffer artifact, not content (the
+    /// same policy as shiftVisualLines): Ndd/Nyy/dj/dG that run onto
+    /// it do not pull it into the range and the register (vim: 3dd on
+    /// the second-to-last line yields a two-line register). Yank — with
+    /// the original file's terminators (CRLF round-trip, the linewise
+    /// guarantee of a last line without a trailing newline). Delete/
+    /// change — one buf.delete + one undo step; `cc` re-inserts the
+    /// first line's indent within the same step (vim auto-indent). An
+    /// empty range (cursor on the phantom) is an honest no-op for all
+    /// three operators, with no undo record and — for `y` — without
+    /// wiping the register either: the phantom's contribution is just
+    /// the forced "\n" (the no-wipe principle, as in yankSelection).
     func applyLinewiseRange(_ op: NormalPending.Op, lower: Int, upper: Int) {
         guard let buf = buffer else { return }
         let last = max(0, buf.lineCount - 1)
@@ -129,8 +135,12 @@ extension EditorWindow {
             registerText += buf.getLine(line) + registerTerminator(after: line)
         }
         if op == .y {
+            // Cursor on the phantom line (lo == hi, start == totalLength):
+            // the contribution is just the forced "\n" — no-op without
+            // wiping the register (the no-wipe principle, as in yankSelection).
+            if buf.lineStart(line: lo) == buf.totalLength { return }
             yankLinewiseRegister(registerText)
-            return // yy не двигает курсор (vim)
+            return // yy does not move the cursor (vim)
         }
         let start = buf.lineStart(line: lo)
         let end = min(buf.lineEnd(line: hi), buf.totalLength)
@@ -156,8 +166,8 @@ extension EditorWindow {
         ensureCursorVisible()
     }
 
-    /// Charwise-действие над диапазоном (конец exclusive, в char-колонках;
-    /// сквозные диапазоны через переводы строк — d2$/de — байтами).
+    /// Charwise action over a range (exclusive end, in char columns;
+    /// ranges spanning newlines — d2$/de — in bytes).
     func applyCharwiseRange(_ op: NormalPending.Op, startLine: Int, startCol: Int,
                             endLine: Int, endCol: Int) {
         guard let buf = buffer else { return }
@@ -173,13 +183,13 @@ extension EditorWindow {
         let deletedText = buf.getText(range: startOffset..<endOffset)
         yank(deletedText)
         if op == .y {
-            // yank не двигает курсор (vim): yb/y0/yh оставляют его на месте
+            // yank does not move the cursor (vim): yb/y0/yh leave it in place
             return
         }
         buf.delete(at: startOffset, length: len)
         recordAction(offset: startOffset, deleted: deletedText, inserted: "")
-        // d/c: курсор на начало удалённого диапазона (db возвращает
-        // курсор к началу слова — vim)
+        // d/c: the cursor lands at the start of the deleted range (db
+        // returns the cursor to the start of the word — vim)
         cursorLine = startLine
         cursorCol = startCol
         syncDesiredCol()
@@ -187,10 +197,11 @@ extension EditorWindow {
         ensureCursorVisible()
     }
 
-    // MARK: - Правки со счётом
+    // MARK: - Edits with a count
 
-    /// `x` со счётом (vim-parity: удалённое идёт в yank-регистр и
-    /// OSC 52) — N графем от курсора, без выхода за конец строки.
+    /// `x` with a count (vim parity: the deleted text goes to the yank
+    /// register and OSC 52) — N graphemes from the cursor, without
+    /// going past the end of the line.
     func deleteCharsAtCursor(_ count: Int) {
         guard let buf = buffer else { return }
         let chars = buf.getLineChars(cursorLine)
@@ -208,9 +219,9 @@ extension EditorWindow {
         recordAction(offset: startOff, deleted: deletedText, inserted: "")
     }
 
-    /// Применение движения как перемещения курсора (normal, без
-    /// оператора). Вертикальные j/k идут мимо — moveVertically с
-    /// sticky-колонкой (desiredCol) в handlePlainNormal.
+    /// Applying a motion as a cursor move (normal, without an
+    /// operator). Vertical j/k bypass this — moveVertically with the
+    /// sticky column (desiredCol) in handlePlainNormal.
     func moveByMotion(_ motion: NormalMotion, count: Int?) {
         guard let buf = buffer else { return }
         let dest = NormalMotion.destination(of: motion, in: buf,
@@ -220,7 +231,7 @@ extension EditorWindow {
         ensureCursorVisible()
     }
 
-    // MARK: - Вспомогательные
+    // MARK: - Helpers
 
     private func cursorOnNonBlank(_ buf: PieceTable) -> Bool {
         let chars = buf.getLineChars(cursorLine)

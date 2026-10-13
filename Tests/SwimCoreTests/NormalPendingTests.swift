@@ -1,12 +1,12 @@
 import Testing
 import SwimCore
 
-/// NormalPending — аккумулятор отложенной последовательности
-/// normal-режима, vim-модель: счёт до оператора + оператор + счёт
-/// после + g-префикс, явное потребление, умножение счётов, один сброс.
+/// NormalPending — the accumulator of a pending normal-mode
+/// sequence, vim-style: count before the operator + operator + count
+/// after + g-prefix, explicit consumption, count multiplication, one reset.
 @Suite struct NormalPendingTests {
 
-    // MARK: - Слоты счёта
+    // MARK: - Count slots
 
     @Test func digitAccumulatesBeforeOperator() {
         var p = NormalPending()
@@ -21,7 +21,7 @@ import SwimCore
         let bare = p.appendDigit(0)
         #expect(!bare)
         #expect(p.isEmpty)
-        // но после первой цифры 0 продолжает счёт
+        // but after the first digit, 0 continues the count
         p.appendDigit(1)
         let cont = p.appendDigit(0)
         #expect(cont)
@@ -29,7 +29,7 @@ import SwimCore
     }
 
     @Test func digitAfterOperatorGoesToOpCount() {
-        // d3d: оператор взведён — цифры копятся в opCount, count не тронут
+        // d3d: the operator is armed — digits accumulate in opCount, count untouched
         var p = NormalPending()
         p.arm(.d)
         p.appendDigit(3)
@@ -39,13 +39,13 @@ import SwimCore
     }
 
     @Test func bareZeroAfterOperatorIsNotADigit() {
-        // d0: 0 после оператора — движение, а не счёт
+        // d0: 0 after an operator is a motion, not a count
         var p = NormalPending()
         p.arm(.d)
         let bare = p.appendDigit(0)
         #expect(!bare)
         #expect(p.opCount == nil)
-        // но d10d — 0 продолжает начатый счёт
+        // but d10d — 0 continues the count already started
         p.appendDigit(1)
         let cont = p.appendDigit(0)
         #expect(cont)
@@ -58,7 +58,7 @@ import SwimCore
         #expect(p.count == NormalPending.countCap)
     }
 
-    // MARK: - Умножение счётов (vim: 2d3w = 6)
+    // MARK: - Count multiplication (vim: 2d3w = 6)
 
     @Test func takeCountMultipliesBothSides() {
         var p = NormalPending()
@@ -67,7 +67,7 @@ import SwimCore
         p.appendDigit(3)
         let product = p.takeCount()
         #expect(product == 6)
-        // слот оператора живёт до хвостового defer — isEmpty тут ложен
+        // the operator slot lives until the trailing defer — isEmpty is false here
         #expect(p.count == nil && p.opCount == nil && p.op == .d)
     }
 
@@ -92,7 +92,7 @@ import SwimCore
         #expect(p.count == nil && p.opCount == nil)
     }
 
-    // MARK: - Операторы
+    // MARK: - Operators
 
     @Test func armReplacesPreviousOp() {
         var p = NormalPending()
@@ -102,8 +102,8 @@ import SwimCore
     }
 
     @Test func opSlotSurvivesCountTake() {
-        // Взведённый оператор не вытесняется потреблением счёта —
-        // слот умирает только на defer/reset потребителя
+        // An armed operator is not displaced by consuming the count —
+        // the slot dies only on the consumer's defer/reset
         var p = NormalPending()
         p.arm(.c)
         p.appendDigit(2)
@@ -111,10 +111,10 @@ import SwimCore
         #expect(p.op == .c && p.count == nil)
     }
 
-    // MARK: - g-префикс
+    // MARK: - g-prefix
 
     @Test func gPrefixIndependentOfOperator() {
-        // dgg: d взведён, потом g — оба живут одновременно
+        // dgg: d is armed, then g — both live at the same time
         var p = NormalPending()
         p.arm(.d)
         p.armGPrefix()
@@ -127,7 +127,7 @@ import SwimCore
     }
 
     @Test func countSurvivesArm() {
-        // 20gg: счёт копится до g-взведения и живёт до потребления
+        // 20gg: the count accumulates before g is armed and lives until consumed
         var p = NormalPending()
         p.appendDigit(2); p.appendDigit(0)
         p.armGPrefix()
@@ -139,7 +139,7 @@ import SwimCore
     }
 
     @Test func opCountSurvivesGPrefixUnderOperator() {
-        // d5gg: счёт между d и gg копится, пока взведены и d, и g
+        // d5gg: the count between d and gg accumulates while both d and g are armed
         var p = NormalPending()
         p.arm(.d)
         p.armGPrefix()
@@ -147,7 +147,7 @@ import SwimCore
         #expect(p.opCount == 5 && p.op == .d && p.gPrefix)
     }
 
-    // MARK: - Сброс
+    // MARK: - Reset
 
     @Test func resetClearsEverything() {
         var p = NormalPending()

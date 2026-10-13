@@ -29,9 +29,9 @@ enum Theme {
     static let gitAdd = Color.rgb(r: 0x44, g: 0x9d, b: 0xab)
     static let gitChange = Color.rgb(r: 0x61, g: 0x83, b: 0xbb)
     static let gitDelete = Color.rgb(r: 0x91, g: 0x4c, b: 0x54)
-    /// Git-декорации — единая палитра трёх поверхностей: номера строк в
-    /// гуттере редактора, имена файлов в проводнике, буквы статуса в
-    /// git-панели. Меняйте здесь, не по месту использования.
+    /// Git decorations — a single palette shared by three surfaces: line
+    /// numbers in the editor gutter, file names in the explorer, status
+    /// letters in the git panel. Change them here, not at the use sites.
     static let stagedColor = blue1
     static let unstagedColor = orange
     static let deleteColor = red

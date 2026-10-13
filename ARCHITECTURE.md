@@ -1,210 +1,219 @@
-# Swim — Терминальный текстовый редактор на Swift
+# Swim — Terminal Text Editor in Swift
 
-## Обзор
+## Overview
 
-Swim — это vim-подобный терминальный текстовый редактор, написанный на чистом Swift без внешних зависимостей. Работает на Linux и macOS. Использует тему Tokyo Night Storm, структуру данных Piece Table, встроенный файловый проводник, git-панель (stage/unstage/discard/коммит), поиск по проекту, стек окон (фокус = вершина стека, закрытие — pop), единую модель режимов окон (menu/insert/normal/visual/visualLine/visualBlock/command — командная строка принадлежит окну-владельцу) и LSP семантическую подсветку.
+Swim is a vim-like terminal text editor written in pure Swift with no external dependencies. It runs on Linux and macOS. It uses the Tokyo Night Storm theme, a Piece Table data structure, a built-in file explorer, a git panel (stage/unstage/discard/commit), project-wide search, a window stack (focus = top of the stack, closing = pop), a unified window mode model (menu/insert/normal/visual/visualLine/visualBlock/command — the command line belongs to the owning window), and LSP semantic highlighting.
 
 ---
 
-## Архитектура
+## Architecture
 
 ```
 main.swift
-  └── Application (оркестратор, реализует WindowDelegate)
-        ├── Terminal.shared (низкоуровневый I/O)
-        ├── Key.parse() (парсинг ввода)
-        ├── Spaces (пространства окон: editor, search)
-        ├── LayoutManager (расчёт прямоугольников окон)
-        ├── Renderer (diff-based вывод в терминал)
-        ├── windowStack (z-порядок открытых окон; вершина = сфокусированное)
-        ├── EditorWindow (основной редактор)
-        │     ├── PieceTable (текстовый буфер)
-        │     ├── SyntaxTokenizer.tokenize (синтаксический слой: keywords/strings/numbers)
-        │     ├── SyntaxTokenizer.mergeWithLSP (послойный мердж: LSP поверх builtin)
-        │     ├── MarkdownTokenizer (viewport-подсветка Markdown с инкрементальным кэшем)
-        │     └── SemanticToken[] (LSP-подсветка, конвертированная в grapheme-индексы)
-        ├── CommitWindow (редактор сообщения коммита — тонкая надстройка над EditorWindow)
-        ├── FileExplorerWindow (файловое дерево)
+  └── Application (orchestrator, implements WindowDelegate)
+        ├── Terminal.shared (low-level I/O)
+        ├── Key.parse() (input parsing)
+        ├── Spaces (window spaces: editor, search)
+        ├── LayoutManager (window rectangle calculation)
+        ├── Renderer (diff-based terminal output)
+        ├── windowStack (z-order of open windows; top = focused)
+        ├── EditorWindow (main editor)
+        │     ├── PieceTable (text buffer)
+        │     ├── SyntaxTokenizer.tokenize (syntax layer: keywords/strings/numbers)
+        │     ├── SyntaxTokenizer.mergeWithLSP (layered merge: LSP on top of builtin)
+        │     ├── MarkdownTokenizer (viewport Markdown highlighting with an incremental cache)
+        │     └── SemanticToken[] (LSP highlighting converted to grapheme indices)
+        ├── CommitWindow (commit message editor — a thin layer over EditorWindow)
+        ├── FileExplorerWindow (file tree)
         ├── GitPanelWindow (git status/commits/diff/commit)
-        ├── SearchResultsWindow + PreviewWindow (поиск по проекту)
-        ├── CommandWindow (вывод длительных git-команд)
-        ├── TerminalWindow (встроенный терминал)
-        ├── StatusBarWindow (режим/позиция/командная строка)
-        └── LSPClient (семантические токены через sourcekit-lsp)
+        ├── SearchResultsWindow + PreviewWindow (project-wide search)
+        ├── CommandWindow (output of long-running git commands)
+        ├── TerminalWindow (built-in terminal)
+        ├── StatusBarWindow (mode/position/command line)
+        └── LSPClient (semantic tokens via sourcekit-lsp)
 ```
 
-### Потоки данных
+### Data Flows
 
-**Ввод:** `Terminal.readByte()` → `Key.parse()` → `Application.handleGlobalKey()` → `Window.handleKey()`
+**Input:** `Terminal.readByte()` → `Key.parse()` → `Application.handleGlobalKey()` → `Window.handleKey()`
 
-**Редактирование:** `EditorWindow.handleKey()` → `PieceTable.insert/delete` → буфер изменён → `dirty = true`
+**Editing:** `EditorWindow.handleKey()` → `PieceTable.insert/delete` → buffer modified → `dirty = true`
 
-**Рендеринг:** `Window.update()` заполняет cell-буфер → `Renderer` сравнивает с предыдущим кадром → `Terminal` отправляет ANSI-escape → `flush()` в stdout
+**Rendering:** `Window.update()` fills the cell buffer → `Renderer` compares with the previous frame → `Terminal` sends ANSI escapes → `flush()` to stdout
 
-**Подсветка синтаксиса:** `SyntaxTokenizer.tokenize()` даёт синтаксический слой (keywords/strings/numbers) всегда, а при наличии LSP-токенов `mergeWithLSP` кладёт их поверх (builtin заполняет промежутки; строки поглощают вложенные LSP-токены интерполяций) → `EditorWindow.semanticTokens` → маппинг на цвета через `Theme`; диагностика сервера (`publishDiagnostics`) — гуттер/подчёркивание/статус-бар (см. LSPClient)
+**Syntax highlighting:** `SyntaxTokenizer.tokenize()` always provides the syntax layer (keywords/strings/numbers), and when LSP tokens are present `mergeWithLSP` lays them on top (builtin fills the gaps; strings absorb nested LSP interpolation tokens) → `EditorWindow.semanticTokens` → mapping to colors via `Theme`; server diagnostics (`publishDiagnostics`) — gutter/underline/status bar (see LSPClient)
 
-**Межоконная коммуникация:** окна отправляют события в `Application` через протокол `WindowDelegate` (`openFile`, `openFileAtLine`, `handleEditorCommand`, `runGitCommand`, `gitCommandFinished`, `requestCommitMessage`, `requestCommit`, `reportError`, `requestRender`, `updatePreview`, `bufferClosed`, `fileSaved`, `gitWorktreeChanged`, `fileChangedOnDisk`, `activeFileChanged`, `requestGoToDefinition`, `requestGoBack`)
+**Inter-window communication:** windows send events to `Application` through the `WindowDelegate` protocol (`openFile`, `openFileAtLine`, `handleEditorCommand`, `runGitCommand`, `gitCommandFinished`, `terminalCommandFinished`, `requestCommitMessage`, `requestCommit`, `reportError`, `requestRender`, `updatePreview`, `bufferClosed`, `fileSaved`, `gitWorktreeChanged`, `fileChangedOnDisk`, `reloadActiveBufferDiscardingEdits`, `activeFileChanged`, `requestClose`, `requestGoToDefinition`, `requestGoBack`)
 
 ---
 
-## Структура файлов
+## File Structure
 
 ```
-Sources/SwimCore/                       — Библиотечный таргет: чистые модули без зависимостей (доступны юнит-тестам)
-├── PieceTable.swift                    — Структура данных текстового буфера (тестируется Tests/SwimCoreTests)
-├── DiffGutter.swift                    — Парсер номеров строк diff-гуттера (unified diff счётчики; тестируется Tests/SwimCoreTests)
-├── HunkLines.swift                     — Парсер диапазонов строк hunk'ов unified diff -u0 (новые номера для git-гуттера редактора; тестируется Tests/SwimCoreTests)
-├── Porcelain.swift                     — Парсер `status --porcelain -z` (NUL-поля, rename/copy orig) + классификация GitChangeClass (общая для git-панели и декораций; тестируется)
-├── BranchList.swift                    — Парсер `for-each-ref`-листинга пикера веток (NUL-поля, флаг remote, исключение симлинков remote HEAD; паттерны запроса: пустой — только локальные, непустой — heads+remotes; тестируется)
-├── AppLocale.swift                     — Локаль приложения: единственный источник языка системных сообщений (git-вывод, LSP handshake, env детей; value, иммутабельна на время процесса; тестируется)
-├── Locked.swift                        — Синхронный кросс-поточный mailbox-слот: значение достижимо только через withLock, незалоченных путей нет по построению
-├── BackgroundTask.swift                — Перезапускаемый однослотный mailbox фоновых результатов: newest-wins — работающий запрос не гоняется конкурентно, очередь схлопывается в последнюю (не даёт позднему завершению старой задачи перезатереть свежий результат; тестируется)
-├── StatusListSelection.swift           — Политика удержания позиций при пересборке секционного списка (выделение и visual-якорь git-панели следуют записи внутри своей секции и держат строку, когда запись уходит; тестируется)
-├── InputLine.swift                     — Политика горизонтального скролла однострочной поверхности ввода, в КЛЕТКАХ терминала (хвост в покое, окно сдвигается только когда каретка его покидает; широкий графем не режется по краю; общий рисунок и колонка каретки; тестируется)
-├── CharWidth.swift                     — Ширина графема в клетках терминала (0/1/2: нуль-ширинные/обычные/wide-CJK-эмодзи; таблица Unicode East Asian Width + бинарный поиск; единый авторитет для рендерера, панелей и скролла ввода; `displayStep(atDisplayCol:tabWidth:)` — шаг колонки с раскрытием табов, потребляется и VisualBlock; тестируется)
-├── BracketedPaste.swift                — Инкрементальный сканер payload bracketed paste (байт-за-байтом до `ESC[201~`; контент, похожий на маркер, не проглатывается; CR/CRLF → `\n` в единственной точке; тестируется)
-├── MultilineInsert.swift               — Курсор после многострочной bulk-вставки: строки вниз + графемы на последней строке (единая математика для всех paste-путей редактора; переводы строк считаются по скалярам — CRLF в Swift одна графема и Character-сравнение её пропускает; тестируется)
-├── NormalPending.swift                 — Аккумулятор отложенной последовательности normal-режима, vim-грамматика `[count1] оператор [count2] движение`: счёт до оператора (3dd) и после (d3d, перемножаются — 2d3d = 6), оператор d/y/c, g-префикс отдельным слотом (dgg не вытесняет оператор), голый 0 после оператора — движение d0; дисциплина «arm либо сохранил, либо defer убил» + сброс перехватов вне handleNormal (interruptPending/enterCommandMode — класс утечек `d : Esc d`→dd; тестируется)
-├── NormalMotion.swift                  — Движения normal-режима vim-категориями (exclusive w/b/0/h/l — dl = x; inclusive e/$; linewise j/k/gg/G): назначение от позиции+счёта (nil — дефолты G последняя/1G первая) и нормализация операторного диапазона — сортировка назад-идущих (db/dgg), adjustment «exclusive-конец в кол. 0 → конец предыдущей строки» (dw через перевод сохраняет его, db на BOL не склеивает строки, :h exclusive правило 1); clamp line-индексов до lineStart/lineEnd (вне диапазона те молча дают 0/totalLength); тестируется
-├── VisualBlock.swift                   — Математика visual-block: display-колонки ↔ графемы, срезы строк, пересборка с паддингом, Span (ширина ≥ 1 / точка вставки); единое правило принадлежности для подсветки/yank/правок; тестируется
-├── TabPolicy.swift                     — Таб-политика входящего текста: один таб = один шаг отступа языка в пробелах (та же ширина, что авто-отступ и H/L; без табов — untouched; тестируется)
-├── SyntaxTokenizer.swift              — Встроенная подсветка синтаксиса + `mergeWithLSP` (builtin-токены слоем под LSP; тестируется)
-├── MarkdownTokenizer.swift           — Markdown-подсветка с viewport-кэшем (инкрементальный скан fenced-блоков; тестируется)
-├── SemanticToken.swift               — Разделяемые value-типы LSP-протокола (`SemanticToken`, `LSPTextChange`, `LSPDiagnostic`, `LSPDefinition`; Sendable)
+Sources/SwimCore/                       — Library target: pure dependency-free modules (available to unit tests)
+├── PieceTable.swift                    — Text buffer data structure (tested by Tests/SwimCoreTests)
+├── DiffGutter.swift                    — Parser for diff gutter line numbers (unified diff counters; tested by Tests/SwimCoreTests)
+├── HunkLines.swift                     — Parser for unified diff -u0 hunk line ranges (new line numbers for the editor's git gutter; tested by Tests/SwimCoreTests)
+├── Porcelain.swift                     — Parser for `status --porcelain -z` (NUL-separated fields, rename/copy orig) + GitChangeClass classification (shared by the git panel and decorations; tested)
+├── BranchList.swift                    — Parser for the branch picker's `for-each-ref` listing (NUL-separated fields, remote flag, remote HEAD symlink exclusion; request patterns: empty — local only, non-empty — heads+remotes; tested)
+├── AppLocale.swift                     — Application locale: the single source of the system message language (git output, LSP handshake, child env; a value, immutable for the process lifetime; tested)
+├── Locked.swift                        — Synchronous cross-thread mailbox slot: the value is reachable only through withLock; unlocked paths do not exist by construction
+├── BackgroundTask.swift                — Restartable single-slot mailbox for background results: newest-wins — an in-flight request never races, the queue collapses to the latest one (prevents a late completion of an old task from clobbering a fresh result; tested)
+├── StatusListSelection.swift           — Position retention policy when rebuilding a sectioned list (the git panel's selection and visual anchor follow the record within its section and keep the row when the record goes away; tested)
+├── InputLine.swift                     — Horizontal scrolling policy for a single-line input surface, in terminal CELLS (tail at rest, the window shifts only when the caret leaves it; a wide grapheme is never cut at the edge; shared picture and caret column; tested)
+├── CharWidth.swift                     — Grapheme width in terminal cells (0/1/2: zero-width/regular/wide CJK-emoji; Unicode East Asian Width table + binary search; the single authority for the renderer, panels, and input scrolling; `displayStep(atDisplayCol:tabWidth:)` — column step with tab expansion, also consumed by VisualBlock; tested)
+├── BracketedPaste.swift                — Incremental scanner for bracketed paste payloads (byte-by-byte up to `ESC[201~`; content that merely looks like the marker is not swallowed; CR/CRLF → `\n` at a single point; tested)
+├── MultilineInsert.swift               — Cursor after a multi-line bulk paste: lines down + graphemes on the last line (unified math for all editor paste paths; line breaks are counted by scalars — CRLF is one grapheme in Swift and a Character comparison skips it; tested)
+├── NormalPending.swift                 — Accumulator for the pending normal-mode sequence, vim grammar `[count1] operator [count2] motion`: count before the operator (3dd) and after it (d3d, multiplied — 2d3d = 6), operators d/y/c, the g-prefix in a separate slot (dgg does not displace the operator), a bare 0 after an operator is the d0 motion; the discipline "arming either kept the sequence, or the defer killed it" + resetting interceptions outside handleNormal (interruptPending/enterCommandMode — the `d : Esc d`→dd leak class; tested)
+├── NormalMotion.swift                  — Normal-mode motions by vim category (exclusive w/b/0/h/l — dl = x; inclusive e/$; linewise j/k/gg/G): resolution from position+count (nil — defaults G last/1G first) and operator-range normalization — sorting of backward-going ranges (db/dgg), the "exclusive end in column 0 → end of the previous line" adjustment (dw across a line break keeps it, db at BOL does not glue lines, :h exclusive rule 1); clamping line indices to lineStart/lineEnd (out of range those silently give 0/totalLength); tested
+├── VisualBlock.swift                   — Visual-block math: display columns ↔ graphemes, line slices, reassembly with padding, Span (width ≥ 1 / insertion point); a single membership rule for highlighting/yank/edits; tested
+├── TabPolicy.swift                     — Tab policy for incoming text: one tab = one language indent step in spaces (the same width as auto-indent and H/L; no tabs — untouched; tested)
+├── SyntaxTokenizer.swift              — Built-in syntax highlighting + `mergeWithLSP` (builtin tokens as a layer under LSP; tested)
+├── MarkdownTokenizer.swift           — Markdown highlighting with a viewport cache (incremental scan of fenced blocks; tested)
+├── SemanticToken.swift               — Shared value types of the LSP protocol (`SemanticToken`, `LSPTextChange`, `LSPDiagnostic`, `LSPDefinition`; Sendable)
 
-Sources/Swim/                           — Executable-таргет (зависит от SwimCore)
-├── main.swift                    — Точка входа
+Sources/Swim/                           — Executable target (depends on SwimCore)
+├── main.swift                    — Entry point
 ├── App/
-│   ├── Application.swift         — Главный контроллер (стек окон, фокус, закрытия)
-│   ├── Spaces.swift              — Пространства окон (editor, search)
-│   ├── LayoutManager.swift       — Расчёт прямоугольников окон
-│   ├── Renderer.swift            — Diff-based рендеринг в терминал
-│   └── WindowDelegate.swift      — Протокол событий окон → Application
+│   ├── Application.swift         — Main controller (window stack, focus, closing)
+│   ├── Spaces.swift              — Window spaces (editor, search)
+│   ├── LayoutManager.swift       — Window rectangle calculation
+│   ├── Renderer.swift            — Diff-based rendering to the terminal
+│   └── WindowDelegate.swift      — Window events protocol → Application
 ├── Core/
-│   ├── Cell.swift                — Ячейка экрана + цвет
-│   ├── Theme.swift               — Палитра Tokyo Night Storm
-│   ├── Terminal.swift            — Низкоуровневый терминальный I/O
-│   ├── EditorBuffer.swift        — Состояние одного буфера + BufferManager (вкладки)
-│   ├── Input.swift               — Парсинг клавиш
-│   ├── Shell.swift               — Запуск подпроцессов (git, which)
-│   ├── PipeWriter.swift          — EPIPE-толерантный write(2) в пайпы детей (LSP-кадры, stdin Shell, FIFO InteractiveShell)
-│   ├── InteractiveShell.swift    — Интерактивный подпроцесс + credential-промпты pull/push (FIFO-канал askpass)
-│   └── IndentEngine.swift        — Отступы по типу файла (без зависимостей)
+│   ├── Cell.swift                — Screen cell + color
+│   ├── Theme.swift               — Tokyo Night Storm palette
+│   ├── Terminal.swift            — Low-level terminal I/O
+│   ├── EditorBuffer.swift        — State of a single buffer + BufferManager (tabs)
+│   ├── Input.swift               — Key parsing
+│   ├── Shell.swift               — Launching subprocesses (git, which)
+│   ├── PipeWriter.swift          — EPIPE-tolerant write(2) to child pipes (LSP frames, Shell stdin, InteractiveShell FIFO)
+│   ├── InteractiveShell.swift    — Interactive subprocess + pull/push credential prompts (askpass FIFO channel)
+│   └── IndentEngine.swift        — Indentation by file type (dependency-free)
 ├── Window/
-│   ├── Window.swift              — Базовый класс окна (cell-буфер, режимы WindowMode, командная строка, плашка HeaderPlate)
-│   ├── EditorWindow.swift        — Vim-редактор
-│   ├── EditorOperators.swift     — Operator-pending механика (EditorWindow-расширение): диспетчер ключа при взведённом операторе (удвоение dd/yy/cc, движения-аргументы, смерть на постороннем ключе), применение d/y/c по диапазонам NormalMotion (linewise с терминаторами файла и отступом cc, charwise, x со счётом), p/P со счётом
-│   ├── EditorSelection.swift     — Подсистема выделения: геометрия трёх visual-режимов (charwise/linewise/blockwise — одна валюта VisualSelection), матрица переходов v/V/Ctrl+V, завершающие операторы (yank/delete/x/вставка поверх), блоковое применение (applyBlockEdit), подсветка; состояние — per-tab в EditorBuffer
-│   ├── CommitWindow.swift        — Редактор сообщения коммита (надстройка над EditorWindow)
-│   ├── TabBarWindow.swift        — Полоса вкладок над редактором
-│   ├── FileExplorerWindow.swift  — Файловый проводник
-│   ├── GitPanelWindow.swift      — Git-панель
-│   ├── GitBranchesWindow.swift   — Выбор ветки (фильтр + переключение + создание)
-│   ├── SearchResultsWindow.swift — Результаты поиска (ввод запроса + дерево)
-│   ├── PreviewWindow.swift       — Превью файла (space поиска)
-│   ├── CommandWindow.swift       — Вывод длительных git-команд (pull/push) + ввод credential'ов
-│   ├── TerminalWindow.swift      — Встроенный терминал
-│   └── StatusBarWindow.swift     — Строка состояния
+│   ├── Window.swift              — Base window class (cell buffer, WindowMode modes, command line, HeaderPlate)
+│   ├── EditorWindow.swift        — Vim editor
+│   ├── EditorOperators.swift     — Operator-pending mechanics (EditorWindow extension): key dispatch with an armed operator (dd/yy/cc doubling, motions as arguments, death on a foreign key), applying d/y/c over NormalMotion ranges (linewise with file terminators and the cc indent, charwise, x with a count), p/P with a count
+│   ├── EditorSelection.swift     — Selection subsystem: geometry of the three visual modes (charwise/linewise/blockwise — one VisualSelection currency), the v/V/Ctrl+V transition matrix, terminating operators (yank/delete/x/paste-over), block application (applyBlockEdit), highlighting; state is per-tab in EditorBuffer
+│   ├── CommitWindow.swift        — Commit message editor (a layer over EditorWindow)
+│   ├── TabBarWindow.swift        — Tab bar above the editor
+│   ├── FileExplorerWindow.swift  — File explorer
+│   ├── GitPanelWindow.swift      — Git panel
+│   ├── GitBranchesWindow.swift   — Branch picker (filter + switch + create)
+│   ├── SearchResultsWindow.swift — Search results (query input + tree)
+│   ├── PreviewWindow.swift       — File preview (search space)
+│   ├── CommandWindow.swift       — Output of long-running git commands (pull/push) + credential input
+│   ├── TerminalWindow.swift      — Built-in terminal
+│   └── StatusBarWindow.swift     — Status bar
 └── LSP/
-    └── LSPClient.swift           — Клиент Language Server Protocol
+    └── LSPClient.swift           — Language Server Protocol client
 
-Tests/SwimCoreTests/                    — swift-testing (`swift test`): регрессионные fixture-ы чистых модулей SwimCore
-├── DiffGutterTests.swift               — Форматы unified diff: сообщение коммита на +/-/пробел, combined merge (@@@), untracked, multi-file, \\ No newline, ширина гуттера
-├── HunkLinesTests.swift                — Диапазоны новых строк hunk'ов -u0: чистые добавления, новый файл, чистое удаление (+c,0), заголовок с контекстом функции, @@@ и контентные @@, rename без правок, multi-file
-├── PorcelainTests.swift                — Porcelain -z: обычные записи, rename/copy orig-поле, сырые пути, короткие поля, приоритет классификации (MM/AM → unstaged, A /?? → added, M  → staged)
-├── BranchListTests.swift               — Листинг пикера: 4 NUL-поля, порядок git'а дословно, флаг remote, исключение `refs/remotes/<remote>/HEAD`, паттерны запроса (пустой — локальные, непустой — heads+remotes, экранирование glob)
-├── AppLocaleTests.swift                — Локаль: гарантированное английское написание, region-qualified id, bare-язык удваивает код в регион
-├── InputLineTests.swift                — Скролл строки ввода в клетках: хвост в покое, Home раскрывает голову переполненного текста, CJK/эмодзи по 2 клетки и не режутся по краю, каретка всегда в окне (property-инвариант по узким/широким текстам)
-├── CharWidthTests.swift                — Ширина графемов: кириллица 1, CJK/эмодзи/флаги 2, нуль-ширинные 0, границы wide-диапазонов
-├── PieceTableTests.swift               — delete через границы кусков (форма баги координат), сплиты, clamp за концом, детерминированная property-кампания против байтового эталона; word-примитивы (e/w-хвост буфера, CRLF, границы)
-└── NormalMotionTests.swift             — Диапазоны операторов: linewise в обе стороны, inclusive→exclusive, сортировка назад-идущих (db/d0/dh), adjustment exclusive-конца в кол. 0 (dw сохраняет перевод, db на BOL не склеивает), пустые диапазоны nil, дефолты gg/G против явного счёта
+Tests/SwimCoreTests/                    — swift-testing (`swift test`): regression fixtures for SwimCore's pure modules
+├── DiffGutterTests.swift               — Unified diff formats: commit message on +/-/space, combined merge (@@@), untracked, multi-file, \\ No newline, gutter width
+├── HunkLinesTests.swift                — New-line ranges of -u0 hunks: pure additions, new file, pure deletion (+c,0), header with function context, @@@ vs content @@, rename without edits, multi-file
+├── PorcelainTests.swift                — Porcelain -z: regular records, rename/copy orig field, raw paths, short fields, classification precedence (MM/AM → unstaged, A /?? → added, M  → staged)
+├── BranchListTests.swift               — Picker listing: 4 NUL-separated fields, git's order verbatim, remote flag, exclusion of `refs/remotes/<remote>/HEAD`, request patterns (empty — local, non-empty — heads+remotes, glob escaping)
+├── AppLocaleTests.swift                — Locale: guaranteed English spelling, region-qualified id, bare language doubles the code into a region
+├── InputLineTests.swift                — Input line scrolling in cells: tail at rest, Home reveals the head of overflowing text, CJK/emoji take 2 cells and are never cut at an edge, the caret is always in the window (a property-based invariant over narrow/wide texts)
+├── CharWidthTests.swift                — Grapheme widths: Cyrillic 1, CJK/emoji/flags 2, zero-width 0, wide-range boundaries
+├── PieceTableTests.swift               — delete across piece boundaries (the coordinate bug's shape), splits, clamping past the end, a deterministic property campaign against a byte-accurate reference; word primitives (e/w at the buffer tail, CRLF, boundaries)
+├── NormalMotionTests.swift             — Operator ranges: linewise in both directions, inclusive→exclusive, sorting of backward-going ranges (db/d0/dh), the exclusive-end-in-column-0 adjustment (dw keeps the line break, db at BOL does not glue), empty ranges nil, gg/G defaults vs an explicit count
+├── BackgroundTaskTests.swift           — Restartable background task: newest-wins hand-off — a run publishes exactly once, the slot is emptied by consume, a late old completion never clobbers a fresh result
+├── BracketedPasteTests.swift           — Paste scanner: the payload ends at the marker, content that merely starts like it survives, CR/CRLF → `\n`
+├── MarkdownTokenizerTests.swift        — Markdown structure recognition (heading/fence/rule) + the warm-cache-equals-cold-scan contract
+├── MultilineInsertTests.swift          — Cursor after a bulk insert: whole lines down + graphemes on the final line (never bytes — a CJK/emoji tail is one column-step), empty lines, a dangling `\n`
+├── NormalPendingTests.swift            — Pending accumulator: count slots before/after the operator (multiplication — 2d3d = 6), the g-prefix in a separate slot, explicit consumption, one reset
+├── StatusListSelectionTests.swift      — Sectioned-list selection: the cursor follows the record within its section and holds the row when it moves to another section or vanishes
+├── SyntaxTokenizerTests.swift          — Python string prefixes (f/r/b/u) open the string token; builtin strings absorb nested LSP interpolation tokens (pyright f-strings)
+├── TabPolicyTests.swift                — One tab = one indent step in spaces; tab-free text returns identical, untouched
+└── VisualBlockTests.swift              — Block math in display cells: membership by cell intersection, a straddling tab splits (uncovered cells become spaces), a wide glyph is atomic, both corners inclusive
 ```
 
-**Конвенция тестирования:** исполняемый таргет SPM нельзя импортировать из тестов, поэтому чистая логика без побочных эффектов выделяется в библиотечный таргет `SwimCore` (по образцу `IndentEngine` — dependency-free), а её контракты закрепляются fixture-ами в `Tests/SwimCoreTests` (swift-testing, `@Test`/`#expect`). Запуск: `swift test`. Оконная логика (UI, delegates) тестами не покрывается — верифицируется сборкой и вручную.
+**Testing convention:** an SPM executable target cannot be imported from tests, so pure side-effect-free logic is factored out into the library target `SwimCore` (modeled after `IndentEngine` — dependency-free), and its contracts are pinned by fixtures in `Tests/SwimCoreTests` (swift-testing, `@Test`/`#expect`). Run with: `swift test`. Window logic (UI, delegates) is not covered by tests — it is verified by building and by hand.
 
 ---
 
-## Детальное описание модулей
+## Detailed Module Description
 
-### Core/Cell.swift — Ячейка экрана
+### Core/Cell.swift — Screen Cell
 
-**`Color`** (enum) — цвет терминала. Поддерживает 16 стандартных ANSI-цветов + 24-bit RGB через `Color.rgb(r:g:b:)`. Имеет вычисляемые свойства `ansiFG` и `ansiBG` — ANSI-escape последовательности для установки цвета текста и фона.
+**`Color`** (enum) — a terminal color. Supports the 16 standard ANSI colors + 24-bit RGB via `Color.rgb(r:g:b:)`. Has the computed properties `ansiFG` and `ansiBG` — ANSI escape sequences for setting the text and background color.
 
-Ширина графемов в клетках (`Character.displayWidth`/`isWide`, таблица Unicode East Asian Width) вынесена в SwimCore (CharWidth.swift) — единый авторитет для рендерера, панелей и скролла поверхностей ввода; тестируется в Tests/SwimCoreTests.
+Grapheme width in cells (`Character.displayWidth`/`isWide`, Unicode East Asian Width table) is factored out into SwimCore (CharWidth.swift) — the single authority for the renderer, panels, and input surface scrolling; tested in Tests/SwimCoreTests.
 
-**`Cell`** (struct, Equatable) — одна ячейка экрана. Содержит:
-- `char: Character` — отображаемый символ
-- `fg/bg: Color` — цвета текста и фона
-- `bold/dim/underline/reverse: Bool` — текстовые атрибуты
-- `wideContinuation: Bool` — true если ячейка — правая половина широкого символа (CJK/emoji)
+**`Cell`** (struct, Equatable) — a single screen cell. Contains:
+- `char: Character` — the displayed character
+- `fg/bg: Color` — text and background colors
+- `bold/dim/underline/reverse: Bool` — text attributes
+- `wideContinuation: Bool` — true if the cell is the right half of a wide character (CJK/emoji)
 
-Фабричный метод `Cell.colored(_:fg:bg:bold:dim:underline:reverse:)` создаёт ячейку с заданными параметрами.
+The factory method `Cell.colored(_:fg:bg:bold:dim:underline:reverse:)` creates a cell with the given parameters.
 
 ---
 
-### Core/Theme.swift — Цветовая палитра
+### Core/Theme.swift — Color Palette
 
-Безэкземплярный enum `Theme` — пространство имён для статических цветов Tokyo Night Storm:
+The caseless enum `Theme` is a namespace for the static Tokyo Night Storm colors:
 
-| Свойство    | HEX       | Назначение              |
+| Property    | HEX       | Purpose                 |
 |-------------|-----------|-------------------------|
-| `bg`        | `#24283b` | Основной фон            |
-| `bgDark`    | `#1f2335` | Фон боковых панелей     |
-| `bgHighlight` | `#292e42` | Фон выделения         |
-| `fg`        | `#c0caf5` | Основной текст          |
-| `fgDark`    | `#a9b1d6` | Вторичный текст         |
-| `comment`   | `#565f89` | Комментарии             |
-| `blue`      | `#7aa2f7` | Функции                 |
-| `blue1`     | `#2ac3de` | Типы                    |
-| `blue5`     | `#89ddff` | Операторы               |
-| `green`     | `#9ece6a` | Строки                  |
-| `magenta`   | `#bb9af7` | Ключевые слова          |
-| `orange`    | `#ff9e64` | Числа/параметры         |
+| `bg`        | `#24283b` | Main background         |
+| `bgDark`    | `#1f2335` | Side panel background   |
+| `bgHighlight` | `#292e42` | Selection background  |
+| `fg`        | `#c0caf5` | Main text               |
+| `fgDark`    | `#a9b1d6` | Secondary text          |
+| `comment`   | `#565f89` | Comments                |
+| `blue`      | `#7aa2f7` | Functions               |
+| `blue1`     | `#2ac3de` | Types                   |
+| `blue5`     | `#89ddff` | Operators               |
+| `green`     | `#9ece6a` | Strings                 |
+| `magenta`   | `#bb9af7` | Keywords                |
+| `orange`    | `#ff9e64` | Numbers/parameters      |
 
 ---
 
-### Core/Terminal.swift — Терминальный I/O
+### Core/Terminal.swift — Terminal I/O
 
-Синглтон `Terminal.shared` с `nonisolated(unsafe)` для Swift 6.
+The `Terminal.shared` singleton is marked `nonisolated(unsafe)` for Swift 6.
 
-**Настройка (`setup()`):**
-1. Сохраняет текущие настройки termios
-2. Переключает терминал в raw-режим (отключает echo, канонический режим, обработку сигналов)
-3. Получает размер терминала через `ioctl(TIOCGWINSZ)`
-4. Переключает на альтернативный экранный буфер (`\e[?1049h`)
-5. Включает bracketed paste mode (`\e[?2004h`) — вставка из системного буфера приходит одним куском в обёртке `ESC[200~…ESC[201~`, а не потоком нажатий (поток нажатий ломал отступы: каждый перевод строки вставки проходил через авто-отступ поверх собственных отступов текста, и отступ накапливался строка за строкой)
-6. Скрывает курсор (`\e[?25l`)
-7. Устанавливает обработчик SIGWINCH (для отслеживания изменения размера)
+**Setup (`setup()`):**
+1. Saves the current termios settings
+2. Switches the terminal to raw mode (disables echo, canonical mode, signal processing)
+3. Gets the terminal size via `ioctl(TIOCGWINSZ)`
+4. Switches to the alternate screen buffer (`\e[?1049h`)
+5. Enables bracketed paste mode (`\e[?2004h`) — a paste from the system clipboard arrives as a single chunk wrapped in `ESC[200~…ESC[201~` instead of a stream of key presses (a key press stream broke indentation: every pasted line break went through auto-indent on top of the text's own indentation, and the indent accumulated line by line)
+6. Clears the screen and homes the cursor (`\e[2J`, `\e[H`) — the cursor is not hidden here; its visibility is decided per frame by the renderer (`showCursor`)
+7. Installs a SIGWINCH handler (to track resize events)
 
-**Восстановление (`restore()`):** Возвращает оригинальные настройки termios, выключает bracketed paste (`\e[?2004l`), переключает обратно на основной буфер, показывает курсор.
+**Restore (`restore()`):** Restores the original termios settings, disables bracketed paste (`\e[?2004l`), switches back to the main buffer, shows the cursor.
 
-**Ввод:**
-- `readByte() -> UInt8?` — читает один байт из stdin (блокирующий; EINTR от SIGWINCH ретраится — resize во время чтения, в т.ч. длинной bracketed-paste вставки, не обрывает ввод)
-- `bytesAvailable() -> Bool` — проверяет наличие данных через `poll()` с таймаутом 5мс
+**Input:**
+- `readByte() -> UInt8?` — reads one byte from stdin (blocking; EINTR from SIGWINCH is retried — a resize during a read, including a long bracketed-paste insertion, does not break input)
+- `bytesAvailable() -> Bool` — checks for available data via `poll()` with a 5 ms timeout
 
-**Вывод (буферизованный):**
-- `moveCursor(row:col:)`, `setFG()`, `setBG()`, `setBold()`, `setDim()`, `setUnderline()`, `setReverse()`, `resetAttributes()`, `writeChar()` — добавляют ANSI-escape последовательности в `outputBuffer`
-- `flush()` — записывает весь буфер в stdout одной системным вызовом через `write(STDOUT_FILENO, ...)`, затем очищает буфер
+**Output (buffered):**
+- `moveCursor(row:col:)`, `setFG()`, `setBG()`, `setBold()`, `setDim()`, `setUnderline()`, `setReverse()`, `resetAttributes()`, `writeChar()` — append ANSI escape sequences to `outputBuffer`
+- `flush()` — writes the entire buffer to stdout in a single system call via `write(STDOUT_FILENO, ...)`, then clears the buffer
 
-Все записи в терминал идут через `write(STDOUT_FILENO, ...)` напрямую, минуя stdio буферизацию.
+All terminal writes go through `write(STDOUT_FILENO, ...)` directly, bypassing stdio buffering.
 
 ---
 
-### SwimCore/PieceTable.swift — Текстовый буфер
+### SwimCore/PieceTable.swift — Text Buffer
 
-Piece Table — структура данных для текстовых редакторов (используется в VS Code). Идеальна для частых вставок/удалений: исходный буфер неизменяем, все добавления аппендятся в отдельный буфер. Живёт в таргете SwimCore (чистая логика без зависимостей) и покрыта юнит-тестами.
+Piece Table is a data structure for text editors (used in VS Code). Ideal for frequent inserts/deletes: the original buffer is immutable, all additions are appended to a separate buffer. It lives in the SwimCore target (pure dependency-free logic) and is covered by unit tests.
 
-**delete — двухфазный (план → применение).** Фаза 1 планирует разрезы по ИСХОДНОЙ раскладке кусков в исходных координатах; фаза 2 применяет их с конца. Мутировать куски в процессе обхода нельзя: каждый трим сдвигает все последующие байты влево, и `offset += deleteLen` в исходных координатах перестаёт совпадать с уже ужатыми кусками (буферными координатами) — обход пропускал куски внутри диапазона и резал байты ЗА его пределами при сходящейся бухгалтерии длин (тихая порча контента; поймана рандомизированным стресс-тестом редакторских сессий — dd через границы кусков после активного редактирования). Форма баги закреплена в PieceTableTests.
+**delete is two-phase (plan → apply).** Phase 1 plans the cuts against the ORIGINAL piece layout in original coordinates; phase 2 applies them from the end. Mutating pieces during the traversal is not allowed: every trim shifts all subsequent bytes to the left, and `offset += deleteLen` in original coordinates no longer matches the already-shrunk pieces (buffer coordinates) — the traversal skipped pieces inside the range and cut bytes OUTSIDE it while the length bookkeeping still converged (silent content corruption; caught by a randomized stress test of editing sessions — dd across piece boundaries after active editing). The bug's shape is pinned in PieceTableTests.
 
-**Принцип работы:**
+**How it works:**
 
-Два байтовых буфера:
-- `original: [UInt8]` — исходное содержимое файла (никогда не изменяется)
-- `addBuffer: [UInt8]` — append-only буфер для всех вставок
+Two byte buffers:
+- `original: [UInt8]` — the original file contents (never modified)
+- `addBuffer: [UInt8]` — append-only buffer for all insertions
 
-Массив `pieces: [Piece]` — упорядоченный список дескрипторов, каждый из которых ссылается на диапазон байт в одном из буферов. Документ — это конкатенация всех pieces.
+The `pieces: [Piece]` array is an ordered list of descriptors, each referencing a byte range in one of the buffers. The document is the concatenation of all pieces.
 
-**Пример:**
+**Example:**
 ```
 original: "Hello World"
 addBuffer: ", beautiful"
@@ -213,431 +222,434 @@ pieces: [
     Piece(start: 0, length: 11, isAdd: true),    // ", beautiful"
     Piece(start: 5, length: 6, isAdd: false),    // " World"
 ]
-→ Результат: "Hello, beautiful World"
+→ Result: "Hello, beautiful World"
 ```
 
-**Индекс строк (`lineStarts: [Int]`):**
-Массив байтовых смещений начала каждой строки. Построение:
-1. При инициализации — полный скан всех байт через `withUnsafeBufferPointer` + `reserveCapacity` (оптимизация для больших файлов)
-2. При вставке/удалении — перестройка только от точки изменения (`rebuildLineIndex(fromOffset:)`)
-3. Поиск строки по байтовому смещению — бинарный поиск O(log n)
+**Line index (`lineStarts: [Int]`):**
+An array of byte offsets of each line's start. Construction:
+1. On initialization — a full scan of all bytes via `withUnsafeBufferPointer` + `reserveCapacity` (an optimization for large files)
+2. On insert/delete — rebuilding only from the change point (`rebuildLineIndex(fromOffset:)`)
+3. Finding a line by byte offset — binary search, O(log n)
 
-**Кеш строки:**
-`cachedLineNum` / `cachedLineStr` — кеш последней декодированной строки. `getLine()` проверяет кеш перед созданием новой String. Инвалидируется при insert/delete. Это критически важно: одна строка может вызываться через `getLine()`, `lineCharLength()`, `charToByteOffsetInLine()` в одном кадре.
+**Line cache:**
+`cachedLineNum` / `cachedLineStr` — a cache of the last decoded line. `getLine()` checks the cache before creating a new String. Invalidated on insert/delete. This is critical: a single line may be requested via `getLine()`, `lineCharLength()`, `charToByteOffsetInLine()` within one frame.
 
-**UTF-8 поддержка:**
-Внутреннее хранение — байты. Курсор работает в символьных позициях. Конвертация:
-- `charToByteOffsetInLine(line:charIndex:)` — символьный индекс → байтовое смещение
-- `byteToCharOffsetInLine(line:byteOffset:)` — байтовое смещение → символьный индекс
-- `lineCharLength(line:)` — длина строки в символах (не байтах)
+**UTF-8 support:**
+Internal storage is bytes. The cursor works in character positions. Conversion:
+- `charToByteOffsetInLine(line:charIndex:)` — character index → byte offset
+- `byteToCharOffsetInLine(line:byteOffset:)` — byte offset → character index
+- `lineCharLength(line:)` — line length in characters (not bytes)
 
-**Ключевые операции:**
-- `insert(_:at:)` — O(1) append в addBuffer + O(pieces) для вставки Piece + O(n) перестройка индекса от точки вставки
-- `delete(at:length:)` — O(pieces) для модификации/удаления Pieces + O(n) перестройка индекса
-- `getLine(_:)` — O(1) lookup в lineStarts + O(piece) для сборки байт + декодирование UTF-8
-- `search(_:from:)` — O(n) побайтовый поиск с backtracking
+**Key operations:**
+- `insert(_:at:)` — O(1) append to addBuffer + O(pieces) to insert a Piece + O(n) index rebuild from the insertion point
+- `delete(at:length:)` — O(pieces) to modify/remove Pieces + O(n) index rebuild
+- `getLine(_:)` — O(1) lookup in lineStarts + O(piece) to assemble bytes + UTF-8 decoding
+- `search(_:from:)` — O(n) byte-by-byte search with backtracking
 
 ---
 
-### Core/Input.swift — Парсинг ввода
+### Core/Input.swift — Input Parsing
 
-**`Key`** (enum) — представляет нажатие клавиши:
-- `.char(Character)` — печатный символ
+**`Key`** (enum) — represents a key press:
+- `.char(Character)` — a printable character
 - `.escape` — Escape
 - `.enter` / `.backspace` / `.delete` / `.tab`
-- `.up` / `.down` / `.left` / `.right` — стрелки
-- `.home` / `.end` / `.pageUp` / `.pageDown`
-- `.ctrl(Character)` — Ctrl+буква (байты 1-26)
+- `.up` / `.down` / `.left` / `.right` — arrow keys
+- `.ctrlUp` / `.ctrlDown` / `.ctrlLeft` / `.ctrlRight` — Ctrl+arrows
+- `.shiftLeft` / `.shiftRight` — Shift+Left/Right (Shift+Up/Down decode as plain arrows)
+- `.home` / `.end` / `.pageUp` / `.pageDown` / `.insert`
+- `.ctrl(Character)` — Ctrl+letter (bytes 1-26)
 - `.f(Int)` — F1-F12
 - `.shiftTab` — Shift+Tab
-- `.paste(String)` — текст bracketed paste (payload между `ESC[200~` и `ESC[201~`; переводы строк уже нормализованы в `\n`)
-- `.unknown(String)` — нераспознанная последовательность
+- `.paste(String)` — bracketed paste text (the payload between `ESC[200~` and `ESC[201~`; line breaks already normalized to `\n`)
+- `.unknown(String)` — an unrecognized sequence
 
-**`Key.parse(from:)`** — читает байты из терминала и распознаёт:
-- Одиночные байты (печатные, Ctrl-комбинации)
-- CSI-последовательности (`\e[...`) — сканируются целиком (строка параметров + финальный байт), затем диспетчер `csiKey(params:final:)` маппит пару в клавишу: стрелки и tilde-коды (Home/End/PageUp/PageDown/Delete/Insert/F9-F12), модифицированные стрелки xterm (`1;5X`) и rxvt (`5X`, `;5X`), CSI u (`13u` = Enter)
-- Bracketed paste (`\e[200~ … \e[201~`) — payload читается блокирующим циклом до маркера конца через инкрементальный сканер `BracketedPaste.Scanner` (SwimCore, покрыт тестами) и возвращается как один `.paste(String)`; EOF посреди вставки (битый поток) отдаёт накопленный `partialText`
-- SS3-последовательности (`\eO...`) — альтернативные коды F1-F4
-- Shift-модификаторы (`\e[1;2...`) — Shift+Arrow, Shift+Tab
-- Многобайтные UTF-8 символы
+**`Key.parse(from:)`** — reads bytes from the terminal and recognizes:
+- Single bytes (printable, Ctrl combinations)
+- CSI sequences (`\e[...`) — scanned in full (parameter string + final byte), then the `csiKey(params:final:)` dispatcher maps the pair to a key: arrows and tilde codes (Home/End/PageUp/PageDown/Delete/Insert/F9-F12), modified xterm arrows (`1;5X`) and rxvt (`5X`, `;5X`), CSI u (`13u` = Enter)
+- Bracketed paste (`\e[200~ … \e[201~`) — the payload is read by a blocking loop up to the end marker via the incremental scanner `BracketedPaste.Scanner` (SwimCore, test-covered) and returned as a single `.paste(String)`; EOF mid-paste (a broken stream) returns the accumulated `partialText`
+- SS3 sequences (`\eO...`) — arrows, Home/End, and alternative F1-F4 codes
+- Shift modifiers (`\e[1;2...`) — Shift+Left/Right, Shift+Tab
+- Multi-byte UTF-8 characters
 
-Маршрутизация `.paste` по окнам: редактор вставляет текст дословно (без авто-отступов) — insert mode под курсором, normal как `p`, visual/visual-line заменой выделения (один undo-шаг, заменённое — в yank-регистр, как visual `p` в vim), command mode — в строку команды; однострочные поверхности (командная строка, фильтры веток, промпт терминала) принимают paste с выброшенными переводами строк (`Window.pasteFlatLine`). В терминалах без поддержки `?2004` вставка деградирует до старого потока нажатий.
-
----
-
-### SwimCore/BracketedPaste.swift — Сканер bracketed paste
-
-Чистый инкрементальный сканер payload между маркерами `ESC[200~`/`ESC[201~`. Байты приходят по одному из блокирующего чтения tty, поэтому конец матчится инкрементально: контент, лишь начинающийся как маркер (одиночный ESC, `ESC[2`), остаётся контентом; частичный матч перед реальным маркером не теряется. CR/CRLF (что terminals реально шлют внутри вставки) нормализуются в `\n` в единственном месте — на выходе сканера, так что контракт `.paste(String)` «переводы строк уже `\n`» держится по построению. EOF до маркера — `partialText` (payload + байты частичного матча).
-
-### SwimCore/MultilineInsert.swift — Курсор после многострочной вставки
-
-`cursorDelta(for:)` — чистая математика: сколько целых строк вниз и сколько графем-кластеров («символов» в единицах колонки курсора — никогда байтов: хвост из CJK/emoji — 2+ байта, но один шаг колонки) на последней строке. Используется всеми тремя путями вставки редактора (insert-вставка, `p`/paste-after, замена выделения), так что позиционирование курсора не может разъехаться между ними. Покрыт тестами (CJK/emoji-хвосты, пустые строки, незакрытый `\n`).
+Routing of `.paste` to windows: the editor inserts the text verbatim (no auto-indent) — insert mode at the cursor, normal as `p`, visual/visual-line as selection replacement (a single undo step, the replaced text goes to the yank register, like visual `p` in vim), command mode — into the command line; single-line surfaces (the command line, branch filters, the terminal prompt) accept the paste with line breaks stripped (`Window.pasteFlatLine`). In terminals without `?2004` support, pasting degrades to the old key press stream.
 
 ---
 
-### Core/IndentEngine.swift — Отступ при переводе строки
+### SwimCore/BracketedPaste.swift — Bracketed Paste Scanner
 
-Чистая функция `plan(...)` без зависимостей от буфера/терминала: по тексту слева/справа от курсора, полной строке, ширине отступа и замыканию `lineAbove(n)` (n-я строка сверху, nil за началом файла) возвращает форму `Shape` — как расложить строки после Enter. Лексика уровня vim `smartindent`/python pep8-indent:
+A pure incremental scanner for the payload between the `ESC[200~`/`ESC[201~` markers. Bytes arrive one at a time from blocking tty reads, so the end marker is matched incrementally: content that merely starts like the marker (a lone ESC, `ESC[2`) stays content; a partial match before the real marker is not lost. CR/CRLF (which terminals actually send inside pastes) is normalized to `\n` in a single place — at the scanner's output — so the `.paste(String)` contract "line breaks are already `\n`" holds by construction. EOF before the marker yields `partialText` (payload + partial-match bytes).
 
-- **Обычный перенос** — отступ текущей строки +sw, если полная строка кончается на `{`/`(`/`:` (суффикс именно полной строки, поэтому `a ?: b` и разрывы посреди строки поведение не меняют)
-- **Перенос перед `)`/`}`** — скобка уезжает на свою строку с отступом строки, где живёт **парная открывающая** (обратный скан баланса `(`/`{` vs `)`/`}` от позиции курсора; fallback −sw при непарной). Выравнивание по открывающей, а не «минус один отступ», переживает ручные перепроме́ты и многострочные вызовы. Существующий ведущий отступ между курсором и скобкой не удваивается — план возвращает только добивку (`bracketPad = max(отступ_открывающей − существующий, 0)`, итог = max из них), поэтому Enter внутри индента строки-со-скобкой идемпотентен
-- **Свежая строка для курсора** вставляется только если текст слева кончается на `{`/`(` (тело/аргументы ещё будут: `if x {|}` → курсор@+sw, `}`@base; `foo(a|)` → скобка вниз, курсор едет строкой скобки — паритет с VSCode/IntelliJ)
-- Одно undo-действие на весь вставленный текст (`\n` + отступы)
+### SwimCore/MultilineInsert.swift — Cursor After Multi-line Paste
 
-Ограничения лексики (как у vim-движков): скобки в строках/комментариях, `[`/`]` не участвуют, сигнатуры замыканий (`{ x in|}`) не распознаются. Контракт `plan(...)` рассчитан на замену провайдером — treesitter или LSP `onTypeFormatting` — без правки вызывающих.
+`cursorDelta(for:)` — pure math: how many whole lines down and how many grapheme clusters ("characters" in cursor-column units — never bytes: a CJK/emoji tail is 2+ bytes but a single column step) on the last line. Used by all three editor paste paths (insert-paste, `p`/paste-after, selection replacement), so cursor positioning cannot diverge between them. Covered by tests (CJK/emoji tails, empty lines, a dangling `\n`).
 
 ---
 
-### SwimCore/SyntaxTokenizer.swift — Встроенная подсветка
+### Core/IndentEngine.swift — Indentation on Line Break
 
-Линейный токенизатор с пер-языковыми профилями: полный набор (keywords + строки + комментарии) для Swift, C, C++, C#, Python, Rust, Go, JavaScript/TypeScript, Dart; comment-only профиль для shell, YAML/TOML, Ruby; JSON — отдельным посимвольным проходом (Markdown выделен в `MarkdownTokenizer`).
+A pure `plan(...)` function with no dependencies on the buffer/terminal: given the text to the left/right of the cursor, the full line, the indent width, and the `lineAbove(n)` closure (the n-th line above, nil past the start of the file), it returns a `Shape` — how to lay out lines after Enter. Vocabulary at the level of vim `smartindent`/python pep8-indent:
 
-**`SemanticToken`** — токен с полями `line`, `startChar` (grapheme-индекс), `length`, `type`, `modifiers`.
+- **Regular break** — the current line's indent +sw if the full line ends with `{`/`(`/`:` (the suffix of the full line specifically, so `a ?: b` and mid-line breaks do not change the behavior)
+- **Break before `)`/`}`** — the bracket moves to its own line with the indent of the line where the **matching opener** lives (a backward balance scan of `(`/`{` vs `)`/`}` from the cursor position; fallback −sw when unpaired). Aligning to the opener rather than "one indent less" survives manual re-indents and multi-line calls. The existing leading indent between the cursor and the bracket is not doubled — the plan returns only the top-up (`bracketPad = max(opener_indent − existing, 0)`, the result = the max of the two), so Enter inside the indent of the bracket line is idempotent
+- **A fresh line for the cursor** is inserted only if the text to the left ends with `{`/`(` (the body/arguments are yet to come: `if x {|}` → cursor@+sw, `}`@base; `foo(a|)` → the bracket goes down, the cursor rides the bracket's line — parity with VSCode/IntelliJ)
+- One undo action for the entire inserted text (`\n` + indents)
 
-**`tokenize(chars:lineNum:keywords:syntax:initialState:literals:)`** — парсит одну строку:
-- Однострочный комментарий по профилю языка (`//` или `#`; shell — только на границе слова)
-- `/* */` — блочный комментарий (в пределах строки)
-- Многострочные строки по правилам профиля (`"""`, `'''`, `` ` ``, `@"`, rust-`"`); незакрытый опенер возвращает `endState .active(ruleIndex:)` — следующий вызов продолжает строку с колонки 0
-- `"..."` / `'...'` — строки с поддержкой escape-символов; в Python f/r/b/u-префикс (`f"x"`, `rb'…'`) — часть строкового токена (требуется непосредственная примыкаемость кавычки: `f "x"` — идентификатор + строка). Escape учитывается и в raw-литералах — как в CPython, raw-строка не может заканчиваться обратным слешем
-- Числа (включая hex-цифры)
-- Идентификаторы → классифицируются как keyword/literal/type/function/variable (+ soft keywords `match`/`case` в statement-позиции)
-- Операторы (`+-*/=<>!&|^~%?:@#`)
-
-**`mergeWithLSP(builtin:lsp:)`** — послойный мердж одной строки: builtin-токены заполняют промежутки между LSP-токенами (LSP авторитетен на пересечениях), кроме строковых спанов — LSP-токены, вложенные в builtin-строку (интерполяции f-строк от pyright), поглощаются ею; частичное пересечение по-прежнему вытесняет builtin-токен. Результат отсортирован по `startChar`, без пересечений. Тестируется Tests/SwimCoreTests.
-
-Для файлов >50K строк встроенная подсветка отключается (флаг `useBuiltinTokens`).
-
-Для JSON-файлов используется отдельный быстрый рендеринг без токенов — посимвольная раскраска прямо в `EditorWindow.update()`:
-- Строки в кавычках → зелёный (`Theme.green`)
-- `{`, `}`, `[`, `]`, `,`, `:` → белый (`Theme.fg`)
-- Всё остальное → оранжевый (`Theme.orange`)
+Vocabulary limitations (as with vim engines): brackets inside strings/comments, `[`/`]` do not participate, closure signatures (`{ x in|}`) are not recognized. The `plan(...)` contract is designed to be replaced by a provider — treesitter or LSP `onTypeFormatting` — without touching the callers.
 
 ---
 
-### SwimCore/MarkdownTokenizer.swift — Markdown-подсветка
+### SwimCore/SyntaxTokenizer.swift — Built-in Highlighting
 
-Потоковый проход по структуре документа (не по-строчный, как кодовый токенизатор): состояние fenced-блоков живёт между строками. `MarkdownTokenizer.Cache` — непрозрачный вне модуля viewport-кэш: помнит позицию последнего рендера и состояние блоков на ней, скролл в пределах 200 строк продолжает скан инкрементально, иначе — с нуля. `isMarkdown(ext:)` — маршрутизация расширений. Тестируется Tests/SwimCoreTests (в т.ч. эквивалентность «тёплого» кэша холодному скану).
+A linear tokenizer with per-language profiles: the full set (keywords + strings + comments) for Swift, C, C++, C#, Python, Rust, Go, JavaScript/TypeScript, Dart; a comment-only profile for shell, YAML/TOML, Ruby; JSON via a separate character-by-character pass (Markdown is factored out into `MarkdownTokenizer`).
 
----
+**`SemanticToken`** — a token with the fields `line`, `startChar` (grapheme index), `length`, `type`, `modifiers`.
 
-### Window/Window.swift — Базовый класс окна
+**`tokenize(chars:lineNum:keywords:syntax:initialState:literals:)`** — parses a single line:
+- A single-line comment per the language profile (`//` or `#`; shell — only at a word boundary)
+- `/* */` — a block comment (within a single line)
+- Multi-line strings per the profile's rules (`"""`, `'''`, `` ` ``, `@"`, rust-`"`); an unclosed opener returns `endState .active(ruleIndex:)` — the next call resumes the line from column 0
+- `"..."` / `'...'` — strings with escape support; in Python the f/r/b/u prefix (`f"x"`, `rb'…'`) is part of the string token (the quote must be immediately adjacent: `f "x"` is an identifier + a string). Escapes are honored in raw literals too — as in CPython, a raw string cannot end with a backslash
+- Numbers (including hex digits)
+- Identifiers → classified as keyword/literal/type/function/variable (+ soft keywords `match`/`case` in statement position)
+- Operators (`+-*/=<>!&|^~%?:@#`)
 
-Абстрактный базовый класс для всех UI-панелей. Реализует виртуальный cell-буфер, единую модель режимов, командную строку и механизм плашки-заголовка.
+**`mergeWithLSP(builtin:lsp:)`** — a layered merge of a single line: builtin tokens fill the gaps between LSP tokens (LSP wins on overlaps), except for string spans — LSP tokens nested inside a builtin string (f-string interpolations from pyright) are absorbed by it; a partial overlap still displaces the builtin token. The result is sorted by `startChar`, with no overlaps. Tested by Tests/SwimCoreTests.
 
-**Cell-буфер:** Плоский массив `[Cell]` размером `width * height`. Индекс ячейки = `row * width + col`.
+For files larger than 50K lines, built-in highlighting is disabled (the `useBuiltinTokens` flag).
 
-**Режимы (`WindowMode`)** — принадлежат окну; каждое объявляет доступные через `availableModes`:
-- `.menu` — стандартное поведение списковых окон (git-панель, проводник, поиск): j/k по строкам, Enter — основное действие («провалиться»), остальные action-клавиши — специфичные для конкретного окна
-- `.normal` / `.insert` / `.visual` / `.visualLine` / `.visualBlock` — редакторские; списковые окна переиспользуют `.visualLine` для построчного выделения
-- `.command` — командная строка, принадлежащая окну, которое её открыло
-
-`mode` — вычисляемое свойство над приватным хранилищем; `EditorWindow` переопределяет его, храня режим per-tab (в `EditorBuffer`).
-
-**Командная строка (методы базового класса):**
-- `enterCommandMode(prefill:)` / `exitCommandMode()` — вход/выход (префилл помещает готовый текст и ставит курсор в конец); выход возвращает в `.menu` (если окно menu-типа) либо `.normal`
-- `handleCommandModeKey(_:)` — общий обработчик клавиш: буфер набирается через статус-бар с видимым курсором (`commandCursorPos` — стрелки/Home/End двигают, Delete удаляет вперёд, backspace на пустом буфере выходит из режима), Enter — единственная перехваченная клавиша — исполняет команду против окна-владельца, Esc отменяет. Выход из режима происходит **до** исполнения — `:q` не оставляет закрытому окну залипший `.command`. Командный режим — insert-поверхность в статус-баре: окно отдаёт позицию каретки через `cursorRenderInfo()` (терминальный курсор-бар, тот же shape, что у insert), статус-бар сам тянет буфер и каретку из `commandSource` (weak-ссылка на окно-источник) — Application лишь агрегирует: `visibleWindows.compactMap { $0.cursorRenderInfo() }.last`; длинная команда скроллится общей политикой `InputLine` (SwimCore, тестируется) внутри пространства между лейблом режима и правым блоком — правый блок фиксирован и отображается всегда (и никогда не заезжает на лейбл режима — на узких ширинах клипается именно блок), окно текста следует за кареткой (хвост в покое — видны последние введённые символы), одна клетка области зарезервирована под каретку; подсчёт — в клетках терминала (`CharWidth`, SwimCore): широкий CJK/эмодзи занимает две клетки и не может вытолкнуть каретку под блок и не режется по краю; над информационными текстами центра (ошибки, диагностика, ветка) прежняя приоритетность — блок выигрывает перекрытие, это display-only, обрезка допустима
-- `executeCommand(_:)` — базовая реализация закрывает общие для всех окон команды (`q`, `q!`, `quit`, `bd`, `qa`, `terminal`, ...), редактор переопределяет её файловыми (`w`, `wq`, `e`, `%s`, `/<query>`)
-- `applyLineEdit(_:text:cursor:)` — общий key→edit-маппинг однострочных поверхностей ввода самих окон (фильтр и имя ветки пикера, запрос поиска, промпт терминала): backspace/delete/стрелки/Home/End/односимвольный ввод → `LineEditOutcome` (`.notEditing/.caretOnly/.textChanged`). Чистая функция без состояния; «что значит правка» (перезапрос git, скролл к промпту) остаётся у вызывающего. Командная строка (`handleCommandModeKey`) сознательно держит свою ветку — другой контракт: вставляется любой символ (без гард-фильтра), backspace на пустом буфере выходит из режима, Enter/Esc перехватываются раньше редактирования
-
-**Плашка-заголовок (`HeaderPlate`):** необязательная строка-плашка в ряду 0 — `headerPlate` (текст + цвета), `contentTop`/`contentHeight` (контентная геометрия ниже плашки), `drawPlate()` из `update()`. Используется терминалом (`Terminal @ dir`), git-панелью (`Git @ branch` и заголовки diff-вида) и окном коммита (`Commit @ branch`).
-
-**Ключевые методы:**
-- `setCell(_:_:_:)` — устанавливает ячейку с bounds-проверкой. Устанавливает `dirty = true` при изменении
-- `getCell(_:_:)` — возвращает ячейку (`.blank` при выходе за границы)
-- `fillRegion(row:col:width:height:cell:)` — заливает прямоугольную область
-- `writeString(_:row:col:fg:bg:bold:)` — записывает строку в буфер с обработкой табов (4 пробела) и широких графемов (CJK/эмодзи — 2 клетки, правая помечается `wideContinuation` для рендерера; глиф, не влезающий целиком, отбрасывается — без разрезания)
-- `handleKey(_:) -> Bool` — точка переопределения для обработки клавиш
-- `update()` — точка переопределения для обновления cell-буфера
-
-**Dirty-флаг:** `dirty = true` означает что cell-буфер изменился и нужно перерисовать окно. Проверяется в `Application.render()`.
+For JSON files a separate fast path is used — `SyntaxTokenizer.tokenizeJSON(lineChars:lineNum:)` scans character-by-character and coalesces the runs into ordinary `[SemanticToken]`s consumed by the normal token loop (what it avoids is keyword tables):
+- Quoted strings → green (`Theme.green`)
+- `{`, `}`, `[`, `]`, `,`, `:` → white (`Theme.fg`)
+- Everything else → orange (`Theme.orange`)
 
 ---
 
-### Window/EditorWindow.swift — Основной редактор
+### SwimCore/MarkdownTokenizer.swift — Markdown Highlighting
 
-Центральный компонент — vim-подобный модальный редактор.
-
-**Вкладки (`BufferManager`):** каждый файл открыт в своей вкладке — `EditorBuffer` хранит пофайловое состояние (PieceTable, курсор, scroll, undo/redo стеки, LSP pending changes, semantic tokens, diagnostics, markdown cache, mode). EditorWindow пробрасывает свои свойства к `tabs.active` вычисляемыми аксессорами — внешний интерфейс не изменился. Пути нормализуются в абсолютные (`BufferManager.normalize`) — дедуп вкладок и матчинг LSP uri стабильны.
-
-- Открытие файла — новая вкладка или переключение к существующей (дедуп по пути)
-- `gt` / `gT` — следующая/предыдущая вкладка (wrap-around), `:bd` / `:bd!` — закрыть, `:e file` — заменить текущую (vim)
-- Закрытие последней вкладки убирает редактор из стека окон: фокус получает окно под ним (обычно проводник); если стек пуст — приложение завершается
-- `Ctrl+X` — закрыть сфокусированное окно (в редакторе — текущая вкладка, с отказом при несохранённых правках; в панелях — саму панель), `Ctrl+Z` — закрыть все остальные вкладки, кроме несохранённых (они остаются с сообщением)
-- Закрытие вкладки отправляет LSP `textDocument/didClose`; поздно пришедшие токены маршрутизируются во вкладку-владельца по uri
-- Полоса вкладок (`TabBarWindow`, высота 1) видна вместе с редактором, активная вкладка подсвечена, `+` = modified; при переполнении скроллится так, что активная всегда видна
-
-**Режимы (`WindowMode`, хранится per-tab):**
-- `.normal` — vim-грамматика `[count1] оператор [count2] движение` (3dd, d3d, 2d3d=6 строк, dw/de/db/d$/d0/dh/dl/dj/dk/dG/dgg + y*/c*, алиасы D/C/S (d$/c$/cc, cc с сохранением отступа) и Y = y$ — осознанное отличие от vim (там Y = yy, исторический wart из :h Y): семейство D/C/Y согласованно действует с курсора до конца строки, счёт как у движения (3Y = 3y$)) и движения со счётом (3j, 5w, 2G, 5$). Диспетчеризация трёхступенчатая: gPrefix (двухбуквенные gg/gt/gT/gb/gd; под оператором валидно только gg как движение) → operator-pending (взведённый d/y/c перехватывает ЛЮБОЙ ключ — движение не может «проехать мимо» оператора, посторонний ключ убивает последовательность, как ошибка vim) → обычные команды. Состояние — `SwimCore.NormalPending` (счёт до/после оператора с перемножением, оператор, g-префикс отдельным слотом), математика движений/диапазонов — `SwimCore.NormalMotion` (exclusive/inclusive/linewise, adjustment exclusive-концов; оба тестируются). Дисциплина одной точки сброса: arm либо явно сохранил последовательность (keepPending), либо defer хвоста handleNormal убил (закрытые классы утечек: `dv…Esc d`→`dd`, `gxg`→`gg` со stale-g, одновременное взведение d и y); перехваты, обходящие handleKey, сбрасывают явно — bracketed paste (handleKey), глобальные хоткеи/Tab/чужие окна (`interruptPending` из Application) и командная строка (`enterCommandMode`) — класс `d : Esc d`→`dd`.
-- `.insert` — ввод текста (Escape для выхода); Enter раскладывает строки через `IndentEngine` (см. Core/IndentEngine.swift) — обычный перенос (+sw после `{`/`(`/`:`), перенос перед `)`/`}` уезжает на свою строку с выравниванием по парной открывающей, свежая строка курсора — только когда слева от курсора `{`/`(`
-- `.visual` — визуальное выделение (y — копировать, d/x — удалить)
-- `.visualLine` — построчное выделение (Shift+V; y — копировать, d/x — удалить, Shift+Right/L или Shift+Left/H — сдвиг строк на стандартный отступ языка: indent/outdent одним undo-действием, выделение сохраняется)
-- `.visualBlock` — прямоугольное выделение (Ctrl+V; y — блоковый yank, d/x — удаление блока с наполнением регистра blockwise, вставка из системного буфера — замена блока; см. «Visual block» ниже)
-- Вся механика трёх visual-режимов — единая подсистема `Window/EditorSelection.swift` (extension EditorWindow, состояние per-tab в EditorBuffer): геометрия — одно значение `VisualSelection` (charwise/linewise/blockwise), резолвящееся из «якорь + курсор» один раз на операцию; операторы yank/delete/вставка-поверх — диспетчеризация по геометрии (единые точки `yankSelection`/`deleteSelection`/`replaceSelectionWithPaste`); переходы v/V/Ctrl+V — одна матрица `switchVisualMode` с якорными правилами (из normal якорь = курсор; visual↔block якорь сохраняется; из visualLine col-якорь = курсор); инвариант «завершающий оператор сам выходит в normal» (H/L-shift исключение — повторяемость). Осознанное отличие от vim: повторный ключ СВОЕГО вида в vim завершает режим (:h v_v, таблица переходов), swim его игнорирует — выделение живёт до Esc/оператора. НЕ объединено сознательно: движение (клэмп графем / только строки / виртуальные клетки) и построчная подсветка с гуттером.
-- `.command` — командная строка (:w, :q, :wq, :q!, :qa, :qa!, :e path, :e! path, :bd, :bd!, :%s/old/new/g, /search). Открывается из любого окна через `:` на сфокусированном окне — команда исполняется против окна-владельца (см. Application). Набор клавиш и буфер — общие методы базового `Window`
-
-**Bracketed paste (`.paste`):** вставка из системного буфера перехватывается в `handleKey` до диспетчеризации режима (заодно сбрасывая pending — `pending.reset()` + insert-кавычку: paste завершает любую последовательность) и идёт дословно, минуя `IndentEngine` (авто-отступ поверх собственных отступов текста накапливался бы строка за строкой). Единственная нормализация — таб-политика: каждый `\t` внешней вставки раскрывается в один шаг отступа (`indentSize()`, чистый `TabPolicy.expandTabs` в SwimCore — тестируется) — та же ширина, что производят авто-отступ и H/L, поэтому вставленный отступ читается как набранный; внутренний round-trip `p`/`P` политику НЕ применяет — содержимое регистра обязано возвращаться байт-в-байт. **Тип linewise-регистра снифается по скалярам** (`MultilineInsert.endsWithLineBreak`, SwimCore — тестируется): в Swift CRLF — одна графема, `hasSuffix("\n")` для CRLF-регистра ложен — латентный баг, замаскированный, пока yy/dd нормализовали терминаторы в LF; теперь linewise-регистры (`yy`, `dd`, `Vy`…) несут терминаторы файла (CRLF-файл → CRLF-регистр → round-trip `p` не перекрашивает строки), последняя строка без перевода получает принудительный `"\n"`, чтобы регистр остался linewise. Маршрутизация повторяет vim-эквивалент: insert — под курсором (`insertPasteAtCursor`), normal — как `p` (`pasteTextAfterCursor`, общий с `p`/`P`), любой visual-режим — замена выделения (`replaceSelectionWithPaste`: заменённое — в yank-регистр и OSC 52, как visual `p`; delete+insert одним undo-шагом; курсор — на первой вставленной строке при linewise-вставке, паритет с `p`; блок — см. «Visual block»), command — в строку команды (однострочный вариант через `Window.pasteFlatLine`: `\n` выбрасывается как в cmdline vim, `\t` → один пробел — «git<TAB>status» остаётся двумя словами). Позиция курсора после многострочной вставки — единая чистая `MultilineInsert.cursorDelta` (SwimCore, скалярный подсчёт переводов) для всех путей. Клавиша Tab в insert mode следует той же политике языка: `indentSize()` пробелов. **Ctrl+V в insert (i_CTRL-V)**: кавычка — следующий ключ вставляется литерально в сыром виде (Tab → настоящий `\t`, Enter → `\r` без авто-отступа, Esc → 0x1b, Ctrl+\<c> → управляющий байт, Ctrl+V Ctrl+V → 0x16); движение снимает кавычку и обрабатывается обычным путём; управляющие символы в строке невидимы (нуль-ширинные, как комбинирующие — колоночная математика консистентна через Character.displayStep).
-
-**Visual block (Ctrl+V, `.visualBlock`):** прямоугольное выделение, живущее в display-колонках (клетках терминала), а не в индексах графем — строки с табами и wide-символами дают честный прямоугольник. Курсорный угол блока — ВИРТУАЛЬНАЯ колонка (`visualBlockCol`, per-tab, display-клетки, не клэмпится по длине строки): блок не сжимается на коротких, пустых и фантомной (за trailing `\n`) строках, ширина выживает переход через них — curswant, но в клетках, потому что геометрия блока дисплейная; сам curswant (`desiredCol`) хранится в display-клетках и для обычного движения (вертикальные ходы разрешают его через `charIndex(atDisplayCol:)` — раскладка табов целевой строки не сдвигает желаемую экранную колонку), а вход в блок из visual берёт его как угол: раунд-трип `Ctrl+V → v → Ctrl+V` возвращает угол точно, включая середину таба/wide-глифа (верифицировано: `^V h v ^V d` == `^V h d`). Инвариант состояния: `cursorCol` остаётся всегда РЕАЛЬНОЙ границей графемы на/после виртуальной колонки (синхронизация после каждого движения) — рендер, статус-бар и все старые потребители видят осмысленное положение, а виртуальность читают только три ветвления: каретка/скролл (`drawCursor`/`ensureCursorVisible` следуют за гранью прямоугольника даже за EOL) и колонка статус-бара (показывает виртуальную, как vim). Движение в block-режиме — свой обработчик, не общие `moveCursor*` (те клэмпят): `h`/`l` двигают виртуальную колонку на клетку без верхней границы, `j`/`k` — строку; пейджинг (`Ctrl+J`/`K`, `Ctrl+Down`/`Up`, `PageUp`/`PageDown` — единый набор во всех режимах, включая visual и insert) — общей дельтой `pageDelta` (страница − 2 строки контекста, минимум одна) через тот же `moveBlockVertically`; скролл подтягивается в хвосте обработчика по обеим осям. Якорь — реальная точка входа (общий с visual `visualStartLine/Col`; v/V/Ctrl+V переключают вид выделения, якорь сохраняется), оба угла инклюзивны, как в vim: Ctrl+V + l = две клетки, Ctrl+V + h — тоже (спан строит `Span.inclusive` — [min, max + 1); «+1 к курсорному углу до упорядочивания» отрезал клетку курсора при движении влево — регрессия, покрыта тестами). Подсветка красит ровно то, что затрагивают правки: правило ПЕРЕСЕЧЕНИЯ клеток — графема затрагивается ⟺ её клетки пересекают `[left, right)` (единое для подсветки/yank/правок, верифицировано по vim). Таб, разрезанный гранью, красится покрытыми клетками (раскалывается — клетки таба независимы, рендерер рисует их пробелами), wide-глиф — целиком (атомарен, правки его тоже берут целиком); «красится, но не оперируется» не существует. В правках затронутый глиф раскалывается: непокрытые клетки возвращаются пробелами в префикс/суффикс (`rowPlan`), хвост выравнивается на левую грань блока на каждой строке — блоковый `d`/вставка поверх сохраняют выравнивание на табах, как vim. Частично покрытые глифы в yank идут пробелами покрытых клеток (vim янкает видимую полосу). Пустые клетки за концом строки внутри полосы красятся и далее — прямоугольник читается на коротких строках. Тип регистра — vim-овский: yank блока помечает yank-регистр blockwise (`yankIsBlockwise`), `p`/`P` вставляют его прямоугольником в display-колонку курсора на последовательные строки, короткие строки дополняются пробелами до колонки; для blockwise-регистра p и P совпадают («до/после» не имеет смысла для колонок). Операции — семантика ПЕРЕСЕЧЕНИЯ: yank отдаёт пустые строки недотягивающимся, delete их не трогает (без деструктивного паддинга), paste-over (bracketed paste в блоке, vim visual `p`: заменяемое — в регистр blockwise) паддит до колонки, заменяя первые min(строк блока, строк вставки) строк — остальной блок не трогается (консервативнее vim, который чистит весь блок; несоответствие высот не уничтожает соседний контент). Операции применяются ОДНИМ контигуальным replace построчным span-ом (`applyBlockEdit`, приём shiftVisualLines: lineStart первой изменённой .. lineEnd последней; вставка = пересобранные строки, каждая со своим исходным терминатором "\n"/"\r\n"; неизменённые строки между границами пересобираются тождественно) — модель undo не меняется, каждый блок-оператор = один undo-шаг, как в vim; после правки виртуальная колонка синхронизируется с реальным курсором. Вся математика — чистый `SwimCore/VisualBlock.swift` (тестируется): разрешение display-колонка ↔ индекс графемы, клеточные диапазоны графем (`glyphCells` — единый источник принадлежности/раскола/подсветки), срезы строк по пересечению клеток, раскол табов и wide-остатков в `rowPlan`, split-осведомлённый yank (`blockText`), пересборка с паддингом, Span с инвариантом ширины ≥ 1 и точечный спан для чистой вставки, полная геометрия из состояния (`blockGeometry`: реальный якорь-графема + виртуальный угол → строки и инклюзивный спан — оконный `blockRowsAndSpan` остаётся чистой проводкой без математики). Осознанные ограничения v1 (деградированные версии были бы сюрпризом, честнее отсутствовать; архитектура их не блокирует): нет `A`/`I`/`c` (нужна insert-replay-машина — вставка текста на каждой строке по Esc, отдельная фича; паддинг до колонки уже есть в rowPlan), нет `$`-растяжения до концов строк (флаг «правая грань per-line» поверх того же спана), нет `o`-обмена углов, blockwise `p` не создаёт строк за концом буфера; кейсы раскола верифицированы скриптами на живом vim 8.2/nvim 0.11, осознанные отклонения в микрослучаях (vim сам непоследователен, swim единообразен): блок целиком внутри одного таба vim игнорирует — swim раскалывает; yank блока внутри одного wide-глифа vim даёт весь глиф — swim даёт пробелы покрытых клеток; непокрытую правую часть wide-глифа vim не компенсирует (хвост съезжает) — swim паддит пробелом, как и для табов. Колоночная арифметика — один авторитет: `Character.displayStep(atDisplayCol:tabWidth:)` (CharWidth, SwimCore) потребляется и рендером редактора (`displayColForChar`/`charIndexAtDisplayCol` — тонкие делегаты VisualBlock), и самим VisualBlock. Disk-reload переносит `visualBlockCol` вместе с `desiredCol`.
-
-**Подтверждение `:w` при изменившемся файле (vim W12):** если файл переписан извне с момента чтения (mtime буфера ≠ mtime диска — правки накопились, пока git-pull/терминал/внешний инструмент меняли файл), `:w` отказывается молча затирать: редактор программно входит в command mode (установленный механизм модальности — все клавиши, включая `:` и глобальные тогглы, уходят владельцу) и рисует красный вопрос в центре статус-бара: `Changed on disk — w: write, r: reload (discard edits), q: quit, a: abort`. Одна клавиша решает: `w/W` — записать всё же (`performWrite`, минуя проверку); `r/R` — перезагрузить с выбросом правок (`reloadActiveBufferDiscardingEdits` → форс-reload + полный LSP-синк); `q/Q` — закрыть вкладку; `a/A/Esc` — отмена («Write aborted»); прочие клавиши переспрашивают (модально, как vim). `:wq`/`:x` не закрывают вкладку, если запись не состоялась (`saveOrConfirm` возвращает false); заодно `:wq` на `[No Name]` с текстом больше не теряет буфер молча — «No file name».
-
-**Плашка-заголовок:** при установленном `headerPlate` контент (номера строк, текст, курсор, visual-подсветка, скролл, PageUp/Down) считается от `contentTop`/`contentHeight`; без плашки геометрия бит-в-бит прежняя. Используется `CommitWindow`.
-
-**CommitWindow** — тонкая надстройка над EditorWindow для сообщения коммита: единственная специализация — `executeCommand` перенаправляет `w`/`wq`/`x`/`wquit` в `delegate.requestCommit()` (письмо = коммит), остальное (включая `q`/`q!`) уходит в базу. Открывается в insert mode в слоте командного окна ниже git-панели (клавиша `c`), с плашкой `Commit @ branch`. Весь редакторский багаж работает из коробки: undo, visual, `/`-поиск, `%s`. Отмена — `:q`, `:q!` или двойной Esc (insert → normal, второй Esc закрывает окно); `:` в insert — литеральный символ (subject'ы вида `feat: ...` набираются свободно).
-
-**Go to definition (`gd`) / go back (`gb`):** позиция курсора конвертируется в UTF-16 (`utf16ColForCharIndex`), отправляется `textDocument/definition` активному LSP-клиенту. Ответ (Location/LocationLink[]) приходит асинхронно в `pendingDefinition` (NSLock), `pollLSP()` выполняет прыжок: uri → путь → вкладка (новая или существующая — дедуп, без reload несохранённых буферов) → `goToPosition` (UTF-16 → графемы, с клэмпом). Перед прыжком исходная позиция кладётся в стек возвратов (лимит 50); `gb` достаёт её и прыгает обратно тем же механизмом. Не найдено / нет сервера / пустой стек — сообщение в статус-баре.
-
-**Система координат:**
-- `cursorLine` / `cursorCol` — позиция курсора в символах (не байтах!)
-- `scrollY` / `scrollX` — вертикальная/горизонтальная прокрутка в символах
-- **Желаемая колонция (vim curswant):** `desiredCol` хранится per-tab в `EditorBuffer` рядом с `cursorCol`. Вертикальные перемещения (`j`/`k`/стрелки/PgUp/PgDn — все режимы, единый `moveVertically`) не пересчитывают колонцию из предыдущего клэмпа — применяют `cursorCol = min(desiredCol, длина_строки)`. Все прочие позиционирования (горизонталь, ввод, прыжки `gd`/поиска, undo, `%s`, склейка backspace'ом) обновляют `desiredCol = cursorCol` в хвосте обработчика режима (`isVerticalKey` — исключение). Итог: колонция переживает короткие строки и переход insert→normal без vim'овского сдвига влево
-- Позиция «за последним символом» (col == len) легальна во всех режимах (аналог `virtualedit=onemore`): insert'у она нужна для аппенда, все потребители guarded (`x` — no-op, `p`/`P` и visual-диапазоны считаются через `charToByteOffsetInLine`, который клэмпит по длине строки; рендер — min-клэмп). Единственный производитель col == len и до этого — `byteToCharOffsetInLine` (undo/прыжки), т.е. состояние не новое
-- Конвертация в байты — через `PieceTable.charToByteOffsetInLine()` при insert/delete
-
-**Рендеринг (`update()`):**
-1. Заливка фона `Theme.bg`
-2. Номера строк в левой колонке (ширина: `max(4, digitCount + 2)`), последняя клетка гуттера — слот диагностики (см. ниже)
-3. Для каждой видимой строки:
-   - JSON → быстрый посимвольный рендеринг (без токенов)
-   - LSP токены доступны → `SyntaxTokenizer.mergeWithLSP(builtin:lsp:)` послойно над `semanticTokensFor(line:)`
-   - Иначе → `SyntaxTokenizer.tokenize()` (только для файлов <50K строк)
-4. Подсветка визуального выделения
-5. Отрисовка курсора (reverse video в normal, underline в insert)
-
-**Git-гуттер (окраска номеров строк):** построчный статус активного файла считает фоновая задача Application (см. статус-бар) — `GitLineStatus` хранится на `EditorBuffer` (переживает переключение вкладок; `applyGitLineStatus` применяет к табу-владельцу пути, даже если фетч застиг переключение). Источники: `git diff --unified=0` (worktree vs index) и `git diff --cached --unified=0` (index vs HEAD), диапазоны новых строк собирает чистый `HunkLines` (SwimCore, тестируется). Приоритет окраски номера: unstaged (`Theme.unstagedColor`, оранжевый) → untracked-файл, все строки зелёные → staged (`Theme.stagedColor`, blue1); строка в обоих деревьях показывает unstaged — состояние, которое запишет следующий `:w`. Гуттер отражает последнее сохранённое состояние диска (живой буфер не диффится). Обновления: сохранение, открытие/переключение файла, stage/unstage/discard в git-панели, git-команды и команды терминала (`fetchGitStats` через `gitWorktreeChanged`/`gitCommandFinished`/`terminalCommandFinished`).
-
-**Маркеры диагностики в гуттере:** номер строки больше не красится severity — вместо этого в хвостовую клетку гуттера (`drawLineNumberRow` со слотом `mark`) ставится маленькая точка `•` (половина высоты клетки): красная — ошибка, оранжевая — предупреждение, жёлтая — info/hint. Ошибка + предупреждение на одной строке — маленький квадрат `▪` (половина клетки) цветом худшей severity (красный): форма «квадрат» сообщает «больше одной проблемы», а разноцветная пара в одной клетке мельче полклетки невозможна — fg/bg-раскол заливает всю клетку, от полной заливки `▀` отказались в пользу компактности. Марка перекрывает хвостовой пробел, ширина гуттера не меняется; фон марки всегда `Theme.bg`, поэтому visual-line подсветка строки не конфликтует со стеком.
-
-**Маппинг типов токенов на цвета:**
-keyword → magenta, string → green, number → orange, comment → серый, type → blue1, function → blue, variable → fg, operator → blue5
+A streaming pass over the document structure (not line-by-line like the code tokenizer): fenced-block state lives across lines. `MarkdownTokenizer.Cache` — a viewport cache opaque outside the module: it remembers the last render position and the block state there; the cache is forward-only — scrolling down within 200 lines continues the scan incrementally, while scrolling up even one line (or a different buffer/line count) rescans from scratch. `isMarkdown(ext:)` — extension routing. Tested by Tests/SwimCoreTests (including warm-cache equivalence to a cold scan).
 
 ---
 
-### Window/FileExplorerWindow.swift — Файловый проводник
+### Window/Window.swift — Base Window Class
 
-Панель с деревом каталогов. При открытии файла из результата поиска (Enter в space поиска) проводник раскрывает ветку до этого файла и выделяет его (`reveal(path:)` — разворачивает предков, выбирает узел; пути вне корня игнорируются, внутри скрытых директорий — недостижимы, пока фильтр листинга включён, `H` его снимает).
+An abstract base class for all UI panels. It implements a virtual cell buffer, the unified mode model, the command line, and the header plate mechanism.
 
-**Синхронизация с активным файлом:** пока проводник открыт, дерево указывает на текущий файл редактора — единая воронка `revealActiveFileInExplorer()` (Application) зовётся из каждого события «текущий файл»: `activeFileChanged` (переключение `gt`/`gT`/Ctrl+H/L, открытие, закрытие вкладки, `:e` — событие стреляет только при смене пути), `openFileAtLine` (явный вызов покрывает случай, когда результат поиска попадает в уже активную вкладку — события нет), старт `swim file.swift` (событие init'а бесполезно: проводник ещё не виден и без корня — reveal после `loadDirectory`) и повторное открытие проводника (`Ctrl+E`). Закрытый проводник не трогается — дерево заморожено, без flatten и ленивых подгрузок; при открытии — синхронизация с активным файлом вместо устаревшего выделения. `[No Name]`-вкладка пути не имеет — no-op. Нюансы reveal: свёрнутые предки ре-раскрываются (семантика «указать где мы», как reveal в VS Code); первый reveal глубокого пути лениво грузит каждого незагруженного предка с диска (по одному batched `git check-ignore` на уровень), дальше — кэш `isLoaded`, повторные переключения дёшевы.
+**Cell buffer:** A flat `[Cell]` array of size `width * height`. Cell index = `row * width + col`.
 
-Боковая панель с деревом файлов. Поддерживает разворачивание/сворачивание директорий, выбор файлов, emoji-иконки для типов файлов.
+**Modes (`WindowMode`)** — belong to the window; each one declares the available set via `availableModes`:
+- `.menu` — standard behavior of list windows (git panel, explorer, search): j/k by rows, Enter — the primary action ("drill in"), other action keys — specific to the given window
+- `.normal` / `.insert` / `.visual` / `.visualLine` / `.visualBlock` — editor modes; list windows reuse `.visualLine` for line-wise selection
+- `.command` — a command line belonging to the window that opened it
 
-**Структура данных:**
-- `FileEntry` — файл/директория (name, path, isDirectory, isExpanded, children, isLoaded)
-- `rootEntries: [FileEntry]` — корневые записи
-- `flatEntries: [(entry: FileEntry, depth: Int)]` — плоский список видимых записей
+`mode` — a computed property over private storage; `EditorWindow` overrides it, storing the mode per-tab (in `EditorBuffer`).
 
-**Управление:**
-- `j/k` — вверх/вниз
-- `Enter` — для файла — открыть; для директории — toggle: свёрнутая разворачивается с переходом на первый дочерний элемент, развёрнутая сворачивается (курсор остаётся)
-- `l/Ctrl+Right (Ctrl+L)` — развернуть директорию и перейти в её первый дочерний элемент; для файла — открыть (никогда не сворачивает)
-- `h/Ctrl+Left (Ctrl+H)` — перейти курсором к родительскому узлу и свернуть его (у корневого узла — свернуть сам узел)
-- `left/right` — горизонтальный сдвиг названий файлов (шаг 4, для просмотра длинных имён)
-- `g/G` — прыгнуть в начало/конец
-- `H` — фильтр листинга: скрытые (точечные) и git-ignored записи по умолчанию не показываются, `H` (Shift+h) пересобирает плоский список in-memory — мгновенно, без рескана и subprocess-ов (записи с флагами остаются в модели); выделение удерживается на той же записи, если она пережила перефильтрацию, иначе клэмпится
-- `a` — новый файл/директория: открывает командную строку с предзаполненным `create ./<относительный_путь>/` — префикс `./` подчёркивает, что путь от корня дерева (внутри выбранной директории, рядом с выбранным файлом, `create ./` при пустом дереве). Команда `:create ./a/b/file.swift` срезает ведущий `./`, создаёт промежуточные директории; хвостовой `/` создаёт директорию. Валидация: только относительные пути без `..`, дубликат и ошибка ФС — красным в статус-баре (`reportError`). После успеха дерево пересканируется с сохранением раскрытости (`reloadPreservingExpansion` — `loadDirectory` свернул бы всё) и новая запись (файл или директория) раскрывается/выделяется через `reveal(path:)`. Команда доступна и вручную через `:` — она исполняется окном-владельцем (explorer перегружает `executeCommand`)
-- `d` — удаление: командная строка с `delete ./<выбранный путь>` (хвостовой `/` — директория, удаление рекурсивное). Видимый буфер команды — и есть подтверждение: Enter удаляет, Esc отменяет. `.`-компоненты запрещены (одиночный `.` разрешался бы в корень дерева); не найдено / ошибка ФС — красным в статус-баре; после удаления дерево пересканируется с сохранением раскрытости, выделение клэмпится. Удаление файла, открытого во вкладке, не трогает буфер в памяти (`:w` пересоздаст файл — vim-семантика)
-- `r` — переименование/перемещение через редактирование пути на месте: префилл `rename ./<путь выбранной записи>` с курсором, готовым к перепечатыванию имени — перед хвостовым `/` директории или перед `.расширением` файла (без расширения — в конец имени): стираете имя — переименовываете, правите директории — перемещаете (`moveItem`, файлы и директории). Старый путь зафиксирован при нажатии `r` (`pendingRenamePath`), Enter применяет команду к нему; правая сторона — голое имя (рядом со старым файлом) или `./`-путь от корня. Пробелы в имени работают; `:rename` без захвата — понятная ошибка. Дубликат / тот же путь / не найдено / ошибка ФС — красным; после успеха дерево пересканируется (свежие ignore-вердикты — новое имя может оказаться точечным или под паттерном gitignore, тогда запись исчезает из листинга, а выделение клэмпится на реальную строку) и выделяет новый путь через `reveal(path:)`
+**Command line (base class methods):**
+- `enterCommandMode(prefill:)` / `exitCommandMode()` — enter/exit (the prefill places ready-made text and puts the cursor at the end); exiting returns to `.menu` (for menu-type windows) or `.normal`
+- `handleCommandModeKey(_:)` — the shared key handler: the buffer is typed through the status bar with a visible cursor (`commandCursorPos` — arrows/Home/End move it, Delete deletes forward, backspace on an empty buffer exits the mode), Enter — the only intercepted key — executes the command against the owning window, Esc cancels. The mode is exited **before** execution — `:q` does not leave a stuck `.command` on the closed window. Command mode is an insert surface in the status bar: the window provides the caret position via `cursorRenderInfo()` (terminal cursor bar, the same shape as insert), and the status bar itself pulls the buffer and caret from `commandSource` (a weak reference to the source window) — Application merely aggregates: `visibleWindows.compactMap { $0.cursorRenderInfo() }.last`; a long command scrolls by the shared `InputLine` policy (SwimCore, tested) within the space between the mode label and the right block — the right block is fixed and always displayed (and never rides onto the mode label — on narrow widths it is the block that gets clipped), the text window follows the caret (tail at rest — the last typed characters stay visible), and one cell of the area is reserved for the caret; measurement is in terminal cells (`CharWidth`, SwimCore): a wide CJK/emoji takes two cells, cannot push the caret under the block, and is never cut at an edge; over the center's informational texts (errors, diagnostics, branch) the previous priority holds — the block wins the overlap, those are display-only, clipping is acceptable
+- `executeCommand(_:)` — the base implementation handles the commands shared by all windows (`q`, `q!`, `quit`, `bd`, `qa`, `terminal`, ...); the editor overrides it with file ones (`w`, `wq`, `e`, `%s`, `/<query>`)
+- `applyLineEdit(_:text:cursor:)` — a shared key→edit mapping for the windows' own single-line input surfaces (the picker's filter and branch name, the search query, the terminal prompt): backspace/delete/arrows/Home/End/single-character input → `LineEditOutcome` (`.notEditing/.caretOnly/.textChanged`). A stateless pure function; "what an edit means" (re-querying git, scrolling to the prompt) stays with the caller. The command line (`handleCommandModeKey`) deliberately keeps its own branch — a different contract: any character can be inserted (no guard filter), backspace on an empty buffer exits the mode, Enter/Esc are intercepted before editing
 
-Фильтр листинга (по умолчанию включён): фильтрация происходит при сборке плоского списка (`flattenEntries`), а не при загрузке — `loadEntries` кладёт в дерево **все** записи, помечая `isHidden` (точечные, бесплатно) и `isIgnored`. Ignored-вердикты берёт один batched `git check-ignore --stdin -z` на каждую загружаемую директорию (NUL-разделение в обе стороны — «сырые» пути с экзотическими символами выживают; workDir — сама директория, поэтому голые имена резолвятся в правильном контексте паттернов). Git сам вычисляет все уровни `.gitignore` (корневой, вложенные, excludes, негации `!`, root-anchored правила) и никогда не репортит tracked-файлы — ровно та семантика, что нужна дереву. Детям ignored-директорий флаг проставляется без subprocess-а: git не реинклюдит внутрь исключённого поддерева. Коды выхода: 0 — часть имён ignored (stdout их перечисляет), 1 — ни одного, прочее (нет git / не репозиторий) — фильтр не применяется; вне репозитория дерево показывает все не-скрытые файлы. Флаги кэшируются на момент загрузки директории и живут до её перескана — внешний `sed -i .gitignore` или файлы, созданные мимо swim, синкаются командой `:fe reset` (полный рескан с сохранением раскрытости и выделения). `create .gitignore` при включённом фильтре создаст файл на диске, но в дереве он не появится — `H` его покажет. Директории сортируются перед файлами.
+**Header plate (`HeaderPlate`):** an optional plate row at row 0 — `headerPlate` (text + colors), `contentTop`/`contentHeight` (content geometry below the plate), `drawPlate()` from `update()`. Used by the terminal (`Terminal @ dir`), the git panel (`Git @ branch` and diff-view headers), and the commit window (`Commit @ branch`).
 
-Emoji-иконки: 🐦 Swift, 🌐 JS, 🐍 Python, 🦀 Rust, 🐹 Go, 📝 Markdown, 📋 JSON, и т.д.
+**Key methods:**
+- `setCell(_:_:_:)` — sets a cell with bounds checking. Sets `dirty = true` on change
+- `getCell(_:_:)` — returns a cell (`.blank` out of bounds)
+- `fillRegion(row:col:width:height:cell:)` — fills a rectangular region
+- `writeString(_:row:col:fg:bg:bold:)` — writes a string into the buffer with handling of tabs (4 spaces) and wide graphemes (CJK/emoji — 2 cells, the right one marked `wideContinuation` for the renderer; a glyph that does not fully fit is dropped — never split)
+- `handleKey(_:) -> Bool` — override point for key handling
+- `update()` — override point for cell buffer updates
 
-**Git-подсветка имён файлов:** имена файлов (не директорий — только файлы, иконки остаются нейтральными) красятся по git-статусу: новый/untracked файл (`??`) — зелёный, все изменения staged (`M `/`R `/…) — `Theme.stagedColor` (blue1), есть хоть одно unstaged (` M`, `MM`, `AM`) — `Theme.unstagedColor` (оранжевый); приоритет над staged — это состояние следующего `:w`; классификация `GitChangeClass.classify` — SwimCore, тестируется). Палитра git-декораций централизована константами `Theme.stagedColor`/`Theme.unstagedColor`/`Theme.deleteColor` — гуттер, проводник и буквы панели читают одни константы. Марки кладёт Application из того же фонового `git status --porcelain -z --untracked-files=all` через общий парсер `Porcelain` (`-uall` разворачивает untracked-директории в отдельные файлы — дерево показывает файлы, а не свёрнутую `?? dir/` запись). Ключи — в системе координат дерева (dir + остаток пути ниже корня репо, обе стороны разрешены через symlink'и): корень репо и стартовая директория могут расходиться и подкаталогом, и symlink-видом, а дерево живёт видом стартовой директории; записи вне поддерева не ключуются. Раскраска — чистый lookup в момент отрисовки, поэтому ленивые загрузки детей и ресканы подхватывают марки бесплатно (`setGitMarks` сравнивает и дертит окно). Марка сильнее цвета выделения — выделение и так видно по фону строки. Обновления — те же события, что у git-гуттера (save/открытие/stage/discard/git-команды; `create`/`delete`/`rename` в проводнике зовут `gitWorktreeChanged`).
-
----
-
-### Window/GitPanelWindow.swift — Git-панель
-
-Панель интеграции с Git: staged/unstaged/untracked файлы, последние коммиты, diff файлов и коммитов, stage/unstage файлов и отдельных hunk'ов, discard, commit, pull/push. Режимы: `.menu` (стандартное поведение), `.visualLine` (построчное выделение), `.command` (`:q` закрывает панель).
-
-**Данные (фоновые задачи `BackgroundTask`, опрос в `poll()`):**
-- `gitTask` — `rev-parse --abbrev-ref HEAD` (ветка) + `rev-parse --show-toplevel` (корень репо) + `status --porcelain -z` + `log -10 --format=%h|%an|%cr|%s`
-- `diffTask` — `git diff [--cached] -- <path>`; для untracked — `git diff --no-index /dev/null <path>` (запускается от корня репо — пути porcelain всегда относительно корня); для коммита из лога — `git show <hash>`
-- `-z` даёт NUL-разделённые записи с сырыми путями: кириллица и другие не-ASCII пути не экранируются; rename/copy-записи несут старый путь отдельным NUL-полем — разбор идёт через общий чистый парсер `Porcelain` (SwimCore, тестируется; панель сохраняет `origPath` в `GitFileStatus` для discard/unstage переименований), тот же парсер кормит git-декорации Application — тонкая логика orig-поля живёт ровно один раз
-
-**Пути и pathspec-магия:** все pathspec'и (`add`/`reset`/`checkout`/`rm`/`diff`) используют `:(top,literal)` — пути от корня репо работают из любого подкаталога-рабочей директории, а glob-метасимволы в именах файлов (`*?[]`) остаются литералами. Удаление untracked-файлов — по абсолютному пути от `repoRoot`.
-
-**Ошибки:** все мутирующие git-вызовы идут через `runGit()` — при ненулевом коде первая строка stderr уходит красным в статус-бар (`delegate.reportError`, тот же канал и жизненный цикл, что у ошибок редактора: любая клавиша гасит). Ни одна ошибка не глотается молча.
-
-**Status-вид:**
-- `j/k` — навигация, `Enter` — diff выбранного файла/коммита
-- Буква строки: staged-секция — `A` в `Theme.stagedColor` (blue1; всё в индексе — «добавлено к следующему коммиту»), кроме staged-удалений — те честно `D` в `Theme.deleteColor`; unmerged-запись (конфликт слияния, `UU` из porcelain) — `C` в `Theme.red` в ОБЕИХ секциях: это не добавление и не правка, а конфликт, ждущий разрешения (`U` читался бы как unstaged); unstaged — реальная буква worktree: `M` в `Theme.unstagedColor` (оранжевый, как гуттер и проводник), `D` в `Theme.deleteColor`; untracked — классический приглушённый `?`. Yank-текст `yy` несёт ту же букву (`GitFileStatus.sectionLetter`). Заголовки секций — синие жирные над каждой непустой секцией, как раньше
-- `a` — add: стадирует worktree-состояние файла (`git add`, на уже staged — идемпотентно); на unmerged-строке (`C`) в ЛЮБОЙ секции это «mark resolved» — add записывает резолюцию в индекс и снимает unmerged-стадии, единственное безопасное действие для конфликта. Курсор остаётся на месте: пересборка списка после refresh резолвит выделение (и visual-якорь) политикой `SectionedListSelection` (SwimCore, тестируется) — позиция следует за своей записью, пока та живёт в своей секции, и держит строку (с клэмпом), когда запись уходит в другую секцию или исчезла; несколько файлов подряд добавляются/discard'ятся без скачков курсора по секциям. Исчезнувшая секция — клэмп индексов (выделение) / коллапс на выделение (якорь)
-- `d` — drop «оттуда, где изменение живёт»: staged-секция → unstage (`reset HEAD --`, staged rename — с обеих сторон), worktree сохраняет изменение; unstaged → discard (`checkout --`), untracked — удаление файла с диска. Деструктивная половина существует только там, где изменения ещё НЕТ в индексе — уничтожить застейженное одной клавишей нельзя, discard-after-unstage это явные два шага. Discard переписывает файл на диске — панель зовёт `fileChangedOnDisk` (абсолютный путь), и Application перезагружает чистую вкладку редактора этого файла с диска (`BufferManager.reloadIfClean`: место вкладки, режим и клэмпнутые курсор/скролл сохраняются, undo сбрасывается; modified-буфер не трогается — несохранённые правки важнее диска; файла нет на диске — vim-семантика, буфер живёт, `:w` пересоздаст), LSP получает полный didChange (contentChange без range) + перезапрос токенов. add/unstage файл НЕ переписывают (только индекс) — перезагрузка не нужна
-- `c` — окно коммита (см. CommitWindow); во время merge (живой MERGE_HEAD) префилл — подготовленное git'ом сообщение (`--git-path MERGE_MSG`, «Merge branch 'x'»; комментарии `# Conflicts:` вырезаются) — завершение merge это edit-and-save; повторное `c` при открытом окне — рефокус без затирания текста
-- `C` — окно коммита с префиллом сообщения последнего коммита (`git log -1 --format=%B` — subject + body, не только subject из списка лога): удобно для серии коммитов по одной задаче. Текст вставляется как начальное содержимое (без undo-записи и modified), курсор — в конец. Пустая история (свежий репозиторий) — просто пустой редактор, поведение `c`
-- `p` / `P` — глобально: `git pull` / `git push` теперь `Ctrl+O` / `Ctrl+P` из любого окна (та же воронка `runGitCommand`: вывод и spinner — в CommandWindow; если remote спрашивает учётные — ввод в командной строке CommandWindow, см. Core/InteractiveShell.swift); из git-панели локальные `p`/`P` убраны
-- `yy` — копировать строку статуса (OSC52), `V` — visual-выделение записей
-- `Escape` — закрыть панель
-
-**Diff-вид:**
-- `j/k` — навигация по строкам, `a` — stage активного hunk'а (патч из заголовка diff + строк hunk'а → `apply --cached`; индекс — файл не трогает, буфер редактора актуален; на staged-diff — тихий no-op), `d` — drop hunk'а «оттуда, где он живёт»: staged-diff → unstage (`apply --reverse --cached`, worktree сохраняет; полный discard — второй `d` из unstaged-diff), unstaged-diff → discard (`apply --reverse`, успех → `fileChangedOnDisk` → перезагрузка чистой вкладки), untracked — удаление файла
-- `yy` / `V`+`y` — копирование строк, `Escape` — назад к статусу (из visual — сначала выход из visual)
-
-Открытый файловый diff перезапрашивается при каждом результате refresh — `reloadOpenDiff(afterRefresh:)` в `poll()`: смена ветки, pull или команда терминала не оставят устаревших строк. Hunk-действия панели перезапускают diff сами и немедленно (spinner на том же кадре, hunks очищаются синхронно — двойное нажатие не найдёт hunk для повторного действия); двойного рендера нет: монотонный request-clock упорядочивает два конвейера — refresh не перезагружает diff, запрошенный позже его старта (тот по определению свежее). Diff коммита адресован хэшем и иммутаблен — не перезапрашивается; опустевший diff (файл стал чистым) закрывается сам; untracked-файл, исчезнувший из статуса, закрывает view сразу — `git diff --no-index` по отсутствующему файлу отвечает ошибкой доступа, а не пустым diff'ом.
-
-Diff подсвачивается: зелёный — добавления, красный — удаления, голубой — заголовки hunk'ов. Слева — гуттер с номерами строк в стиле редактора: общий примитив `Window.drawLineNumberRow` (правовыровненное число в первых `width-1` клетках + хвостовой слот — пробел или марка вызывающего; ширина `max(4, цифр+2)`) рисует и гуттер редактора, и гуттер diff — без дублирования кода (марку использует только редактор — кружки диагностики). Номера считаются по счётчикам unified diff (`@@ -a +c @@` засеивает оба) и только внутри hunk'ов — строки сообщения коммита вида `+1 fixed` контентом не считаются: `+`-строки несут номер нового файла (зелёным), `-` — старого (красным), контекст — общий (приглушённым); `@@`-заголовки, `+++`/`---` и метаданные коммита — без номера. Комбинированные diff'ы merge-коммитов (`diff --cc`, заголовки `@@@` с двумя родителями и двухколоночными префиксами строк) на двухсчётчиковую модель не ложатся — их hunk'и без номеров, лучше честно ничего, чем неверно. Цвет номера не меняется на строке курсора — подсветка строки уже отмечает текущую. Сырые `diffLines` не меняются — yank и сборка патчей гуттера не видят. Все заголовки панели (ветка/загрузка/visual/diff с подсказками) — через единый механизм `HeaderPlate`; длинные пути усекаются по ширине окна (`drawHeader` использует `prefix(width)`).
-
-Любая завершённая git-команда (`pull`/`push`/`commit` — `gitCommandFinished` из CommandWindow) перезапускает `fetchGitStats` (коммит гасит staged-марки и построчные цвета гуттера), обновляет панель и делает **mtime-sweep** чистых вкладок (`BufferManager.reloadChangedOnDisk`): merge при pull мог переписать открытые файлы — mtime отличается от записанного при открытии/` :w`/перезагрузке → перезагрузка; контент идентичен → только mtime обновляется (undo не сбрасывается). Тот же sweep — после команды во встроенном терминале (`terminalCommandFinished`: например, `git checkout` руками). Мутации самой панели (stage/unstage/discard файла и hunk'а) после `refresh()` зовут `gitWorktreeChanged` — Application перезапускает тот же fetch, обновляя git-гуттер редактора и марки проводника. `selectedIndex` клэмпится в `poll()` после пересборки списков. При повторном открытии панели diff-вид сбрасывается к списку (`closeDiffView`) и тело очищается (`prepareOpen`): в полёте — пустое тело и плашка без «@ ветки» (никаких спиннеров/«loading» — даже транзиентная индикация заметна глазу), недостающее появляется одним кадром по приземлении фетча; акция-рефреши `a`/`d`/завершённые команды панель НЕ очищают — обновление на месте скачком не считается. Оставшаяся дыра семьи: правки извне swim (sed -i мимо приложения) — нужен file-watcher/проверка по фокусу, отдельно.
-
-Все git-операции выполняются через `Shell.git` (подпроцесс `/usr/bin/git`, аргументы массивом — кавычки и кириллица в путях/сообщениях безопасны).
+**Dirty flag:** `dirty = true` means the cell buffer has changed — a write-only vestige (never read, kept for potential future use): `Application.render()` always forwards all visible windows, and `Renderer` does its own cell-level diff against the previous frame (`prevScreenCells`).
 
 ---
 
-### Window/GitBranchesWindow.swift — Выбор ветки
+### Window/EditorWindow.swift — Main Editor
 
-Пикер веток: открывается глобально `Ctrl+B` (toggle: закрыто/открыто; повторное открытие — заново загруженный список, menu-режим, курсор на самой свежей ветке). Модель как у результатов поиска, но с двумя поверхностями ввода над одним списком: `.insert` — набор фильтра или (`a` в menu пикера, фаза создания ветки) имени новой ветки в собственной строке ввода окна (row 0; каретка — терминальный бар-курсор через общую фабрику `CursorRenderInfo.insertCaret`, одну для всех поверхностей ввода — insert редактора, командная строка, запросы поиска/пикера/терминала; normal-режим курсором терминала не владеет — рендерер сбрасывает форму в блок; видимая часть текста и колонка каретки считаются через общую чистую политику `InputLine` — SwimCore, тестируется), `.menu` — навигация; `.command` — стандартное `:q`.
+The central component is a vim-like modal editor.
 
-**Данные (постранично, git делает всё — сортировку, поиск и лимит):** `git for-each-ref --ignore-case --count=<limit> --sort=-committerdate --format=%(refname:short)%00%(committerdate:relative)%00%(HEAD)%00%(refname) [паттерны]` — сортировку по дате последнего коммита и подсчёт страницы делает сам git (swim не сортирует и не фильтрует; локальные и remote-ветки идут в одном порядке committerdate), текущая ветка узнаётся по `%(HEAD)` = `*` и рисуется зелёной жирной с маркером `*`, справа приглушённой колонкой — относительная дата коммита, remote-tracking-записи (полное имя `refs/remotes/…` — 4-е NUL-поле) — приглушённым `Theme.comment`: это ещё не рабочий набор, локальной копии нет; симлинк `refs/remotes/<remote>/HEAD` (указатель на дефолтную ветку remote, не ветка) исключается. Разбор — чистый парсер `BranchList` (SwimCore, тестируется): строки по `\n`, поля по NUL; пустой HEAD-флаг не-текущих веток не должен ломать подсчёт полей. Не-репозиторий (ненулевой exit) — отдельное состояние «Not a git repository», отличное от честного пустого списка.
+**Tabs (`BufferManager`):** each file is open in its own tab — `EditorBuffer` holds per-file state (PieceTable, cursor, scroll, undo/redo stacks, LSP pending changes, semantic tokens, diagnostics, markdown cache, mode). EditorWindow forwards its properties to `tabs.active` via computed accessors — the external interface is unchanged. Paths are normalized to absolute (`BufferManager.normalize`) — tab dedup and LSP uri matching are stable.
 
-**Пейджинг:** страница — 20 записей (`--count`); когда курсор опускается ближе 5 строк к концу загруженной страницы (16-я строка из 20), лимит растёт на страницу и список перезапрашивается шире — таблица веток читается ровно на ту глубину, куда реально дошёл пользователь. Короткая страница (меньше запрошенного) — git исчерпал совпадения, «больше нет»; признак сравнивается с лимитом на момент запроса, чтобы рост страницы во время полёта не переврал его. Индикатор — хвост «… more» / «… loading» под списком (счётчика веток в плашке нет).
+- Opening a file — a new tab or a switch to an existing one (dedup by path)
+- `gt` / `gT` — next/previous tab (wrap-around), `:bd` / `:bd!` — close, `:e file` — replace the current one (vim)
+- Closing the last tab removes the editor from the window stack: focus goes to the window below it (usually the explorer); if the stack is empty — the application exits
+- `Ctrl+X` — close the focused window (in the editor — the current tab, refusing when there are unsaved edits; in panels — the panel itself), `Ctrl+Z` — close all other tabs except unsaved ones (they remain with a message)
+- Closing a tab sends LSP `textDocument/didClose`; late-arriving tokens are routed to the owning tab by uri
+- The tab bar (`TabBarWindow`, height 1) is visible together with the editor; the active tab is highlighted, `+` = modified; on overflow it scrolls so the active tab is always visible
 
-**Поиск уезжает в git с каждым символом** — кеш не переиспользуется: первая страница совпадений более длинного запроса НЕ подмножество страницы на экране (новейшие `fix*` могут не содержать ни одной `fixe*`), поэтому каждый edit запроса перезапускает for-each-ref с новым паттерном; newest-wins `BackgroundTask` схлопывает очередь быстрой печати в последний запрос. Паттерны строит `BranchList.matchPatterns` (SwimCore, тестируется): пустой запрос — только локальные (`refs/heads/` — неотфильтрованная таблица есть рабочий набор), непустой — оба пространства: `refs/heads/**/*<запрос>*` + `refs/remotes/**/*<запрос>*` (запушенная в remote ветка без локальной копии — ровно то, что ищут; локальный дубль подавляет свои remote-строки — Enter на локальной это тот же switch, а `D` уже покрывает remote-сторону; remote-твин без локального остаётся на каждом remote, где живёт; `Enter` на такой строке переключает по имени без префикса remote, git-DWIM создаёт локальную трекинг-ветку — ручной поток `git switch <name>`; `d`/`D` на remote-строке отказывают с сообщением — удаление remote-стороны это `D` на локальной ветке) — `**/` пересекает границы компонент пути (одиночный `*` в WM_PATHNAME не увидел бы вложенные `feature/x`), слэш запроса остаётся литералом («feature/t» матчит «feature/two-fix»), glob-метасимволы запроса экранируются (`\*?\[]`), регистронезависимость — нативным `--ignore-case`.
+**Modes (`WindowMode`, stored per-tab):**
+- `.normal` — vim grammar `[count1] operator [count2] motion` (3dd, d3d, 2d3d=6 lines, dw/de/db/d$/d0/dh/dl/dj/dk/dG/dgg + y*/c*, aliases D/C/S (d$/c$/cc, cc keeping the indent) and Y = y$ — a deliberate difference from vim (there Y = yy, a historical wart from :h Y): the D/C/Y family consistently acts from the cursor to the end of the line, with a count as for a motion (3Y = 3y$)) and motions with a count (3j, 5w, 2G, 5$). Dispatch is three-stage: gPrefix (two-letter gg/gt/gT/gb/gd; under an operator only gg is valid as a motion) → operator-pending (an armed d/y/c intercepts ANY key — a motion cannot "slip past" the operator, a foreign key kills the sequence, like a vim error) → regular commands. State is `SwimCore.NormalPending` (count before/after the operator with multiplication, operator, g-prefix in a separate slot), motion/range math is `SwimCore.NormalMotion` (exclusive/inclusive/linewise, exclusive-end adjustment; both tested). The single-reset-point discipline: arming either explicitly kept the sequence (keepPending), or the deferred tail of handleNormal killed it (closed classes of leaks: `dv…Esc d`→`dd`, `gxg`→`gg` with a stale g, simultaneous arming of d and y); interceptions that bypass handleKey reset explicitly — bracketed paste (handleKey), global hotkeys/Tab/foreign windows (`interruptPending` from Application) and the command line (`enterCommandMode`) — the `d : Esc d`→`dd` class.
+- `.insert` — text input (Escape to exit); Enter lays out lines via `IndentEngine` (see Core/IndentEngine.swift) — a regular break (+sw after `{`/`(`/`:`), a break before `)`/`}` moves the bracket to its own line aligned to the matching opener, a fresh cursor line — only when there is `{`/`(` to the left of the cursor
+- `.visual` — visual selection (y — copy, d/x — delete)
+- `.visualLine` — line-wise selection (Shift+V; y — copy, d/x — delete, Shift+Right/L or Shift+Left/H — shift lines by the language's standard indent: indent/outdent as a single undo action, the selection is preserved)
+- `.visualBlock` — rectangular selection (Ctrl+V; y — blockwise yank, d/x — block deletion filling the register blockwise, pasting from the system clipboard — block replacement; see "Visual block" below)
+- The entire mechanics of the three visual modes is a single subsystem `Window/EditorSelection.swift` (an EditorWindow extension, state per-tab in EditorBuffer): geometry — a single `VisualSelection` value (charwise/linewise/blockwise) resolved from "anchor + cursor" once per operation; the yank/delete/paste-over operators — dispatched by geometry (single points `yankSelection`/`deleteSelection`/`replaceSelectionWithPaste`); v/V/Ctrl+V transitions — one `switchVisualMode` matrix with anchor rules (from normal the anchor = cursor; visual↔block the anchor is preserved; from visualLine the col-anchor = cursor); the invariant "a terminating operator exits to normal by itself" (the H/L-shift exception — repeatability). A deliberate difference from vim: in vim a repeated key of the SAME kind ends the mode (:h v_v, transition table), swim ignores it — the selection lives until Esc/an operator. Deliberately NOT merged: motion (grapheme clamping / lines only / virtual cells) and line-wise highlighting with the gutter.
+- `.command` — the command line (:w, :q, :wq, :q!, :qa, :qa!, :e path, :e! path, :bd, :bd!, :%s/old/new/g, /search). Opened from any window via `:` on the focused window — the command is executed against the owning window (see Application). Key input and the buffer are the base `Window`'s shared methods
 
-**Клавиши:** insert-фаза не владеет ни выделением, ни клавишами действий: `↑`/`↓` и `Enter` («поиск завершён», фильтр сохраняется) выводят её в menu-режим, раскрывая курсор на первой строке (следующее нажатие двигает уже с неё); `Esc` в insert — то же плюс сброс фильтра (список перезапрашивается без паттерна тем же путём, что и при ручном стирании запроса), `Esc` в menu — закрытие; `i` — возврат к набору (курсор в конец). В menu `Enter` — `git switch <name>` через единую воронку `runGitCommand` (CommandWindow показывает вывод/ошибки — например, отказ на dirty tree; его `gitCommandFinished` делает весь post-switch сервис: fetchGitStats, рефреш панели, mtime-sweep чистых вкладок — switch переписывает файлы), пикер закрывается до запуска, Enter на текущей ветке — no-op с сообщением; `Ctrl+Enter` — то же + `git pull` следом (на текущей ветке — просто pull): мейнстрим-терминалы шлют Ctrl+Enter как LF (байт 10) — байт-близнец Ctrl+J, без переговоров о клавиатурных протоколах; байт перехватывается только в menu-фазе, insert его молча игнорирует. `a` в menu — создание ветки: строка ввода становится промптом имени (` New branch: `), имя стартует как текущий фильтр (набрал имя, не нашёл ветку — `a` сохраняет набранное), правки имени git не перезапрашивают; `Enter` — `git switch -c <name>` через ту же воронку runGitCommand (создание + переключение одним ходом; вывод/ошибки видны, post-finish сервис бесплатный), `Esc` — назад к списку, фильтр нетронут: имя живёт в отдельном буфере, а не в фильтре. `d`/`D` в menu — удаление ветки (см. таблицу клавиш ниже): через ту же воронку runGitCommand, пикер не закрывается — завершившаяся команда сама обновляет список. Цепочку выполняет CommandWindow (`runCommand(then:)`): follow-up стартует только после УСПЕШНОГО завершения первой команды (после её `gitCommandFinished` — мир уже отрефрешен), при неудаче или Esc-отмене тихо отбрасывается — вывод первой команды остаётся на экране с объяснением. Политика выделения: insert-фаза выделением не владеет — индекс стоит на первой строке, и каждый fetch фазы ввода (правки фильтра, Esc-сброс, свежее открытие) приземляется туда же; имя ветки через reload сохраняют только fetch'и menu-фазы (рост страницы, внешние refresh'и — `gitCommandFinished`). Intent захватывается в момент запроса и едет вместе с результатом (`BranchFetch.keepsSelection`), как паттерн и лимит — режим может смениться, пока запрос в полёте, результат этому не подчиняется.
+**Bracketed paste (`.paste`):** a paste from the system clipboard is intercepted in `handleKey` before mode dispatch (also resetting pending — `pending.reset()` + the insert quote: paste terminates any sequence) and goes in verbatim, bypassing `IndentEngine` (auto-indent on top of the text's own indentation would accumulate line by line). The only normalization is the tab policy: every `\t` of an external paste is expanded to one indent step (`indentSize()`, the pure `TabPolicy.expandTabs` in SwimCore — tested) — the same width that auto-indent and H/L produce, so a pasted indent reads as a typed one; the internal `p`/`P` round-trip does NOT apply the policy — register contents must come back byte-for-byte. **The linewise register type is sniffed by scalars** (`MultilineInsert.endsWithLineBreak`, SwimCore — tested): in Swift CRLF is a single grapheme, `hasSuffix("\n")` is false for a CRLF register — a latent bug, masked while yy/dd normalized terminators to LF; now linewise registers (`yy`, `dd`, `Vy`…) carry the file's terminators (CRLF file → CRLF register → the `p` round-trip does not recolor lines), and the last line without a break gets a forced `"\n"` so the register stays linewise. Routing mirrors the vim equivalent: insert — under the cursor (`insertPasteAtCursor`), normal — like `p` (`pasteTextAfterCursor`, shared with `p`/`P`), any visual mode — selection replacement (`replaceSelectionWithPaste`: the replaced text goes to the yank register and OSC 52, like visual `p`; delete+insert as a single undo step; the cursor — on the first inserted line for a linewise paste, parity with `p`; block — see "Visual block"), command — into the command line (the single-line variant via `Window.pasteFlatLine`: `\n` is dropped as in the vim cmdline, `\t` → one space — "git<TAB>status" stays two words). The cursor position after a multi-line paste is the single pure `MultilineInsert.cursorDelta` (SwimCore, scalar counting of line breaks) for all paths. The Tab key in insert mode follows the same language policy: `indentSize()` spaces. **Ctrl+V in insert (i_CTRL-V)**: with the quote — the next key is inserted literally in raw form (Tab → a real `\t`, Enter → `\r` without auto-indent, Esc → 0x1b, Ctrl+\<c> → a control byte, Ctrl+V Ctrl+V → 0x16); a motion removes the quote and is handled the usual way; control characters in the line are invisible (zero-width, like combining marks — the column math stays consistent via Character.displayStep).
 
-**Интеграция:** свой слот в нижнем стеке (git → ветки → командное окно → терминал; те же `min(25, h/2)` и waterfall-урезание, `Ctrl+S` — половина высоты); спиннер тикает в общем `tickSpinners` — его anyDirty-блок заодно потребляет приземлившиеся фоновые результаты (`pollWindows`) и рендерит их в простое, не дожидаясь клавиши; завершённая git-команда при открытом пикере обновляет список; вход — только глобальный `Ctrl+B` (перехват из любого окна, включая терминал, консистентно с остальными toggle'ами): все операции с ветками живут здесь, git-панель их не дублирует.
+**Visual block (Ctrl+V, `.visualBlock`):** a rectangular selection that lives in display columns (terminal cells), not grapheme indices — lines with tabs and wide characters produce an honest rectangle. The block's cursor corner is a VIRTUAL column (`visualBlockCol`, per-tab, display cells, not clamped to the line length): the block does not shrink on short, empty, and phantom (past a trailing `\n`) lines, the width survives crossing them — curswant, but in cells, because the block's geometry is display-based; curswant itself (`desiredCol`) is stored in display cells for regular motion too (vertical moves resolve it via `charIndex(atDisplayCol:)` — the target line's tab layout does not shift the desired screen column), and entering the block from visual takes it as the corner: the round-trip `Ctrl+V → v → Ctrl+V` returns the corner exactly, including mid-tab/mid-wide-glyph (verified: `^V h v ^V d` == `^V h d`). State invariant: `cursorCol` always remains a REAL grapheme boundary at/after the virtual column (synchronized after every motion) — the renderer, the status bar, and all existing consumers see a meaningful position, while virtuality is read by only three branches: the caret/scroll (`drawCursor`/`ensureCursorVisible` follow the rectangle's edge even past EOL) and the status-bar column (it shows the virtual one, like vim). Motion in block mode has its own handler, not the shared `moveCursor*` (those clamp): `h`/`l` move the virtual column by one cell with no upper bound, `j`/`k` the line; paging (`Ctrl+J`/`K`, `Ctrl+Down`/`Up`, `PageUp`/`PageDown` — all five in normal and every visual mode; insert handles only PageUp/PageDown) uses the shared `pageDelta` (a page − 2 context lines, at least one) through the same `moveBlockVertically`; scrolling is pulled up at the end of the handler along both axes. The anchor is the real entry point (shared with visual `visualStartLine/Col`; V/Ctrl+V switch the selection kind preserving the anchor — `v` itself is a dead key in charwise visual, a deliberate divergence from vim: the selection lives until Esc/an operator); both corners are inclusive, as in vim: Ctrl+V + l = two cells, Ctrl+V + h too (the span is built by `Span.inclusive` — [min, max + 1); "+1 to the cursor corner before ordering" cut off the cursor's cell when moving left — a regression, covered by tests). Highlighting colors exactly what the edits touch: the cell INTERSECTION rule — a grapheme is affected ⟺ its cells intersect `[left, right)` (unified across highlighting/yank/edits, verified against vim). A tab cut by the edge is colored by its covered cells (it splits — tab cells are independent, the renderer draws them as spaces), a wide glyph — entirely (atomic; edits take it whole too); "colored but not operated on" does not exist. In edits the affected glyph splits: uncovered cells come back as spaces in the prefix/suffix (`rowPlan`), the tail is aligned to the block's left edge on every line — block `d`/paste-over keep tab alignment, as in vim. Partially covered glyphs go into the yank as spaces of the covered cells (vim yanks the visible strip). Empty cells past the end of the line inside the strip are colored onward — the rectangle reads on short lines. The register type is vim's: a block yank marks the yank register blockwise (`yankIsBlockwise`), `p`/`P` insert it as a rectangle at the cursor's display column across consecutive lines, short lines padded with spaces up to the column; for a blockwise register p and P coincide ("before/after" is meaningless for columns). Operations use INTERSECTION semantics: yank yields empty lines to those that fall short, delete does not touch them (no destructive padding), paste-over (bracketed paste in a block, vim visual `p`: the replaced text goes into the blockwise register) pads up to the column, replacing the first min(block lines, pasted lines) lines — the rest of the block is untouched (more conservative than vim, which clears the whole block; a height mismatch does not destroy neighboring content). Operations are applied as ONE contiguous replace by a line-wise span (`applyBlockEdit`, the shiftVisualLines technique: lineStart of the first changed line .. lineEnd of the last; the insertion = reassembled lines, each with its original "\n"/"\r\n" terminator; unchanged lines between the bounds are reassembled identically) — the undo model does not change, each block operator = one undo step, as in vim; after the edit the virtual column is synchronized with the real cursor. All the math is the pure `SwimCore/VisualBlock.swift` (tested): display column ↔ grapheme index resolution, cell ranges of graphemes (`glyphCells` — the single source of membership/splitting/highlighting), line slices by cell intersection, splitting of tabs and wide remainders in `rowPlan`, split-aware yank (`blockText`), reassembly with padding, Span with the width ≥ 1 invariant and a point span for pure insertion, full geometry from state (`blockGeometry`: a real anchor grapheme + a virtual corner → lines and an inclusive span — the window-side `blockRowsAndSpan` stays pure wiring with no math). Deliberate v1 limitations (degraded versions would be a surprise; it is more honest for them to be absent; the architecture does not block them): no `A`/`I`/`c` (needs an insert-replay machine — inserting text on every line at Esc, a separate feature; padding up to the column already exists in rowPlan), no `$` stretching to line ends (a "per-line right edge" flag on top of the same span), no `o` corner swap, blockwise `p` does not create lines past the buffer end; the splitting cases are verified by scripts against live vim 8.2/nvim 0.11, with deliberate deviations in micro-cases (vim itself is inconsistent, swim is uniform): a block entirely inside one tab vim ignores — swim splits it; a block yank inside one wide glyph vim yields the whole glyph — swim yields spaces of the covered cells; the uncovered right part of a wide glyph vim does not compensate for (the tail shifts) — swim pads with a space, as with tabs. Column arithmetic has one authority: `Character.displayStep(atDisplayCol:tabWidth:)` (CharWidth, SwimCore) is consumed both by the editor's rendering (`displayColForChar`/`charIndexAtDisplayCol` — thin delegates of VisualBlock) and by VisualBlock itself. Disk-reload carries `visualBlockCol` over together with `desiredCol`.
+
+**Confirming `:w` when the file changed (vim W12):** if the file was rewritten externally since the read (buffer mtime ≠ disk mtime — edits accumulated while git-pull/the terminal/an external tool was changing the file), `:w` refuses to overwrite silently: the editor programmatically enters command mode (the established modality mechanism — all keys, including `:` and global toggles, go to the owner) and draws a red question in the middle of the status bar: `Changed on disk — w: write, r: reload (discard edits), q: quit, a: abort`. One key decides: `w/W` — write anyway (`performWrite`, bypassing the check); `r/R` — reload discarding edits (`reloadActiveBufferDiscardingEdits` → forced reload + full LSP sync); `q/Q` — close the tab; `a/A/Esc` — abort ("Write aborted"); other keys re-ask (modally, like vim). `:wq`/`:x` do not close the tab if the write did not happen (`saveOrConfirm` returns false); also, `:wq` on a `[No Name]` with text no longer loses the buffer silently — "No file name".
+
+**Header plate:** when `headerPlate` is set, the content (line numbers, text, cursor, visual highlighting, scroll, PageUp/Down) is computed from `contentTop`/`contentHeight`; without the plate the geometry is bit-for-bit as before. Used by `CommitWindow`.
+
+**CommitWindow** — a thin layer over EditorWindow for the commit message: the only specialization is that `executeCommand` redirects `w`/`wq`/`x`/`wquit` to `delegate.requestCommit()` (the message = the commit); everything else (including `q`/`q!`) goes to the base. Opens in insert mode in the command window slot below the git panel (the `c` key), with the `Commit @ branch` plate. The entire editor toolkit works out of the box: undo, visual, `/` search, `%s`. Canceling — `:q`, `:q!` or a double Esc (insert → normal, the second Esc closes the window); `:` in insert is a literal character (subjects like `feat: ...` can be typed freely).
+
+**Go to definition (`gd`) / go back (`gb`):** the cursor position is converted to UTF-16 (`utf16ColForCharIndex`) and `textDocument/definition` is sent to the active LSP client. The response (Location/LocationLink[]) arrives asynchronously into `pendingDefinition` (NSLock); `pollLSP()` performs the jump: uri → path → tab (new or existing — dedup, no reload of unsaved buffers) → `goToPosition` (UTF-16 → graphemes, with clamping). Before the jump the origin position is pushed onto the return stack (limit 50); `gb` pops it and jumps back by the same mechanism. Not found / no server / empty stack — a message in the status bar.
+
+**Coordinate system:**
+- `cursorLine` / `cursorCol` — cursor position in characters (not bytes!)
+- `scrollY` — the top visible line (a line index); `scrollX` — horizontal scrolling in display cells (resolved to a grapheme per line via `charIndexAtDisplayCol`)
+- **Desired column (vim curswant):** `desiredCol` is stored per-tab in `EditorBuffer` next to `cursorCol` — in display cells (the screen column), not graphemes. Vertical movements (`j`/`k`/arrows/PgUp/PgDn — all modes, the shared `moveVertically`) do not recompute the column from the previous clamp — they resolve it through `charIndex(atDisplayCol:)`, so the target line's tab layout does not shift the desired screen column. All other positionings (horizontal, input, `gd`/search jumps, undo, `%s`, backspace joining) update `desiredCol = displayColForChar(...)` at the end of the mode handler (`isVerticalKey` is the exception). Result: the column survives short lines and the insert→normal transition without vim's leftward shift
+- The position "past the last character" (col == len) is legal in all modes (analogous to `virtualedit=onemore`): insert needs it for appending; all consumers are guarded (`x` — no-op, `p`/`P` and visual ranges are computed via `charToByteOffsetInLine`, which clamps to the line length; rendering — min-clamp). Before that, the only producer of col == len was already `byteToCharOffsetInLine` (undo/jumps), i.e. the state is not new
+- Conversion to bytes — via `PieceTable.charToByteOffsetInLine()` on insert/delete
+
+**Rendering (`update()`):**
+1. Fill the background with `Theme.bg`
+2. Line numbers in the left column (width: `max(4, digitCount + 2)`); the gutter's last cell is the diagnostics slot (see below)
+3. For each visible line:
+   - JSON → `SyntaxTokenizer.tokenizeJSON` — a character-by-character pass producing ordinary tokens (no keyword table)
+   - LSP tokens available → `SyntaxTokenizer.mergeWithLSP(builtin:lsp:)` layered over `semanticTokensFor(line:)`
+   - Otherwise → `SyntaxTokenizer.tokenize()` (only for files <50K lines)
+4. Visual selection highlighting
+5. Cursor drawing (reverse video in normal; in insert `drawCursor` steps aside and the renderer draws the terminal caret — a DECSCUSR bar, shape 5)
+
+**Git gutter (line number coloring):** the per-line status of the active file is computed by an Application background task (see status bar) — `GitLineStatus` is stored on `EditorBuffer` (survives tab switches; `applyGitLineStatus` applies it to the tab owning the path, even if the fetch catches a tab switch). Sources: `git diff --unified=0` (worktree vs index) and `git diff --cached --unified=0` (index vs HEAD); the new-line ranges are collected by the pure `HunkLines` (SwimCore, tested). Number coloring priority: unstaged (`Theme.unstagedColor`, orange) → untracked file, all lines green → staged (`Theme.stagedColor`, blue1); a line present in both trees shows unstaged — the state the next `:w` will write. The gutter reflects the last saved disk state (the live buffer is not diffed). Updates: saving, opening/switching a file, stage/unstage/discard in the git panel, git commands and terminal commands (`fetchGitStats` via `gitWorktreeChanged`/`gitCommandFinished`/`terminalCommandFinished`).
+
+**Diagnostics markers in the gutter:** the line number is no longer colored by severity — instead, a small dot `•` (half the cell height) is placed in the gutter's trailing cell (`drawLineNumberRow` with the `mark` slot): red — error, orange — warning, yellow — info/hint. Error + warning on one line — a small square `▪` (half the cell) in the color of the worse severity (red): the "square" shape signals "more than one problem", and a two-color pair in one cell smaller than half a cell is impossible — an fg/bg split fills the entire cell; the full-height fill `▀` was rejected in favor of compactness. The mark covers the trailing space, the gutter width does not change; the mark's background is always `Theme.bg`, so the line's visual-line highlighting does not conflict with the mark.
+
+**Token type to color mapping:**
+keyword → magenta, string → green, number → orange, comment → gray, type → blue1, function → blue, variable → fg, operator → blue5
 
 ---
 
-### Core/InteractiveShell.swift — Интерактивный подпроцесс (credential'ы pull/push)
+### Window/FileExplorerWindow.swift — File Explorer
 
-`InteractiveShell` — подпроцесс с живым reader-потоком: форма, которую требуют `git pull`/`push`, когда remote просит учётные. Заменяет `BackgroundTask` в CommandWindow (но не в остальных окнах — тем промпты не нужны).
+A panel with a directory tree. When a file is opened from a search result (Enter in the search space), the explorer expands the branch down to that file and selects it (`reveal(path:)` — expands ancestors, selects the node; paths outside the root are ignored, and paths inside hidden directories are unreachable while the listing filter is on — `H` disables it).
 
-**Механика (GIT_ASKPASS):** сессия ставит `GIT_ASKPASS`/`SSH_ASKPASS` на генерируемый один раз per-user хелпер (`/tmp/swim-askpass-<uid>.sh`, режим 0700):
+**Sync with the active file:** while the explorer is open, the tree points at the editor's current file — a single funnel `revealActiveFileInExplorer()` (Application) is called from every "current file" event: `activeFileChanged` (switching `gt`/`gT`/Ctrl+H/L, opening, closing a tab, `:e` — the event fires only when the path changes), `openFileAtLine` (an explicit call covering the case where a search result lands in the already active tab — there is no event), starting `swim file.swift` (the init event is useless: the explorer is not yet visible and has no root — reveal happens after `loadDirectory`), and reopening the explorer (`Ctrl+E`). A closed explorer is not touched — the tree is frozen, without flattening or lazy loads; on opening, it syncs with the active file instead of the stale selection. A `[No Name]` tab has no path — no-op. Reveal nuances: collapsed ancestors are re-expanded (the "show where we are" semantics, like reveal in VS Code); the first reveal of a deep path lazily loads every unloaded ancestor from disk (one batched `git check-ignore` per level), after that the `isLoaded` cache makes repeated switches cheap.
+
+Side panel with a file tree. Supports expanding/collapsing directories, selecting files, emoji icons for file types.
+
+**Data structure:**
+- `FileEntry` — file/directory (name, path, isDirectory, isExpanded, children, isLoaded)
+- `rootEntries: [FileEntry]` — root entries
+- `flatEntries: [(entry: FileEntry, depth: Int)]` — flat list of visible entries
+
+**Controls:**
+- `j/k` — up/down
+- `Enter` — for a file, open it; for a directory, toggle: a collapsed one expands and moves to the first child, an expanded one collapses (the cursor stays)
+- `l/Ctrl+Right (Ctrl+L)` — expand a directory and move to its first child; for a file, open it (never collapses)
+- `h/Ctrl+Left (Ctrl+H)` — move the cursor to the parent node and collapse it (at the root node, collapse the node itself)
+- `left/right` — horizontal shift of file names (step of 4, for viewing long names)
+- `g/G` — jump to top/bottom
+- `H` — listing filter: hidden (dot) and git-ignored entries are not shown by default; `H` (Shift+h) rebuilds the flat list in memory — instantly, without a rescan or subprocesses (entries with flags remain in the model); the selection stays on the same entry if it survived the refilter, otherwise it is clamped
+- `a` — new file/directory: opens the command line prefilled with `create ./<relative_path>/` — the `./` prefix emphasizes that the path is relative to the tree root (inside the selected directory, next to the selected file; `create ./` for an empty tree). The command `:create ./a/b/file.swift` strips the leading `./` and creates intermediate directories; a trailing `/` creates a directory. Validation: only relative paths without `..`; a duplicate or a filesystem error is reported in red in the status bar (`reportError`). On success the tree is rescanned preserving expansion (`reloadPreservingExpansion` — `loadDirectory` would collapse everything) and the new entry (file or directory) is expanded/selected via `reveal(path:)`. The command is also available manually via `:` — it is executed by the owner window (the explorer overrides `executeCommand`)
+- `d` — delete: command line with `delete ./<selected path>` (trailing `/` — a directory, deletion is recursive). The visible command buffer is itself the confirmation: Enter deletes, Esc cancels. `.` components are forbidden (a lone `.` would resolve to the tree root); not found / filesystem error — reported in red in the status bar; after deletion the tree is rescanned preserving expansion, the selection is clamped. Deleting a file open in a tab does not touch the in-memory buffer (`:w` will recreate the file — vim semantics)
+- `r` — rename/move by editing the path in place: prefilled `rename ./<selected entry's path>` with the cursor ready for retyping the name — before a directory's trailing `/` or before the file's `.extension` (without an extension, at the end of the name): erase the name — you rename; edit the directories — you move (`moveItem`, files and directories). The old path is captured when `r` is pressed (`pendingRenamePath`); Enter applies the command to it; the right side is a bare name (next to the old file) or a `./` path from the root. Spaces in names work; `:rename` without a capture — a clear error. Duplicate / same path / not found / filesystem error — in red; on success the tree is rescanned (fresh ignore verdicts — the new name may turn out to be dotted or match a gitignore pattern, in which case the entry disappears from the listing and the selection is clamped to a real row) and the new path is selected via `reveal(path:)`
+
+The listing filter (on by default): filtering happens when the flat list is built (`flattenEntries`), not at load time — `loadEntries` puts **all** entries into the tree, marking `isHidden` (dot files, for free) and `isIgnored`. Ignore verdicts come from one batched `git check-ignore --stdin -z` per loaded directory (NUL separation in both directions — "raw" paths with exotic characters survive; the workDir is the directory itself, so bare names resolve in the right pattern context). Git itself computes all `.gitignore` levels (root, nested, excludes, `!` negations, root-anchored rules) and never reports tracked files — exactly the semantics the tree needs. Children of ignored directories get the flag without a subprocess: git does not re-include inside an excluded subtree. Exit codes: 0 — some names are ignored (stdout lists them), 1 — none, anything else (no git / not a repository) — the filter is not applied; outside a repository the tree shows all non-hidden files. Flags are cached at directory load time and live until its rescan — an external `sed -i .gitignore` or files created outside swim are synced by the `:fe reset` command (a full rescan preserving expansion and selection). `create .gitignore` with the filter on will create the file on disk, but it will not appear in the tree — `H` will show it. Directories sort before files.
+
+Emoji icons: 🐦 Swift, ⚡ JS/TS, 🐍 Python, ⚙ Rust, 🔵 Go, 🌐 HTML, 📝 Markdown, 📋 JSON, etc.
+
+**Git file name highlighting:** file names (not directories — files only, icons stay neutral) are colored by git status: a new/untracked file (`??`) — green; all changes staged (`M `/`R `/…) — `Theme.stagedColor` (blue1); at least one unstaged change (` M`, `MM`, `AM`) — `Theme.unstagedColor` (orange); priority over staged — this is the state of the next `:w`; the classification is `GitChangeClass.classify` — SwimCore, tested). The git decoration palette is centralized in the constants `Theme.stagedColor`/`Theme.unstagedColor`/`Theme.deleteColor` — the gutter, the explorer, and the panel letters read the same constants. Application places the marks from the same background `git status --porcelain -z --untracked-files=all` through the shared parser `Porcelain` (`-uall` expands untracked directories into individual files — the tree shows files, not a collapsed `?? dir/` entry). Keys are in the tree's coordinate system (dir + the rest of the path below the repo root, both sides resolved through symlinks): the repo root and the starting directory may differ both by subdirectory and by symlink view, while the tree lives in the view of the starting directory; entries outside the subtree are not keyed. Coloring is a pure lookup at draw time, so lazy child loads and rescans pick up the marks for free (`setGitMarks` compares and dirties the window). The mark wins over the selection color — the selection is already visible via the row background. Updates — the same events as the git gutter (save/open/stage/discard/git commands; `create`/`delete`/`rename` in the explorer call `gitWorktreeChanged`).
+
+---
+
+### Window/GitPanelWindow.swift — Git Panel
+
+Git integration panel: staged/unstaged/untracked files, recent commits, diffs of files and commits, stage/unstage of files and individual hunks, discard, commit, pull/push. Modes: `.menu` (standard behavior), `.visualLine` (line-wise selection), `.command` (`:q` closes the panel).
+
+**Data (`BackgroundTask` background tasks, polled in `poll()`):**
+- `gitTask` — `rev-parse --abbrev-ref HEAD` (branch) + `rev-parse --show-toplevel` (repo root) + `status --porcelain -z` + `log -10 --format=%h|%an|%cr|%s`
+- `diffTask` — `git diff [--cached] -- <path>`; for untracked — `git diff --no-index /dev/null <path>` (run from the repo root — porcelain paths are always relative to the root); for a commit from the log — `git show <hash>`
+- `-z` produces NUL-separated records with raw paths: Cyrillic and other non-ASCII paths are not escaped; rename/copy records carry the old path as a separate NUL field — parsing goes through the shared pure parser `Porcelain` (SwimCore, tested; the panel keeps `origPath` in `GitFileStatus` for discard/unstage of renames), the same parser feeds Application's git decorations — the subtle orig-field logic lives exactly once
+
+**Paths and pathspec magic:** all pathspecs (`add`/`reset`/`checkout`/`rm`/`diff`) use `:(top,literal)` — paths from the repo root work from any working-directory subdirectory, and glob metacharacters in file names (`*?[]`) stay literals. Untracked files are deleted by absolute path from `repoRoot`.
+
+**Errors:** all mutating git calls go through `runGit()` — on a non-zero exit code, the first line of stderr goes to the status bar in red (`delegate.reportError`, the same channel and life cycle as editor errors: any key dismisses it). No error is swallowed silently.
+
+**Status view:**
+- `j/k` — navigation, `Enter` — diff of the selected file/commit
+- Row letter: staged section — `A` in `Theme.stagedColor` (blue1; everything in the index means "added for the next commit"), except staged deletions — those are honestly `D` in `Theme.deleteColor`; an unmerged entry (merge conflict, `UU` from porcelain) — `C` in `Theme.red` in BOTH sections: it is neither an addition nor an edit but a conflict awaiting resolution (`U` would read as unstaged); unstaged — the real worktree letter: `M` in `Theme.unstagedColor` (orange, like the gutter and the explorer), `D` in `Theme.deleteColor`; untracked — the classic dimmed `?`. The `yy` yank text carries the same letter (`GitFileStatus.sectionLetter`). Section headers — blue bold above each non-empty section, as before
+- `a` — add: stages the file's worktree state (`git add`, idempotent when already staged); on an unmerged row (`C`) in EITHER section this is "mark resolved" — add writes the resolution into the index and clears the unmerged stages, the only safe action for a conflict. The cursor stays in place: the list rebuild after refresh resolves the selection (and the visual anchor) with the `SectionedListSelection` policy (SwimCore, tested) — the position follows its entry while it lives in its section, and holds the row (with clamping) when the entry moves to another section or disappears; several files in a row can be added/discarded without the cursor jumping across sections. A vanished section — index clamping (selection) / collapse onto the selection (anchor)
+- `d` — drop "from where the change lives": staged section → unstage (`reset HEAD --`, a staged rename — on both sides), the worktree keeps the change; unstaged → discard (`checkout --`), untracked — delete the file from disk. The destructive half exists only where the change is NOT yet in the index — staged content cannot be destroyed with a single key, discard-after-unstage is an explicit two steps. Discard rewrites the file on disk — the panel calls `fileChangedOnDisk` (absolute path), and Application reloads that file's clean editor tab from disk (`BufferManager.reloadIfClean`: the tab's place, mode, and clamped cursor/scroll are preserved, undo is reset; a modified buffer is not touched — unsaved edits outrank the disk; file missing on disk — vim semantics, the buffer lives on, `:w` will recreate it), LSP gets a full didChange (contentChange without range) + a token re-request. add/unstage of a file does NOT rewrite it (index only) — no reload needed
+- `c` — commit window (see CommitWindow); during a merge (live MERGE_HEAD) the prefill is the message git prepared (`--git-path MERGE_MSG`, "Merge branch 'x'"; `# Conflicts:` comments are cut out) — completing the merge is edit-and-save; pressing `c` again while the window is open — refocus without clobbering the text
+- `C` — commit window prefilled with the last commit's message (`git log -1 --format=%B` — subject + body, not just the subject from the log list): handy for a series of commits on one task. The text is inserted as the initial content (no undo record, not modified), the cursor at the end. Empty history (a fresh repository) — just an empty editor, the `c` behavior
+- `p` / `P` — globally: `git pull` / `git push` are now `Ctrl+O` / `Ctrl+P` from any window (the same `runGitCommand` funnel: output and spinner go to CommandWindow; if the remote asks for credentials — input in the CommandWindow command line, see Core/InteractiveShell.swift); the local `p`/`P` were removed from the git panel
+- `yy` — copy the status row (OSC52), `V` — visual selection of entries
+- `Escape` — close the panel
+
+**Diff view:**
+- `j/k` — line navigation, `a` — stage the active hunk (a patch from the diff header + the hunk's lines → `apply --cached`; the index — the file is not touched, the editor buffer stays current; on a staged-diff — a quiet no-op), `d` — drop the hunk "from where it lives": staged-diff → unstage (`apply --reverse --cached`, the worktree keeps it; a full discard — a second `d` from the unstaged-diff), unstaged-diff → discard (`apply --reverse`, success → `fileChangedOnDisk` → clean tab reload), untracked — file deletion
+- `yy` / `V`+`y` — copy lines, `Escape` — back to the status view (from visual — exit visual first)
+
+An open file diff is re-requested on every refresh result — `reloadOpenDiff(afterRefresh:)` in `poll()`: a branch switch, pull, or terminal command will not leave stale lines. The panel's hunk actions restart the diff themselves and immediately (spinner in the same frame, hunks are cleared synchronously — a double press will not find a hunk to act on twice); there is no double render: a monotonic request-clock orders the two pipelines — a refresh does not reload a diff requested after its start (that one is fresher by definition). A commit diff is addressed by hash and immutable — not re-requested; an emptied diff (the file became clean) closes itself; an untracked file that disappeared from the status closes the view immediately — `git diff --no-index` on a missing file answers with an access error, not an empty diff.
+
+The diff is highlighted: green — additions, red — deletions, cyan — hunk headers. On the left — a gutter with line numbers in the editor's style: the shared primitive `Window.drawLineNumberRow` (a right-aligned number in the first `width-1` cells + a trailing slot — a space or the caller's mark; width `max(4, digits+2)`) draws both the editor gutter and the diff gutter — no code duplication (only the editor uses the mark — diagnostics dots). Numbers are computed from unified diff counters (`@@ -a +c @@` seeds both) and only inside hunks — commit message lines like `+1 fixed` do not count as content: `+` lines carry the new file's number (in green), `-` the old one's (in red), context — shared (dimmed); `@@` headers, `+++`/`---`, and commit metadata — no number. Combined diffs of merge commits (`diff --cc`, `@@@` headers with two parents and two-column line prefixes) do not fit the two-counter model — their hunks get no numbers; an honest nothing is better than wrong. The number color does not change on the cursor row — the row highlighting already marks the current one. The raw `diffLines` are untouched — yank and gutter patch assembly do not see it. All panel headers (branch/loading/visual/diff with hints) — through the single `HeaderPlate` mechanism; long paths are truncated to the window width (`drawHeader` uses `prefix(width)`).
+
+Any completed git command (`pull`/`push`/`commit` — `gitCommandFinished` from CommandWindow) restarts `fetchGitStats` (a commit clears staged marks and the gutter's per-line colors), updates the panel, and does an **mtime-sweep** of clean tabs (`BufferManager.reloadChangedOnDisk`): a merge during pull could have rewritten open files — the mtime differs from the one recorded at open/` :w`/reload → reload; identical content → only the mtime is updated (undo is not reset). The same sweep — after a command in the built-in terminal (`terminalCommandFinished`: for example, a manual `git checkout`). The panel's own mutations (stage/unstage/discard of a file and a hunk) call `gitWorktreeChanged` after `refresh()` — Application restarts the same fetch, updating the editor's git gutter and the explorer's marks. After list rebuilds the selection (`selectedSection`/`selectedRow`) is re-resolved by the `SectionedListSelection` policy inside `rebuildStatusList()` (called from `poll()`). When the panel is reopened, the diff view resets to the list (`closeDiffView`) and the body is cleared (`prepareOpen`): in flight — an empty body and a plate without the "@ branch" (no spinners/"loading" — even a transient indication is visible to the eye); the missing content appears in a single frame when the fetch lands. In-place refreshes `a`/`d`/completed commands do NOT clear the panel — an in-place update does not count as a jump. The remaining gap in the family: edits outside swim (sed -i bypassing the app) — a file-watcher/focus-time check is needed, separately.
+
+All git operations go through `Shell.git` (a `/usr/bin/git` subprocess, arguments passed as an array — quotes and Cyrillic in paths/messages are safe).
+
+---
+
+### Window/GitBranchesWindow.swift — Branch Picker
+
+Branch picker: opened globally with `Ctrl+B` (toggle: closed/open; reopening — a freshly loaded list, menu mode, cursor on the newest branch). The model is like search results, but with two input surfaces over one list: `.insert` — typing the filter or (`a` in the picker's menu, the branch creation phase) the new branch's name in the window's own input row (row 0; the caret is a terminal bar cursor via the shared factory `CursorRenderInfo.insertCaret`, one for all input surfaces — the editor's insert, the command line, the search/picker/terminal prompts; normal mode does not own the terminal cursor — the renderer resets the shape to a block; the visible text portion and the caret column are computed via the shared pure policy `InputLine` — SwimCore, tested), `.menu` — navigation; `.command` — the standard `:q`.
+
+**Data (paginated, git does everything — sorting, searching, and the limit):** `git for-each-ref --ignore-case --count=<limit> --sort=-committerdate --format=%(refname:short)%00%(committerdate:relative)%00%(HEAD)%00%(refname) [patterns]` — sorting by last commit date and page counting are done by git itself (swim neither sorts nor filters; local and remote branches come in one committerdate order), the current branch is recognized by `%(HEAD)` = `*` and drawn bold green with a `*` marker; on the right, in a dimmed column — the commit's relative date; remote-tracking entries (full name `refs/remotes/…` — the 4th NUL field) — in dimmed `Theme.comment`: this is not the working set yet, there is no local copy; the symlink `refs/remotes/<remote>/HEAD` (a pointer to the remote's default branch, not a branch) is excluded. Parsing — the pure parser `BranchList` (SwimCore, tested): lines by `\n`, fields by NUL; an empty HEAD flag on non-current branches must not break field counting. Not a repository (non-zero exit) — a distinct "Not a git repository" state, different from an honestly empty list.
+
+**Paging:** a page is 20 entries (`--count`); when the cursor gets within 5 rows of the loaded page's end (the 16th row of 20), the limit grows by a page and the list is re-requested wider — the branch table is read exactly as deep as the user actually went. A short page (fewer than requested) — git exhausted the matches, "no more"; the flag is compared against the limit at request time so that page growth during the flight does not falsify it. The indicator — a trailing "… more" / "… loading" under the list (there is no branch counter in the plate).
+
+**Search goes to git with every character** — the cache is not reused: the first page of matches for a longer query is NOT a subset of the on-screen page (the newest `fix*` may contain not a single `fixe*`), so every edit of the query restarts for-each-ref with the new pattern; the newest-wins `BackgroundTask` collapses a fast-typing queue into the last request. Patterns are built by `BranchList.matchPatterns` (SwimCore, tested): an empty query — locals only (`refs/heads/` — the unfiltered table is the working set); non-empty — both spaces: `refs/heads/**/*<query>*` + `refs/remotes/**/*<query>*` (a branch pushed to a remote without a local copy — exactly what is being searched for; a local duplicate suppresses its remote rows — Enter on the local one is the same switch, and `D` already covers the remote side; a remote twin without a local one stays on every remote where it lives; `Enter` on such a row switches by name without the remote prefix, git-DWIM creates a local tracking branch — the manual `git switch <name>` flow; `d`/`D` on a remote row refuse with a message — deleting the remote side is `D` on the local branch) — `**/` crosses path component boundaries (a single `*` in WM_PATHNAME would not see nested `feature/x`), the query's slash stays a literal ("feature/t" matches "feature/two-fix"), the query's glob metacharacters are escaped (`\*?\[]`), case-insensitivity — via native `--ignore-case`.
+
+**Keys:** the insert phase owns neither the selection nor the action keys: `↑`/`↓` and `Enter` ("search finished", the filter is kept) move it to menu mode, placing the cursor on the first row (the next press moves from there); `Esc` in insert — the same plus a filter reset (the list is re-requested without a pattern via the same path as manually erasing the query), `Esc` in menu — closing; `i` — back to typing (cursor at the end). In menu, `Enter` — `git switch <name>` through the single `runGitCommand` funnel (CommandWindow shows the output/errors — for example, a dirty-tree refusal; its `gitCommandFinished` does all the post-switch service: fetchGitStats, panel refresh, mtime-sweep of clean tabs — switch rewrites files); the picker closes before launch, Enter on the current branch — a no-op with a message; `Ctrl+Enter` — the same + `git pull` right after (on the current branch — just pull): mainstream terminals send Ctrl+Enter as LF (byte 10) — a byte twin of Ctrl+J, without any keyboard protocol negotiations; the byte is intercepted only in the menu phase, insert silently ignores it. `a` in menu — branch creation: the input row becomes a name prompt (` New branch: `), the name starts as the current filter (typed a name, found no branch — `a` keeps what was typed), name edits do not re-request git; `Enter` — `git switch -c <name>` through the same runGitCommand funnel (creation + switching in one move; output/errors visible, the post-finish service is free), `Esc` — back to the list, the filter untouched: the name lives in a separate buffer, not in the filter. `m` in menu — merge into the current branch: the input row becomes ` Merge branch: ` taking `<name> [arguments…]` — the first token is the ref, the rest pass through (`side --no-ff` works verbatim); the invocation is rebuilt as `git merge <args> -- <name>`, so user flags stay flags and a leading-dash name stays an operand, validity is git's problem (visible errors). A conflicted finish is not an error but a state: CommandWindow detects unmerged entries (`ls-files -u`) and holds a modal one-key choice — `k` keep for manual resolution (then commit from the git panel), `o`/`t` abort and merge again with `-X ours/theirs` (the user's arguments are preserved in the retry), `Esc` — `git merge --abort` (see the key table below). `d`/`D` in menu — branch deletion (see the key table below): through the same runGitCommand funnel, the picker does not close — the finished command refreshes the list itself. The chain is executed by CommandWindow (`runCommand(then:)`): the follow-up starts only after the first command completes SUCCESSFULLY (after its `gitCommandFinished` — the world is already refreshed), on failure or an Esc-cancel it is quietly dropped — the first command's output stays on screen with an explanation. Selection policy: the insert phase does not own the selection — the index sits on the first row, and every fetch of the input phase (filter edits, Esc-reset, a fresh open) lands there too; the branch name via reload is kept only by menu-phase fetches (page growth, external refreshes — `gitCommandFinished`). The intent is captured at request time and travels with the result (`BranchFetch.keepsSelection`), like the pattern and the limit — the mode may change while the request is in flight, the result does not obey it.
+
+**Integration:** its own slot in the bottom stack (git → branches → command window → terminal; the same `min(25, h/2)` and waterfall trimming, `Ctrl+S` — half the height); the spinner ticks in the shared `tickSpinners` — its anyDirty block also consumes landed background results (`pollWindows`) and renders them while idle, without waiting for a key; a completed git command refreshes the list while the picker is open; entry — only the global `Ctrl+B` (intercepted from any window, including the terminal, consistent with the other toggles): all branch operations live here, the git panel does not duplicate them.
+
+---
+
+### Core/InteractiveShell.swift — Interactive subprocess (pull/push credentials)
+
+`InteractiveShell` — a subprocess with a live reader thread: the form that `git pull`/`push` require when the remote asks for credentials. Replaces `BackgroundTask` in CommandWindow (but not in the other windows — they do not need prompts).
+
+**Mechanics (GIT_ASKPASS):** the session points `GIT_ASKPASS`/`SSH_ASKPASS` at a once-per-user generated helper in the system temp dir (`FileManager.default.temporaryDirectory` — /tmp on Linux, $TMPDIR on macOS; name `swim-askpass-<uid>.sh`, mode 0700):
 
 ```sh
 #!/bin/sh
-printf '%s\n' "$1" >&2                          # промпт — swim детектит его в stderr
-IFS= read -r ans < "$SWIM_CRED_FIFO" || exit 1  # ответ — из per-session FIFO сессии
-printf '%s\n' "$ans"                            # ответ, который git читает из stdout
+printf '%s\n' "$1" >&2                          # the prompt — swim detects it in stderr
+[ -n "$SWIM_CRED_FIFO" ] || exit 1              # the guard — no FIFO (a degraded start), fail fast
+IFS= read -r ans < "$SWIM_CRED_FIFO" || exit 1  # the answer — from the session's per-session FIFO
+printf '%s\n' "$ans"                            # the answer git reads from stdout
 ```
 
-askpass вызывается git'ом с промптом в `$1`; промпт доезжает до swim через наследуемый stderr каждого хелпера, но **ответ не может ехать по stdin сессии**: для HTTP(S) remote учётные спрашивает transport-хелпер `git-remote-https`, чей stdin — протокольный пайп к родительскому git'у (унаследовавший его askpass читает мусор протокола, а запись в никем не читаемый stdin сессии ловит EPIPE); askpass у ssh получает `/dev/null`. Поэтому канал ответов — per-session FIFO (`SWIM_CRED_FIFO`, имя `/tmp/swim-cred-<pid>-<uuid>.fifo`, 0600, unlink по EOF'ам), открытый сессией O_RDWR заранее: open не блокируется, записанная строка буферизуется до прихода читателя, EPIPE невозможен, пока сессия держит дескриптор (она сама reader). Пароль не касается диска и `/dev/tty` (raw-терминал остаётся у swim, own tty-промпт git'а не включается — askpass приоритетнее). `SSH_ASKPASS_REQUIRE=force` — OpenSSH ≥ 8.4 спрашивает пароль через хелпер даже при tty; ssh-сценарий работает полностью (stdin хелперу больше не нужен).
+askpass is invoked by git with the prompt in `$1`; the prompt reaches swim through each helper's inherited stderr, but **the answer cannot travel over the session's stdin**: for HTTP(S) remotes the credentials are requested by the transport helper `git-remote-https`, whose stdin is the protocol pipe to the parent git (an askpass inheriting it reads protocol garbage, and writing into a stdin nobody reads hits EPIPE); askpass for ssh gets `/dev/null`. Therefore the answer channel is a per-session FIFO (`SWIM_CRED_FIFO`, name `swim-cred-<pid>-<uuid>.fifo` in the same system temp dir, 0600, unlinked on EOFs), opened by the session O_RDWR in advance: the open does not block, a written line is buffered until a reader arrives, EPIPE is impossible while the session holds the descriptor (it is itself the reader). The password never touches disk or `/dev/tty` (the raw terminal stays with swim, git's own tty-prompt is not enabled — askpass takes priority). `SSH_ASKPASS_REQUIRE=force` — OpenSSH >= 8.4 asks for the password through the helper even with a tty; the ssh scenario works fully (stdin for the helper is no longer needed).
 
-**Reader-поток:** не-блокирующее чтение обоих пайпов в одном потоке (последовательное блокирующее — классический дедлок двух пайпов, два потока — больше координации); EOF на обоих → unlink FIFO → вывод публикуется в mailbox; код выхода собирает владеющий поток в `consumeResult` (процесс к этому моменту мёртв, `waitUntilExit` мгновенный — reader не трогает Process, тот не-Sendable, и его внутренний реапер владеет waitpid). Промпты детектятся по полным строкам stderr: `Username for '…'` → login, `Password for '…'` / суффикс `password:` / `Enter passphrase` → password; строки с префиксами `fatal:`/`error:`/`remote:`/`warning:`/`hint:` исключены — провал auth не перевзводит промпт, а sideband-вывод remote не может подсунуть поддельный (реальный askpass-эхо приходит без префикса).
+**Reader thread:** non-blocking reading of both pipes in one thread (sequential blocking is the classic two-pipe deadlock, two threads — more coordination); EOF on both → unlink the FIFO → the output is published to a mailbox; the exit code is collected by the owning thread in `consumeResult` (the process is dead by then, `waitUntilExit` is instantaneous — the reader does not touch Process, which is not Sendable, and its internal reaper owns waitpid). Prompts are detected by full stderr lines: `Username for '…'` → login, `Password for '…'` / the suffix `password:` / `Enter passphrase` → password; lines with the prefixes `fatal:`/`error:`/`remote:`/`warning:`/`hint:` are excluded — an auth failure does not re-arm the prompt, and remote sideband output cannot sneak in a fake one (a real askpass echo arrives without a prefix).
 
-**Concurrency-модель (без `@unchecked`/`nonisolated(unsafe)`):** объект сессии не Sendable и main-thread-confined — владеет `Process` и FIFO-дескриптором обычными stored-свойствами, компилятор это гарантирует. Единственное межпоточное состояние — `Mailbox`: маленький Sendable-класс с `Synchronization.Mutex<State>` (prompt/cancelled/done/stdout/stderr). Reader-поток захватывает только Sendable-значения — ссылку на Mailbox, сырые fd, путь FIFO, ни `self`, ни `Process` — поэтому цикл чтения не может оборваться dealloc'ом сессии и всегда дорабатывает до реапа/unlink.
+**Concurrency model:** the session object is not Sendable and main-thread-confined — it owns the `Process` and the FIFO descriptor as plain stored properties, and the compiler guarantees that. The only cross-thread state is `Mailbox`: a small `@unchecked Sendable` class whose state (prompt/cancelled/done/stdout/stderr) lives in SwimCore's `Locked<State>` — an NSLock cell (`Synchronization.Mutex` would need macOS 15 while the package ships 13; the `@unchecked` vouch is the same one `LSPClient`/`BackgroundTask` make for their `Locked` mailboxes — every access is behind the lock). The reader thread captures only Sendable values — a reference to the Mailbox, raw fds, the FIFO path, never `self` or `Process` — so the read loop cannot be broken off by the session's dealloc and always runs to the reap/unlink.
 
-**UI-контракт (CommandWindow):** промпт → `enterCommandMode()` окна; лейбл режима в статус-баре через переопределяемый хук `Window.commandModeLabel()` — `LOGIN`, затем `PASSWORD` (`PASS` на узких, < 45 колонок), тот же оранжевый бейдж; ненулевой хук также убирает префикс `:` — поверхность вводит credential, а не `:`-команду. Плашка: `⠏ git push — waiting for password`. Enter отправляет строку в FIFO (`answer`), **Esc — отмена всей операции** (`cancel()`): FIFO закрывается (каждый заблокированный askpass-рид падает, освобождая наследованные дескрипторы) + SIGTERM процессу — операция умирает, а не виснет; финальная плашка «cancelled». Той же отменой страхуются закрытие окна (`Application.closeWindow` → `cancelPendingCredential`) и повторный запуск команды поверх висящего промпта; закрытие окна при обычном (без промпта) прогоне процесс не трогает — прежнее поведение.
+**UI contract (CommandWindow):** prompt → the window's `enterCommandMode()`; the mode label in the status bar via the overridable hook `Window.commandModeLabel()` — `LOGIN`, then `PASSWORD` (`PASS` on narrow screens, < 45 columns), the same orange badge; a non-empty hook also removes the `:` prefix — the surface is entering a credential, not a `:`-command. Plate: `⠏ git push — waiting for password`. Enter sends the line into the FIFO (`answer`), **Esc — cancels the whole operation** (`cancel()`): the FIFO is closed (every blocked askpass reader dies, releasing the inherited descriptors) + SIGTERM to the process — the operation dies rather than hangs; the final plate says "cancelled". The same cancellation covers closing the window (`Application.closeWindow` → `cancelPendingCredential`) and re-running a command over a hanging prompt; closing the window during a normal (promptless) run does not touch the process — the previous behavior.
 
-**Известные ограничения:** ввод пароля отображается в командной строке открытым текстом (общая поверхность без маскировки); промпт всплывает только в текущем space (poll идёт по `spaces.current` — как у всех фоновых задач: задержка до возврата из search space, не дедлок).
-
----
-
-### Core/PipeWriter.swift — EPIPE-толерантная запись в пайпы
-
-Единственная форма записи в stdin/FIFO детей (`LSPClient`-кадры, `Shell.run` stdin, `InteractiveShell.answer`): сырой `write(2)`-цикл — EINTR ретраится, частичные записи дозаписываются, любая жёсткая ошибка останавливает цикл молча и возвращается Bool'ом (`writeAll` → false). `FileHandle.write` для этого непригоден: corelibs оборачивает syscall в `try!`, любая ошибка возврата (EPIPE в первую очередь — ребёнок умер между проверкой живости и записью) фаталит весь процесс (`Foundation/FileHandle.swift:709`, проверено на main-потоке и dispatch-очереди). Истина о живости принадлежит машине состояний вызывающего: `LSPClient` помечает клиент мёртвым по недоставленному кадру (полу-открытый сервер — stdin закрыт, stdout держится — иначе вечно сидел бы isReady, молча глотая кадры), `Shell`/`InteractiveShell` владельцы своего лайвнеса и результат игнорируют. Сигнальную половину политики ставит `main.swift`: `signal(SIGPIPE, SIG_IGN)` процесс-глобально — иначе ошибка приходит сигналом (exit 141), и ни один обработчик возврата не успевает; ни Dispatch, ни Foundation-Process/Pipe этот игнор на Linux не ставят (проверено), раньше он доставался только наследованием от родительского shell'а. Дети наследуют игнор: пайплайны встроенного терминала видят EPIPE-возвраты вместо смерти сигналом — та же цена, что платит любой редактор на игнорирующем SIGPIPE рантайме.
+The password is never echoed in the clear: `masksCommandLine()` (CommandWindow) makes the status bar render asterisks of the same length — the login stays visible. **Known limitations:** the prompt pops up only in the current space (polling goes over `spaces.current` — like all background tasks: a delay until returning from the search space, not a deadlock).
 
 ---
 
-### Window/SearchResultsWindow.swift + PreviewWindow.swift — Поиск по проекту
+### Core/PipeWriter.swift — EPIPE-tolerant pipe writing
 
-Пара окон пространства `search`: слева — дерево результатов, сгруппированных по директориям и файлам, справа — превью выбранного файла с подсветкой активной строки.
+The single form of writing to children's stdin/FIFO (`LSPClient` frames, `Shell.run` stdin, `InteractiveShell.answer`): a raw `write(2)` loop — EINTR is retried, partial writes are completed, any hard error stops the loop silently and is returned as a Bool (`writeAll` → false). `FileHandle.write` is unfit for this: corelibs wraps the syscall in `try!`, and any return error (EPIPE first of all — the child died between the liveness check and the write) kills the whole process (`Foundation/FileHandle.swift:709`, verified on the main thread and a dispatch queue). The truth about liveness belongs to the caller's state machine: `LSPClient` marks the client dead on an undelivered frame (a half-open server — stdin closed, stdout held up — would otherwise sit isReady forever, silently swallowing frames), `Shell`/`InteractiveShell` own their liveness and ignore the result. The signal half of the policy is set by `main.swift`: `signal(SIGPIPE, SIG_IGN)` process-globally — otherwise the error arrives as a signal (exit 141), and no return-error handler can catch it; neither Dispatch nor Foundation Process/Pipe sets this ignore on Linux (verified), previously it was only inherited from the parent shell. Children inherit the ignore: built-in terminal pipelines see EPIPE returns instead of death by signal — the same price any editor on a SIGPIPE-ignoring runtime pays.
 
-**Ввод запроса:** фаза ввода — это insert-режим окна (`inputMode` — производное от `mode == .insert`); при входе в space (Ctrl+F) панель сразу принимает текст, `:` при этом печатается буквально. Навигация по результатам — menu-режим. Escape из навигации возвращает к вводу нового запроса.
+---
 
-**Поиск (`search(query:in:)`):**
-- Рекурсивно обходит все файлы в директории
-- Исключает: `.git`, `node_modules`, `.build`, `build`, `DerivedData`
-- Пропускает бинарные файлы (png/jpg/zip/exe/o/so/...)
-- Построчный case-insensitive поиск
+### Window/SearchResultsWindow.swift + PreviewWindow.swift — Project Search
 
-**Структура результатов:**
+A pair of windows in the `search` space: on the left — a tree of results grouped by directories and files, on the right — a preview of the selected file with the active line highlighted.
+
+**Query input:** the input phase is the window's insert mode (`inputMode` — derived from `mode == .insert`); on entering the space (Ctrl+F) the panel takes text immediately, and `:` is typed literally then. Navigating the results is menu mode. Escape from navigation returns to entering a new query.
+
+**Search (`search(query:in:)`):**
+- Recursively walks all files in the directory
+- Excludes: `.git`, `node_modules`, `.build`, `build`, `DerivedData`
+- Skips binary files by extension (png/jpg/jpeg/gif/pdf/zip/gz/o/so/dylib/a)
+- Line-by-line case-insensitive search
+
+**Result structure:**
 - `SearchResult` — filePath, lineNumber, lineContent, matchStart, matchLength
-- `groupedResults` — сгруппированы по директориям → файлам
+- `groupedResults` — grouped by directories → files
 
-**Управление:**
-- `j/k` — навигация
-- `Enter/l/Ctrl+Right (Ctrl+L)` — развернуть/свернуть директорию/файл, перейти к результату
-- `h/Ctrl+Left (Ctrl+H)` — свернуть
-- `left/right` — горизонтальный сдвиг строк результатов (шаг 4, для просмотра длинных строк)
-- `Escape` — к вводу запроса / выход из space
-
----
-
-### Window/TerminalWindow.swift — Встроенный терминал
-
-Панель терминала (Ctrl+T или `:terminal`/`:term`/`:sh`): ввод shell-команд и просмотр вывода, не покидая редактор. Сверху — фиксированная плашка `Terminal @ folder_name` во всю ширину окна (рабочая директория) через общий механизм `Window.headerPlate` (контент ниже считается от `contentTop`/`contentHeight`), ниже — история вывода на тёмно-сером фоне `Theme.terminalBg`, отличном от фона остальных окон.
-
-**Ввод:** живое приглашение `>` — последняя строка прокручиваемого буфера, фиксированной строки ввода нет. Редактирование строки (`left/right/home/end/backspace/delete`), `Ctrl+Left`/`Ctrl+Right` — история команд, `Tab` — автодополнение пути (одно совпадение подставляется целиком, для директорий с `/`; несколько — общий префикс), `Enter` — запуск.
-
-**Прокрутка вывода:** `up/down` — построчно, `Ctrl+Up/Down`, `PageUp/PageDown` — страница, `Ctrl+D/U` — полстраницы. После `Enter` вид ставится на выполненной команде — она верхняя строка окна, результат читается сверху вниз без ручной прокрутки; сам вывод положение вида не меняет. Ввод любого символа, `Enter`, `Escape` или переключение истории (`Ctrl+Left/Right`) возвращают вид к живому приглашению.
-
-**Запуск (`submit`):** каждая команда выполняется отдельным `/bin/sh -c` (работают пайпы, `&&`, переменные окружения) в фоне через `BackgroundTask`; в приглашении крутится spinner. Вывод: stdout — обычным цветом, stderr — красным, при ненулевом коде добавляется строка `[exit N]`. Буфер вывода ограничен 10 000 строк (старые записи вытесняются). По завершении любой команды окно зовёт `terminalCommandFinished` в делегате — Application перезапускает `fetchGitStats` (ветка/diff в статус-баре могли измениться: файл отредактирован, переименован, переключена ветка) и `gitPanel.refresh()` (тот же контракт, что у git-команд из CommandWindow).
-
-**Специальные команды:** `cd <dir>` — меняет рабочую директорию окна (каждая команда живёт в своём sh, поэтому cwd трекает само окно; поддерживаются `~` и относительные пути), `clear`/`cls` и `Ctrl+L` — очистить вывод, `exit`/`logout` — закрыть окно терминала (`requestClose` в делегате; окно скрывается, история сохраняется до конца сессии).
-
-Пока терминал в фокусе, `:` и `Tab` уходят в набираемую команду — командная строка приложения и цикл фокуса их не перехватывают.
+**Controls:**
+- `j/k` — navigation
+- `Enter/l/Ctrl+Right (Ctrl+L)` — expand/collapse a directory/file, go to the result
+- `h/Ctrl+Left (Ctrl+H)` — collapse
+- `left/right` — horizontal shift of result lines (step of 4, for viewing long lines)
+- `Escape` — to query input / exit the space
 
 ---
 
-### Window/StatusBarWindow.swift — Строка состояния
+### Window/TerminalWindow.swift — Built-in Terminal
 
-Однострочная панель внизу экрана:
+Terminal panel (Ctrl+T or `:terminal`/`:term`/`:sh`): type shell commands and view output without leaving the editor. At the top — a fixed full-width `Terminal @ folder_name` plate (the working directory) via the shared `Window.headerPlate` mechanism (content below is computed from `contentTop`/`contentHeight`), below — the output history on the dark-gray `Theme.terminalBg` background, distinct from the background of the other windows.
 
-**Левая часть:** Цветной бейдж режима — источник режима окно-владелец командной строки, иначе сфокусированное окно (MENU=синий, NORMAL=синий, INSERT=зелёный, VISUAL/V-LINE=фиолетовый, COMMAND=оранжевый). Источник задаётся weak-ссылкой `commandSource` — статус-бар сам читает из него режим, буфер командной строки и позицию её курсора, которую отдаёт как терминальный курсор-бар через `cursorRenderInfo()` (перекрывает курсор редактора — поверхности ввода взаимоисключающи по правилам фокуса). Пока окно-владелец собирает credential, вместо COMMAND хук `commandModeLabel()` отдаёт LOGIN/PASSWORD (PASS на узких) — CommandWindow, см. Core/InteractiveShell.swift. Статус-бар ресинхронизируется после каждой клавиши — смена фокуса (тогглы панелей, Tab, смена space) отражается сразу.
+**Input:** a live `>` prompt — the last line of the scrollable buffer, there is no fixed input line. Line editing (`left/right/home/end/backspace/delete`), `Ctrl+Left`/`Ctrl+Right` — command history, `Tab` — path completion (a single match is substituted in full, for directories with a `/`; several — the common prefix), `Enter` — run.
 
-**Центр:** В режиме COMMAND — `:<команда>`, при ошибке — текст ошибки. Иначе — git-ветка и суммарные `+N -M` добавленных/удалённых строк рабочего дерева (`git diff HEAD --numstat`, фоновая задача с дебаунсом после правок; зелёный/красный). Вне git-репозитория центр пуст.
+**Output scrolling:** `up/down` — line by line, `Ctrl+Up/Down`, `PageUp/PageDown` — a page, `Ctrl+D/U` — half a page. After `Enter` the view is placed on the executed command — it is the top row of the window, the result reads top-down without manual scrolling; the output itself does not move the view. Typing any character, `Enter`, `Escape`, or switching history (`Ctrl+Left/Right`) returns the view to the live prompt.
 
-**Один fetch — три потребителя:** та же фоновая задача (`gitStatsTask`, сериализация через `gitStatsState`: запросы в полёте коалесцируются в один рефетч) помимо статусов статус-бара считает git-декорации: построчный статус активного файла (`HunkLines` по `git diff -u0` / `--cached -u0` → `GitLineStatus` на таб; pathspec — путь, разрешённый через symlink'и, относительно разрешённого корня репо) для окраски номеров гуттера и марки имён файлов проводника (`Porcelain.parse` + `GitChangeClass` → `[путь: класс]` в координатах дерева). `pollGitStats()` раздаёт результаты: статус-бару — числа, `editor.applyGitLineStatus` — гуттер (по пути, таб мог переключиться), `fileExplorer.setGitMarks` — проводник. Триггеры фетча: старт, `fileSaved`, `activeFileChanged`, `gitWorktreeChanged` (stage/unstage/discard панели, create/delete/rename проводника), открытие git-панели, `gitCommandFinished`, `terminalCommandFinished`, mtime-reload'ы.
+**Running (`submit`):** each command runs as its own `/bin/sh -c` (pipes, `&&`, environment variables work) in the background via `BackgroundTask`; a spinner spins in the prompt. Output: stdout — in the normal color, stderr — in red, and on a non-zero exit code a `[exit N]` line is added. The output buffer is capped at 10,000 lines (older entries are evicted). After any command completes, the window calls `terminalCommandFinished` on the delegate — Application restarts `fetchGitStats` (the branch/diff in the status bar may have changed: a file edited, renamed, branch switched) and `gitPanel.refresh()` (the same contract as git commands from CommandWindow).
 
-**Правая часть:** Тип файла, `+N -M` по текущему файлу (из того же numstat, обновляется после сохранения), кодировка, `строка:столбец`, процент позиции в файле
+**Special commands:** `cd <dir>` — changes the window's working directory (each command lives in its own sh, so the window itself tracks the cwd; `~` and relative paths are supported), `clear`/`cls` and `Ctrl+L` — clear the output, `exit`/`logout` — close the terminal window (`requestClose` on the delegate; the window hides, the history is kept until the end of the session).
+
+While the terminal is focused, `:` and `Tab` go into the command being typed — the application command line and the focus cycle do not intercept them.
 
 ---
 
-### LSP/LSPClient.swift — LSP-клиент
+### Window/StatusBarWindow.swift — Status Bar
 
-Клиент Language Server Protocol для семантической подсветки и go-to-definition. Поддерживаемые серверы (`Application.setupLSP` ищет по стандартным путям + `which`):
+A single-line panel at the bottom of the screen:
+
+**Left part:** the colored mode badge — the mode source is the command line's owner window, otherwise the focused window (MENU=blue, NORMAL=blue, INSERT=green, VISUAL/V-LINE=purple, COMMAND=orange). The source is set via the weak `commandSource` reference — the status bar itself reads the mode, the command-line buffer, and its cursor position from it, which it serves as the terminal bar cursor via `cursorRenderInfo()` (overriding the editor cursor — input surfaces are mutually exclusive by the focus rules). While the owner window is collecting a credential, the `commandModeLabel()` hook returns LOGIN/PASSWORD instead of COMMAND (PASS on narrow screens) — CommandWindow, see Core/InteractiveShell.swift. The status bar resynchronizes after every key — a focus change (panel toggles, Tab, space switch) is reflected immediately.
+
+**Center:** precedence — the error text, then in COMMAND mode `:<command>`, then the diagnostic under the cursor (`cursorDiagnostic`), otherwise the git branch and the total `+N -M` added/removed lines of the working tree (`git diff HEAD --numstat` — a background task without a debounce: save/open/tab-switch/git events refetch it directly; the only 0.3s debounce in the app is the LSP token re-request; green/red). Outside a git repository the center is empty.
+
+**One fetch — three consumers:** the same background task (`gitStatsTask` — a newest-wins `BackgroundTask`: a start while a fetch runs queues the latest request and drops the superseded result) computes the git decorations alongside the status-bar numbers: the active file's per-line status (`HunkLines` over `git diff -u0` / `--cached -u0` → `GitLineStatus` onto the tab; the pathspec — the path resolved through symlinks, relative to the resolved repo root) for the gutter's number coloring and the explorer's file-name marks (`Porcelain.parse` + `GitChangeClass` → `[path: class]` in the tree's coordinates). `pollGitStats()` distributes the results: the status bar gets the numbers, `editor.applyGitLineStatus` — the gutter (by path, the tab may have switched), `fileExplorer.setGitMarks` — the explorer. Fetch triggers: startup, `fileSaved`, `activeFileChanged`, `gitWorktreeChanged` (panel stage/unstage/discard, explorer create/delete/rename), opening the git panel, `gitCommandFinished`, `terminalCommandFinished`, mtime-reloads.
+
+**Right part:** file type, `+N -M` for the current file (from the same numstat, updated after saving), encoding, `line:column`, percentage position in the file
+
+---
+
+### LSP/LSPClient.swift — LSP client
+
+Language Server Protocol client for semantic highlighting and go-to-definition. Supported servers (`Application.setupLSP` searches standard paths + `which`):
 
 - **Swift** — sourcekit-lsp
 - **C#** — OmniSharp
 - **Go** — gopls
 - **Rust** — rust-analyzer
 - **Bash** — bash-language-server (`start`)
-- **Python** — basedpyright-langserver (`--stdio`, `pip install basedpyright` / `uv tool install basedpyright`). pyright исключён: не реализует semantic tokens; basedpyright поддерживает и подсветку, и `gd`. Пути поиска модулей: `[tool.basedpyright]/[tool.pyright].extraPaths` и `pyrightconfig.json` сервер читает сам (относительные — от корня проекта; клиентским настройкам extraPaths недоступен). Когда серверной конфигурации нет, swim шлёт через `workspace/didChangeConfiguration` секцию `pyright` с базой как у pyright: `typeCheckingMode: standard` (собственный дефолт basedpyright — `all`, чьи reportUnknown*/annotation-правила заливают диагностику бесполезными предупреждениями) и `diagnosticMode: openFilesOnly`; при наличии серверного конфига swim не шлёт ничего — конфиг проекта важнее. `initializationOptions` у basedpyright не является каналом настроек (только `disablePullDiagnostics`)
+- **Python** — basedpyright-langserver (`--stdio`, `pip install basedpyright` / `uv tool install basedpyright`). pyright is excluded: it does not implement semantic tokens; basedpyright supports both highlighting and `gd`. Module search paths: `[tool.basedpyright]/[tool.pyright].extraPaths` and `pyrightconfig.json` are read by the server itself (relative ones — from the project root; the client has no access to extraPaths settings). When there is no server-side configuration, swim sends the `pyright` section via `workspace/didChangeConfiguration` with a base like pyright's: `typeCheckingMode: standard` (basedpyright's own default is `all`, whose reportUnknown*/annotation rules flood the diagnostics with useless warnings) and `diagnosticMode: openFilesOnly`; when a server config exists swim sends nothing — the project config wins. For basedpyright, `initializationOptions` is not a settings channel (only `disablePullDiagnostics`)
 
-**Протокол:** JSON-RPC 2.0 поверх stdin/stdout с framing `Content-Length: N\r\n\r\n`.
+**Protocol:** JSON-RPC 2.0 over stdin/stdout with `Content-Length: N\r\n\r\n` framing.
 
-**Жизненный цикл:**
-1. `start()` — запускает сервер как подпроцесс через `Process`
-2. `sendInitialize()` — отправляет `initialize` с capabilities (semantic tokens full, `publishDiagnostics`). sourcekit-lsp 6.2+ строго декодирует capabilities по спецификации LSP 3.16: `publishDiagnostics` обязан быть объектом `PublishDiagnosticsClientCapabilities`, а не bool (голый `true` отклонял initialize ошибкой -32602 — python работал, swift молчал; basedpyright к форме нетребователен). Декларируется ровно то, что клиент использует: semantic tokens — только full-запросы (delta не запрашивается, `handleSemanticTokensResponse` декодирует только форму `data`); `tagSupport: [1]` — ровно тег Unnecessary, который рендерит `decodeDiagnostic` (серверы не шлют теги вне объявленного множества); `versionSupport` — basedpyright с ним прикладывает `version` публикации, которую гард свежести в pollLSP сравнивает с `lastSentVersion(uri)` (sourcekit-lsp version не шлёт — гард считает отсутствующую версию свежей)
-3. `handleInitializeResponse()` — извлекает token legend, отправляет `initialized`, переигрывает отложенные `didOpen` (массив с дедупом по uri — открытие второго файла до инициализации не глотает первый; переоткрытие заменяет текст). Error-ответ (отклонённый handshake) помечает клиент мёртвым (`alive = false`, как EOF-ветка): процесс сервера часто продолжает жить, никогда не инициализируясь, и молчание больше не маскируется вечно «живым» сервером; при следующей правке notifyLSPChange удаляет такой клиент из `lspClients`, предварительно `stop()`-нув процесс (явный SIGTERM + отмена read source вместо неявной уборки деструктором Pipe)
-4. `openDocument()` — отправляет `textDocument/didOpen` (версию назначает клиент) + запрашивает semantic tokens
-5. `changeDocument(changes:)` / `reloadDocument(text:)` — инкрементальный / полный `textDocument/didChange`; версии документов принадлежат клиенту (`documentVersions`): пер-документные, строго возрастающие, переживают переоткрытие таба — поздний `publishDiagnostics` от прошлой инкарнации не проходит гард
-6. `handleSemanticTokensResponse()` — парсит LSP semtok protocol (кортежи по 5 int) → `[SemanticToken]`
-7. `handleMessage()` на `publishDiagnostics` — декодирует `LSPDiagnostic` (range, severity, tags) в `diagnosticsMailbox`
-8. `Application.pollLSP()` — дрейнит mailboxes на каждом тике цикла; для диагностики сверяет `version` публикации с `lastSentVersion(uri)` и отбрасывает устаревшие, актуальные кладёт в `EditorBuffer.diagnostics` через `applyDiagnostics`
+**Life cycle:**
+1. `start()` — launches the server as a subprocess via `Process`
+2. `sendInitialize()` — sends `initialize` with capabilities (semantic tokens full, `publishDiagnostics`). sourcekit-lsp 6.2+ strictly decodes capabilities per the LSP 3.16 spec: `publishDiagnostics` must be a `PublishDiagnosticsClientCapabilities` object, not a bool (a bare `true` made initialize fail with -32602 — python worked, swift stayed silent; basedpyright is lenient about the form). Exactly what the client uses is declared: semantic tokens — full requests only (delta is not requested, `handleSemanticTokensResponse` decodes only the `data` form); `tagSupport: [1]` — exactly the Unnecessary tag that `decodeDiagnostic` renders (servers do not send tags outside the declared set); `versionSupport` — with it basedpyright attaches a `version` to the publication, which the freshness guard in pollLSP compares with `lastSentVersion(uri)` (sourcekit-lsp does not send a version — the guard treats a missing version as fresh)
+3. `handleInitializeResponse()` — extracts the token legend, sends `initialized`, replays deferred `didOpen` (an array deduped by uri — opening a second file before initialization does not swallow the first; reopening replaces the text). An error response (rejected handshake) marks the client dead (`alive = false`, like the EOF branch): the server process often keeps living, never initializing, and its silence is no longer masked by an eternally "alive" server; on the next edit notifyLSPChange removes such a client from `lspClients`, first `stop()`-ing the process (an explicit SIGTERM + cancellation of the read source instead of implicit cleanup by the Pipe destructor)
+4. `openDocument()` — sends `textDocument/didOpen` (the version is assigned by the client) + requests semantic tokens
+5. `changeDocument(changes:)` / `reloadDocument(text:)` — incremental / full `textDocument/didChange`; document versions belong to the client (`documentVersions`): per-document, strictly increasing, surviving tab reopening — a late `publishDiagnostics` from a past incarnation does not pass the guard
+6. `handleSemanticTokensResponse()` — parses the LSP semtok protocol (tuples of 5 ints) → `[SemanticToken]`
+7. `handleMessage()` on `publishDiagnostics` — decodes `LSPDiagnostic` (range, severity, tags) into `diagnosticsMailbox`
+8. `Application.pollLSP()` — drains mailboxes on every loop tick; for diagnostics it compares the publication's `version` with `lastSentVersion(uri)` and discards stale ones, putting current ones into `EditorBuffer.diagnostics` via `applyDiagnostics`
 
-**Асинхронность (single-owner confinement):** вся протокольная мутабельность (`buffer`, `pendingRequests`, legend, `initialized`, `documentVersions`, очередь отложенных didOpen) принадлежит серийной очереди клиента; кадры сериализуются на вызывающем потоке и покидают очередь цельными `Data` — FIFO `Content-Length`-кадров гарантирован в обе стороны, словари не пересекают границу потоков. Запись кадра — `PipeWriter.writeAll` (EPIPE-толерантный `write(2)`): сервер, умерший между гардом `alive` и syscall'ом, не уносит редактор (через `FileHandle.write` — фатально, см. PipeWriter); смерть констатирует EOF-ветка ридера, а недоставленный кадр помечает `alive = false` сам (полу-открытый сервер не сидит isReady вечно) — следующая правка удаляет клиента через `stop()`. Мёртвому клиенту (`alive == false`) документные методы (`openDocument`/`changeDocument`/`reloadDocument`) и `sendRequest` не делают ничего — ни холостых версий `documentVersions`, ни вечных слотов `pendingRequests`. Регистрация callback'а и запись запроса — один серийный блок: ответ физически не может быть разобран раньше регистрации (раньше регистрация шла из main и гонялась с `removeValue` читателя). Main-loop читает только три `Locked`-ячейки (`tokensMailbox`, `definitionMailbox`, `diagnosticsMailbox` — SwimCore-примитив, лока нельзя «забыть») и зеркало версий; `alive` — единственный сознательно нелоченный word-sized флаг. Actor'ы отвергнуты: потребитель синхронный (event loop редактора), синхронное ожидание актора — deadlock, а `Task`-на-чанк не гарантирует FIFO кадров.
+**Asynchrony (single-owner confinement):** all protocol mutability (`buffer`, `pendingRequests`, legend, `initialized`, `documentVersions`, the deferred didOpen queue) belongs to the client's serial queue; frames are serialized on the calling thread and leave the queue as whole `Data` — FIFO of `Content-Length` frames is guaranteed in both directions, dictionaries never cross the thread boundary. Frame writing — `PipeWriter.writeAll` (an EPIPE-tolerant `write(2)`): a server that died between the `alive` guard and the syscall does not take the editor down (via `FileHandle.write` — fatal, see PipeWriter); death is established by the reader's EOF branch, and an undelivered frame marks `alive = false` itself (a half-open server does not sit isReady forever) — the next edit removes the client via `stop()`. A dead client (`alive == false`)'s document methods (`openDocument`/`changeDocument`/`reloadDocument`) and `sendRequest` do nothing — no idle versions in `documentVersions`, no eternal slots in `pendingRequests`. Callback registration and request writing — one serial block: a response physically cannot be parsed before the registration (previously registration ran from main and raced the reader's `removeValue`). The main loop reads only three `Locked` cells (`tokensMailbox`, `definitionMailbox`, `diagnosticsMailbox` — a SwimCore primitive, a lock cannot be "forgotten") and the version mirror; `alive` is the single deliberately unlocked word-sized flag. Actors were rejected: the consumer is synchronous (the editor's event loop), synchronously awaiting an actor is a deadlock, and a `Task`-per-chunk does not guarantee frame FIFO.
 
-**Диагностика:** `EditorWindow.rebuildLSPIndexes()` (те же события, что и `tokenIndex`: применение токенов, активация таба, `bufferReloaded` при in-place reload) конвертирует сырые UTF-16 диапазоны в построчные графем-спаны `diagnosticsIndex`. Рендер: номер строки больше не красится severity — после номера в хвостовую клетку гуттера ставится маленькая точка-марка (красная ошибка / оранжевая предупреждение / жёлтая info; ошибка+предупреждение — маленький квадрат цветом худшей severity, см. EditorWindow), спаны подчёркиваются (SGR 4), диагностики с тегом Unnecessary (неиспользуемые импорты) рендерятся серым вместо подчёркивания — стандартная конвенция. Статус-бар показывает `cursorDiagnostic()`: чистый запрос `diagnostic(at:col:)` выбирает спан под курсором (нуль-широкие нормализованы до единичной ширины), затем дистанцию, severity, позицию — вторая проблема на строке показывается при наведении именно на неё.
+**Diagnostics:** `EditorWindow.rebuildLSPIndexes()` (the same events as `tokenIndex`: applying tokens, activating a tab, `bufferReloaded` on an in-place reload) converts raw UTF-16 ranges into per-line grapheme spans in `diagnosticsIndex`. Rendering: the line number is no longer colored by severity — after the number, a small dot mark is placed in the gutter's trailing cell (red error / orange warning / yellow info; error+warning — a small square in the worse severity's color, see EditorWindow), spans are underlined (SGR 4), diagnostics with the Unnecessary tag (unused imports) render in gray instead of underlining — the standard convention. The status bar shows `cursorDiagnostic()`: a pure `diagnostic(at:col:)` query picks the span under the cursor (zero-width ones normalized to unit width), then distance, severity, position — a second problem on a line is shown when hovering exactly over it.
 
-**Инкрементальная синхронизация:** Каждая правка буфера записывается как `(offset, replaced, inserted)` (хуки в `recordAction`/`applyInverse`/`applyForward` — покрывают правки, `:%s` и undo/redo). `EditorWindow.trackLSPChange()` конвертирует byte-offset в LSP-позиции `(line, character)` в UTF-16 code units (`PieceTable.utf16Col()` — проход по кешированным `[Character]` строки) и инвалидирует межстрочные состояния строк от строки правки (якорь — строка правки из offset, не курсор: undo/redo правит вдали от курсора). `Application.notifyLSPChange()` отправляет накопленные изменения одним `didChange`; для файлов без LSP-сервера очередь сбрасывается.
+**Incremental sync:** every buffer edit is recorded as `(offset, replaced, inserted)` (hooks in `recordAction`/`applyInverse`/`applyForward` — covering edits, `:%s`, and undo/redo). `EditorWindow.trackLSPChange()` converts the byte-offset to LSP positions `(line, character)` in UTF-16 code units (`PieceTable.utf16Col()` — a walk over the line's cached `[Character]`) and invalidates the inter-line states of lines from the edited line (the anchor — the edited line from the offset, not the cursor: undo/redo edits far from the cursor). `Application.notifyLSPChange()` sends the accumulated changes as one `didChange`; for files without an LSP server the queue is dropped.
 
-**Кодировки:** Внутренне буфер хранится в UTF-8 байтах + кеш графем `[Character]` на строку. LSP работает в UTF-16 (протокольный дефолт): исходящие позиции конвертируются при записи изменения, входящие позиции токенов конвертируются UTF-16 → графемы через префикс-суммы при построении `tokenIndex` (корректно для emoji/CJK).
+**Encodings:** internally the buffer is stored as UTF-8 bytes + a per-line grapheme cache `[Character]`. LSP works in UTF-16 (the protocol default): outgoing positions are converted when writing a change, incoming token positions are converted UTF-16 → graphemes via prefix sums when building `tokenIndex` (correct for emoji/CJK).
 
-**Ограничение:** Для файлов >5MB `didOpen` не отправляется (полный текст при открытии слишком велик), последующий инкрементальный `didChange` к ним также не применяется.
-
----
-
-### SwimCore/SemanticToken.swift — Типы данных LSP
-
-Определяет разделяемые value-типы протокола (все Sendable — пересекают потоки через mailbox'ы LSPClient):
-- `SemanticToken` — токен (используется и LSPClient, и SyntaxTokenizer)
-- `LSPTextChange` — инкрементальное изменение (line/char в UTF-16)
-- `LSPDiagnostic` — запись `publishDiagnostics` (range в UTF-16, severity, тег Unnecessary)
-- `LSPDefinition` / `LSPDefinitionResult` — результат textDocument/definition
-
-LSPClient использует сырые `[String: Any]` словари для JSON вместо Codable-типов для простоты.
+**Limitation:** for files >5MB `didOpen` is not sent (the full text at open is too large). The guard covers only didOpen — `notifyLSPChange` has no size check, so subsequent incremental `didChange` for such files is still sent (for a document the server never saw opened).
 
 ---
 
-### App/Application.swift — Главный контроллер
+### SwimCore/SemanticToken.swift — LSP data types
 
-Оркестратор всего приложения. Управляет главным циклом событий, пространствами окон (`Spaces`), стеком окон, layout, глобальными горячими клавишами, LSP и рендерингом. Реализует `WindowDelegate` — все окна сообщают о событиях ему.
+Defines shared protocol value types (all Sendable — they cross threads via LSPClient's mailboxes):
+- `SemanticToken` — a token (used by both LSPClient and SyntaxTokenizer)
+- `LSPTextChange` — an incremental change (line/char in UTF-16)
+- `LSPDiagnostic` — a `publishDiagnostics` record (range in UTF-16, severity, Unnecessary tag)
+- `LSPDefinition` / `LSPDefinitionResult` — the textDocument/definition result
 
-**Главный цикл (`run()`):**
+LSPClient uses raw `[String: Any]` dictionaries for JSON instead of Codable types for simplicity.
+
+---
+
+### App/Application.swift — Main Controller
+
+The orchestrator of the whole application. Manages the main event loop, window spaces (`Spaces`), the window stack, layout, global hotkeys, LSP, and rendering. Implements `WindowDelegate` — all windows report events to it.
+
+**Main loop (`run()`):**
 ```
 setup terminal
 open file / new file
@@ -648,165 +660,178 @@ render initial frame
 
 while running:
     poll LSP tokens
-    tick spinners (git-задачи, поиск, терминал)
+    poll git stats
+    tick spinners (git tasks, search, terminal)
+    if resize event:
+        recalculate layout, full redraw
+        update current space windows
+        render
     if input available:
         parse key
+        poll windows (consume landed background results before the key)
         handle global key
-        updateStatusBar (ресинк режима/курсора с фокусом)
+        updateStatusBar (resync mode/cursor with focus)
         update current space windows
         render
 ```
 
-**Пространства (`Spaces`):** два space'а — `editor` (проводник + таб-бар + редактор + git-панель + окно выбора ветки + командное окно + терминал + статус-бар) и `search` (результаты поиска + превью + статус-бар, вызов по Ctrl+F). Окна поиска не входят в стек editor-space: выход из поиска (Escape/Ctrl+X/Ctrl+F) возвращает фокус на прежнюю вершину стека; открытие файла из результата (Enter) сначала переключает в editor-space и лишь затем фокусирует редактор — фокус всегда выставляется в текущем спейсе, иначе editor-space остался бы со старым сфокусированным окном (например, проводником).
+**Spaces (`Spaces`):** two spaces — `editor` (explorer + tab bar + editor + git panel + branch picker + command window + commit window — it shares the command window's slot — + terminal + status bar) and `search` (search results + preview + status bar, invoked with Ctrl+F). The search windows are not part of the editor-space stack: leaving the search (Escape/Ctrl+X/Ctrl+F) returns focus to the previous top of the stack; opening a file from a result (Enter) first switches to the editor space and only then focuses the editor — focus is always set within the current space, otherwise the editor space would keep a stale focused window (for example, the explorer).
 
-**Стек окон (`windowStack`) — z-порядок в порядке MRU:**
-- Инвариант: сфокусированное окно всегда является вершиной стека. Любая фокусировка (`focus(_:)`) поднимает окно наверх — в т.ч. Tab-цикл, открытие панели, запуск git-команды
-- Закрытие (`:q`, `:bd`, `Ctrl+X`, `Escape`) — pop сфокусированного окна; фокус получает окно прямо под ним («откуда пришли»)
-- Редактор закрывается вкладка за вкладкой и покидает стек только при закрытии последней вкладки; `:wq`/`:x` закрывают вкладку редактора, откуда бы ни вызывались — кроме случая, когда запись не состоялась (подтверждение changed-on-disk ожидает ответа или отменено, «No file name» у `[No Name]` с текстом)
-- Пустой стек — выход из приложения: закрытие последнего окна (даже проводника) завершает swim, без показа пустого `[No Name]`
-- Tab циклирует фокус в порядке стека (снизу вверх, `stackOrdered` — детерминированный порядок вместо unordered-словаря)
+**Window stack (`windowStack`) — z-order in MRU order:**
+- Invariant: the focused window is always the top of the stack. Any focusing (`focus(_:)`) raises the window to the top — including the Tab cycle, opening a panel, running a git command
+- Closing (`:q`, `:bd`, `Ctrl+X`, `Escape`) — pop of the focused window; focus goes to the window right below it ("where we came from")
+- The editor closes tab by tab and leaves the stack only when the last tab closes; `:wq`/`:x` are handled by the editor window itself (CommitWindow redirects them to commit; from other windows they are a no-op) and close the tab — except when the write did not happen (the changed-on-disk confirmation is awaiting an answer or was aborted, "No file name" for a `[No Name]` with text)
+- An empty stack — exit the application: closing the last window (even the explorer) quits swim, without showing an empty `[No Name]`
+- Tab cycles focus in stack order (bottom-up, `stackOrdered` — a deterministic order instead of an unordered dictionary)
 
-**Командная строка принадлежит окну:** `:` открывает командную строку **на сфокусированном окне** — фокус не крадётся, ввод идёт через статус-бар, команда исполняется против окна-владельца: `:q`/`:q!` закрывают его (для редактора — вкладка за вкладкой), `:w`/`:wq` сохраняют буфер редактора, в окне коммита — делают commit. Разрешено, когда окно поддерживает `.command` (`availableModes`) и не находится в insert-режиме — там `:` печатается буквально (терминал и пассивные панели командной строки не имеют вовсе). Владелец определяется stateless-сканом видимых окон на `.command` (`commandModeWindow`) — в командном режиме фокус меняться не может (ветка поглощает все клавиши), инвариант «владелец == фокусное» надёжен. Команда `:e <file>` при скрытом редакторе раскрывает его (`ensureEditorVisible`) и поднимает на вершину стека; открытие файла из проводника/поиска/перехода `gd` — так же.
+**The command line belongs to a window:** `:` opens the command line **on the focused window** — focus is not stolen, input goes through the status bar, the command is executed against the owner window: `:q`/`:q!` close it (for the editor — tab by tab), `:w`/`:wq` save the editor's buffer, in the commit window — they commit. Allowed when the window supports `.command` (`availableModes`) and is not in insert mode — there `:` is typed literally (the terminal and passive panels have no command line at all). The owner is determined by a stateless scan of visible windows for `.command` (`commandModeWindow`) — in command mode focus cannot change (that branch swallows all keys), the "owner == focused" invariant holds. The `:e <file>` command reveals a hidden editor (`ensureEditorVisible`) and raises it to the top of the stack; opening a file from the explorer/search/a `gd` jump — likewise.
 
-**Layout зависит только от видимости окон** (`LayoutManager.calculate(showExplorer:showEditor:showGit:showBranches:showCommand:showTerminal:showTabBar:)`):
-- Запуск без аргументов или с директорией (`swim`, `swim .`) — редактор и таб-бар не открыты, поэтому проводник занимает весь терминал (кроме строки состояния); корнем дерева становится переданная директория (или CWD)
-- За экраном ждёт чистая вкладка `[No Name]` — первый открытый файл заменяет её; открытие файла делает редактор видимым, и проводник обрезается до сайдбара
-- `:` доступен всегда (команда — через строку состояния); `Ctrl+X`/`:q`/`Escape` закрывают сфокусированную панель, закрытие последнего окна завершает приложение; `Ctrl+E` не сворачивает проводник, когда кроме него ничего не видно (toggle не должен оставлять пустой экран)
+**Layout depends on window visibility and geometry** (`LayoutManager.calculate(terminalWidth:terminalHeight:space:showExplorer:showEditor:showGit:showBranches:showCommand:showTerminal:showTabBar:halfScreen:)` — the terminal size, the current space, and the `Ctrl+S` half-screen role feed it; a maximized (`Ctrl+W`) window is afterwards resized to the whole screen above the status line):
+- Launching without arguments or with a directory (`swim`, `swim .`) — the editor and tab bar are not open, so the explorer takes the whole terminal (except the status line); the tree root becomes the passed directory (or CWD)
+- A clean `[No Name]` tab waits off-screen — the first opened file replaces it; opening a file makes the editor visible, and the explorer shrinks to a sidebar
+- `:` is always available (a command — via the status line); `Ctrl+X`/`:q`/`Escape` close the focused panel, closing the last window quits the application; `Ctrl+E` does not collapse the explorer when nothing else is visible (a toggle must not leave an empty screen)
 
-**Глобальные горячие клавиши:**
-- `Ctrl+E` — файловый проводник
-- `Ctrl+G` — git-панель
-- `Ctrl+B` — выбор ветки
-- `Ctrl+F` — поиск
-- `Ctrl+T` — встроенный терминал
-- `Ctrl+O` — `git pull` (из любого окна; вывод/credential'ы — CommandWindow)
-- `Ctrl+P` — `git push` (из любого окна)
-- `Ctrl+Y` — скопировать имя текущей ветки (OSC52, из любого окна)
-- `Ctrl+C` — выход
-- `Ctrl+X` — закрыть сфокусированное окно (вкладку/панель; пустой стек — выход)
-- `Ctrl+Z` — закрыть все вкладки кроме активной (несохранённые остаются)
-- `Ctrl+S` — текущая панель на половину экрана по своей оси / обратно (проводник и результаты поиска — половина ширины, git-панель, ветки, командное окно и терминал — половина высоты, превью — половина ширины); не действует в редакторе
-- `Ctrl+W` — развернуть текущее окно на весь экран / восстановить раскладку; не действует в редакторе (но всегда восстанавливает свёрнутую раскладку)
-- `Tab` (в normal mode) — циклическое переключение фокуса в порядке стека окон
+**Global hotkeys:**
+- `Ctrl+E` — file explorer
+- `Ctrl+G` — git panel
+- `Ctrl+B` — branch picker
+- `Ctrl+F` — search
+- `Ctrl+T` — built-in terminal
+- `Ctrl+O` — `git pull` (from any window; output/credentials — CommandWindow)
+- `Ctrl+P` — `git push` (from any window)
+- `Ctrl+Y` — copy the current branch name (OSC52, from any window)
+- `Ctrl+C` — exit
+- `Ctrl+X` — close the focused window (tab/panel; empty stack — exit)
+- `Ctrl+Z` — close all tabs except the active one (unsaved ones remain)
+- `Ctrl+S` — the current panel to half the screen along its axis / back (explorer and search results — half the width; git panel, branches, command window, and terminal — half the height; preview — half the width); no effect in the editor
+- `Ctrl+W` — expand the current window to full screen / restore the layout; no effect in the editor (but always restores a collapsed layout)
+- `Tab` (in normal or menu mode) — cycle focus in window-stack order (the terminal types Tab literally)
 
 **Layout (`recalculateLayout()`):**
-- Единый инвариант: всё живёт строго выше статус-бара, его строка неприкосновенна при любом числе окон. Нижний стек (git → ветки → командное окно → терминал) держит желаемые высоты, пока помещается; при переполнении (уже `h/2 + h/2` на любом терминале ≤ 50 строк) сжимается waterfall'ом — каждому окну честная доля остатка, минимум строка. Верхняя зона (проводник/таб-бар/редактор) получает остаток и может быть законно выжата в 0 строк — панели тогда начинаются с самой верхней строки, без мёртвых прослоек (выжатое окно ничего не рисует: `Window.resize` допускает 0, все границы guarded, каретка клэмпится)
-- Файловый проводник: до 28 колонок или 1/4 ширины, слева (`Ctrl+S` — половина ширины)
-- Редактор: оставшееся пространство справа
-- Git-панель / ветки / командное окно / терминал: до 25 строк или 1/2 высоты, снизу (`Ctrl+S` — ровно половина высоты)
-- Поиск: результаты до 1/3 ширины, превью — остальное (`Ctrl+S` — половина ширины у любой из панелей)
-- Строка состояния: 1 строка, самый низ — всегда видна
-- Развернутое окно (`Ctrl+W`): весь экран кроме строки состояния; видимость остальных окон сохраняется и восстанавливается повторным нажатием
+- Single invariant: everything lives strictly above the status bar; its line is untouchable at any number of windows. The bottom stack (git → branches → command window → terminal) holds its desired heights while they fit; on overflow (already `h/2 + h/2` on any even-height terminal ≤ 50 lines — an odd 49 fits, `min(25, h/2)` floors) it compresses waterfall-style — each window gets an honest share of the remainder, a minimum of one line. The upper zone (explorer/tab bar/editor) gets the remainder and may legitimately be squeezed to 0 lines — the panels then start at the very top row, without dead padding (a squeezed window draws nothing: `Window.resize` allows 0, all bounds are guarded, the caret is clamped)
+- File explorer: up to 28 columns or 1/4 of the width, on the left (`Ctrl+S` — half the width)
+- Editor: the remaining space on the right
+- Git panel / branches / command window / terminal: up to 25 lines or 1/2 of the height, at the bottom (`Ctrl+S` — exactly half the height)
+- Search: results up to 1/3 of the width, preview — the rest (`Ctrl+S` — half the width for either panel)
+- Status line: 1 line, at the very bottom — always visible
+- Expanded window (`Ctrl+W`): the whole screen except the status line; the visibility of the other windows is preserved and restored by pressing again
 
-**Оптимизированный рендеринг (`Renderer`):**
-1. Главный цикл вызывает `update()` на всех видимых окнах текущего space (метод также опрашивает фоновые задачи через `poll()`)
-2. Для каждой ячейки каждого окна:
-   - Сравнивает с `prevScreenCells[row][col]` (предыдущий кадр)
-   - Если изменилась — отправляет ANSI-escape для перемещения курсора + изменения атрибутов + записи символа
-   - Отслеживает текущие атрибуты терминала (`termFG`, `termBG`, `termBold`...) чтобы не отправлять повторные escape-последовательности
-3. `terminal.flush()` — одна запись в stdout
+**Optimized rendering (`Renderer`):**
+1. The main loop calls `update()` on all visible windows of the current space (the method also polls background tasks via `poll()`)
+2. For each cell of each window:
+   - Compares with `prevScreenCells[row][col]` (the previous frame)
+   - If changed — sends an ANSI escape to move the cursor + change attributes + write the character
+   - Tracks the terminal's current attributes (`termFG`, `termBG`, `termBold`...) to avoid sending redundant escape sequences
+3. `terminal.flush()` — a single write to stdout
 
-Это diff-based рендеринг — перерисовываются только изменённые ячейки, минимизируя I/O в терминал.
+This is diff-based rendering — only changed cells are redrawn, minimizing terminal I/O.
 
 ---
 
-## Горячие клавиши
+## Hotkeys
 
-### Режим Normal
-| Клавиша | Действие |
+### Normal mode
+| Key | Action |
 |---------|----------|
-| `h`/`j`/`k`/`l` | Перемещение курсора |
-| `w` / `b` | На слово вперёд / назад |
-| `0` / `$` | В начало / конец строки |
-| `Ngg` / `NG` | На строку N; без N — в начало / конец файла |
-| `i` / `a` / `A` / `I` | Вход в Insert (до/после/конец строки/начало строки) |
-| `o` / `O` | Новая строка снизу/сверху + Insert |
-| `x` | Удалить символ |
-| `dd` | Удалить строку |
-| `yy` | Копировать строку |
-| `p` / `P` | Вставить после/до курсора |
-| `u` / `Ctrl+R` | Отмена / повтор |
-| `v` | Visual-режим (во всех visual-режимах: `y` — копировать, `d`/`x` — удалить, `v`/`V`/`Ctrl+V` — переключение вида выделения) |
-| `V` | Visual-line-режим (в нём: `Shift+Right`/`L` — indent, `Shift+Left`/`H` — outdent) |
-| `Ctrl+V` | Visual-block-режим — прямоугольник в display-колонках, не сжимается на коротких/пустых строках (в нём: `y` — блоковый yank, `d`/`x` — удаление блока, `p` после — блоковая вставка; во всех visual-режимах `v`/`V`/`Ctrl+V` переключают вид выделения) |
-| `:` | Command-режим (`:N` — переход на строку N) |
-| `/` | Поиск вперёд |
-| `n` / `N` | Следующий / предыдущий результат поиска (vim-стандарт) |
+| `h`/`j`/`k`/`l` | Move the cursor |
+| `w` / `b` | Forward / back one word |
+| `e` | Forward to the end of a word |
+| `0` / `$` | Beginning / end of line |
+| `Ngg` / `NG` | Go to line N; without N — beginning / end of file |
+| `gt` / `gT` | Next / previous tab |
+| `gd` / `gb` | Go to definition (LSP) / jump back |
+| `i` / `a` / `A` / `I` | Enter Insert (before/after/end of line/beginning of line) |
+| `o` / `O` | New line below/above + Insert |
+| `x` | Delete character |
+| `dd` | Delete line |
+| `c`+motion / `cc` / `cw` | Change: delete and enter Insert; `cc` — line, `cw` — word (on a non-blank it behaves like `ce`) |
+| `D` / `C` / `Y` / `S` | Aliases `d$` / `c$` / `y$` / `cc`, with a count (`Y` = `y$`, a deliberate difference from vim's `yy`) |
+| `yy` | Yank line |
+| `p` / `P` | Paste after/before the cursor |
+| `u` / `Ctrl+R` | Undo / redo |
+| `v` | Visual mode (in all visual modes: `y` — yank, `d`/`x` — delete; kind switching `v`/`V`/`Ctrl+V` works from visual-line and visual-block — in charwise visual `v` itself is a dead key) |
+| `V` | Visual-line mode (within it: `Shift+Right`/`L` — indent, `Shift+Left`/`H` — outdent) |
+| `Ctrl+V` | Visual-block mode — a rectangle in display columns, does not shrink on short/empty lines (within it: `y` — block yank, `d`/`x` — delete the block, `p` after — block paste; `v`/`V` switch back to charwise/line — switching works from visual-line and visual-block, in charwise visual `v` is a dead key) |
+| `:` | Command mode (`:N` — go to line N) |
+| `/` | Search forward |
+| `n` / `N` | Next / previous search result (vim standard) |
 | `Ctrl+j` / `Ctrl+k` | Page Down / Page Up |
+| `Ctrl+h` / `Ctrl+l` | Previous / next tab (in the editor) |
 
-### Глобальные
-| Клавиша | Действие |
+### Global
+| Key | Action |
 |---------|----------|
-| `Ctrl+E` | Файловый проводник |
-| `Ctrl+G` | Git-панель |
-| `Ctrl+B` | Выбор ветки (список в menu-режиме: `Enter` — `git switch`, `Ctrl+Enter` — switch+pull, `a` — создание, `d`/`D` — удаление локально / +remote, `i` — фильтр) |
-| `Ctrl+F` | Поиск по проекту |
-| `Ctrl+T` | Встроенный терминал |
-| `Ctrl+O` | `git pull` из любого окна (вывод и credential'ы — CommandWindow) |
-| `Ctrl+P` | `git push` из любого окна |
-| `Ctrl+Y` | Скопировать имя текущей ветки (OSC52) из любого окна |
-| `Ctrl+C` | Выход |
-| `Ctrl+X` | Закрыть сфокусированное окно (вкладку/панель; последнее окно — выход) |
-| `Ctrl+Z` | Закрыть все вкладки кроме активной (несохранённые остаются) |
-| `Ctrl+S` | Половина экрана для текущей панели / обратно |
-| `Ctrl+W` | Развернуть текущее окно / восстановить раскладку |
-| `Tab` | Переключение фокуса в порядке стека окон (только из menu/normal — insert и command режимы не циклят) |
-| `:` | Командная строка на сфокусированном окне (кроме insert-режимов и терминала — там литерал) |
-| `Escape` | Normal-режим; закрыть сфокусированную панель |
+| `Ctrl+E` | File explorer |
+| `Ctrl+G` | Git panel |
+| `Ctrl+B` | Branch picker (list in menu mode: `Enter` — `git switch`, `Ctrl+Enter` — switch+pull, `a` — create, `d`/`D` — delete locally / +remote, `i` — filter) |
+| `Ctrl+F` | Project search |
+| `Ctrl+T` | Built-in terminal |
+| `Ctrl+O` | `git pull` from any window (output and credentials — CommandWindow) |
+| `Ctrl+P` | `git push` from any window |
+| `Ctrl+Y` | Copy the current branch name (OSC52) from any window |
+| `Ctrl+C` | Exit |
+| `Ctrl+X` | Close the focused window (tab/panel; the last window — exit) |
+| `Ctrl+Z` | Close all tabs except the active one (unsaved ones remain) |
+| `Ctrl+S` | Half the screen for the current panel / back |
+| `Ctrl+W` | Expand the current window / restore the layout |
+| `Tab` | Cycle focus in window-stack order (only from menu/normal — insert and command modes do not cycle, the terminal types it literally) |
+| `:` | Command line on the focused window (except insert modes and the terminal — there it is a literal) |
+| `Escape` | Normal mode; close the focused panel |
 
-### Команды (`:`)
-| Команда | Действие |
+### Commands (`:`)
+| Command | Action |
 |---------|----------|
-| `:w` | Сохранить (в окне коммита — закоммитить) |
-| `:q` | Закрыть окно-владелец командной строки — вкладку редактора или панель (для вкладки — только если нет изменений) |
-| `:wq` / `:x` | Сохранить и закрыть вкладку редактора (в окне коммита — закоммитить) |
-| `:q!` / `:bd!` | Закрыть принудительно |
-| `:bd` | Закрыть вкладку редактора |
-| `:qa` | Выйти из приложения |
-| `:e <path>` | Открыть файл (раскрывает скрытый редактор) |
-| `:terminal` / `:term` / `:sh` | Открыть встроенный терминал |
-| `:%s/old/new/g` | Замена в текущей строке |
-| `/<query>` | Поиск вперёд |
+| `:w` | Save (in the commit window — commit) |
+| `:q` | Close the command line's owner window — an editor tab or a panel (for a tab — only if there are no changes) |
+| `:wq` / `:x` | Save and close the editor tab (in the commit window — commit) |
+| `:q!` / `:bd!` | Close forcefully |
+| `:bd` | Shares the `:q` branch — closes the command line's owner window (any window, not only an editor tab) |
+| `:qa` | Quit the application — refused while any tab has unsaved changes ("No write since last change (add ! to force)") |
+| `:qa!` | Quit discarding unsaved changes |
+| `:e!` <path> | Open a file overriding the current tab's unsaved changes (`:e` refuses when modified) |
+| `:e <path>` | Open a file (reveals a hidden editor) |
+| `:terminal` / `:term` / `:sh` | Open the built-in terminal |
+| `:%s/old/new/g` | Substitute in the current line |
+| `/<query>` | Search forward |
 
-### Git-панель (menu-режим)
-| Клавиша | Действие |
+### Git panel (menu mode)
+| Key | Action |
 |---------|----------|
-| `j`/`k` | Навигация; `Enter` — diff файла/коммита |
-| `a` | Add: stage файла (`C`-строка — mark resolved; в diff — stage активного hunk'а / add untracked-файла) |
-| `d` | Unstage (staged-секция/staged-diff) / discard (unstaged/untracked) — контекстное «убрать изменение» |
-| `d` | Discard файла (в diff — активного hunk'а) |
-| `c` | Окно коммита (insert-режим; `:w`/`:wq` — коммит, `:q`/двойной Esc — отмена) |
-| `a` | Создание ветки: открывает пикер веток сразу в фазе ввода имени (Enter — `git switch -c`) |
-| `yy` / `V`+`y` | Копирование (OSC52) / visual-выделение |
+| `j`/`k` | Navigation; `Enter` — diff of a file/commit |
+| `a` | Add: stage a file (`C` row — mark resolved; in a diff — stage the active hunk / add an untracked file) |
+| `d` | Unstage (staged section/staged-diff) / discard (unstaged/untracked; in a diff — discard the active hunk) — the contextual "remove the change" |
+| `c` | Commit window (insert mode; `:w`/`:wq` — commit, `:q`/double Esc — cancel) |
+| `C` | Commit window prefilled with the last commit's message (`git log -1 --format=%B` — subject + body) |
+| `yy` / `V`+`y` | Copy (OSC52) / visual selection |
 
-### Выбор ветки (GitBranchesWindow)
-| Клавиша | Действие |
+### Branch picker (GitBranchesWindow)
+| Key | Action |
 |---------|----------|
-| открытие | `Ctrl+B` — menu-режим на списке (курсор на самой свежей ветке) |
-| `j`/`k`, `Enter`, `Ctrl+Enter` в menu | Навигация; `git switch` выбранной ветки через CommandWindow (вывод/ошибки видны; окно закрывается); `Ctrl+Enter` — то же + `git pull` следом (на текущей ветке — просто pull) |
-| `i` + печать | Live-поиск по имени ветки (insert-режим, ввод — в строке самого окна; каждый символ перезапрашивает git); `↑`/`↓`/`Enter` — выход в menu на первой строке, `Esc` — то же со сбросом фильтра |
-| `a` в menu | Создание ветки: строка ввода становится промптом имени (prefill — текущий фильтр; правки имени список не перезапрашивают). `Enter` — `git switch -c <name>` через CommandWindow, пикер закрывается; имя сначала проверяется `git check-ref-format --branch` (git — единственный авторитет; `--branch` заодно режет ведущий дефис, который `switch -c -foo` встретил бы невнятным «unknown switch») — отказ оставляет пикер и ввод на экране; `Esc` — назад к списку, фильтр нетронут (имя живёт в отдельном буфере) |
-| `m` в menu | Merge в текущую ветку: ввод `<имя> [аргументы…]` — первый токен реф, остальное проходит в `git merge` как есть (`side --no-ff`); вызов пересобирается в `git merge <args> -- <имя>` — флаги пользователя остаются флагами, имя с ведущим дефисом остаётся операндом (без инъекций опций), валидность — на совести git (видимые ошибки). Конфликтный финал не ошибка, а состояние: CommandWindow детектит unmerged-записи (`ls-files -u`) и держит модальный выбор одной клавишей — `k` оставить на ручное разрешение (потом коммит из git-панели), `o`/`t` откатить и слить заново с `-X ours/theirs` (аргументы пользователя — `--no-ff` и т.п. — сохраняются в ретрае), `Esc` — `git merge --abort`; новая команда в окне снимает выбор |
-| `d` в menu | Удаление выбранной ветки локально: `git branch -d` через CommandWindow (git сам отказывает на текущей ветке — локальный guard с сообщением — и на неслитой работе; пикер остаётся открытым, `gitCommandFinished` обновляет список) |
-| `D` в menu | Локально + remote: сначала `git branch -d`, затем `git push <remote> --delete <name>` (follow-up только после успеха локальной). Remote — апстрим ветки (`name@{upstream}`), при его отсутствии — единственный remote репозитория; несколько remote'ов без апстрима — отказ с сообщением, локальная половина молча не удаляется |
-| `Esc` в menu | Закрыть окно |
+| opening | `Ctrl+B` — menu mode on the list (cursor on the newest branch) |
+| `j`/`k`, `Enter`, `Ctrl+Enter` in menu | Navigation; `git switch` to the selected branch via CommandWindow (output/errors visible; the window closes); `Ctrl+Enter` — the same + `git pull` right after (on the current branch — just pull) |
+| `i` + typing | Live search by branch name (insert mode, input — in the window's own row; every character re-requests git); `↑`/`↓`/`Enter` — exit to menu on the first row, `Esc` — the same with a filter reset |
+| `a` in menu | Branch creation: the input row becomes a name prompt (prefill — the current filter; name edits do not re-request the list). `Enter` — `git switch -c <name>` via CommandWindow, the picker closes; the name is first checked with `git check-ref-format --branch` (git is the only authority; `--branch` also strips the leading dash that `switch -c -foo` would meet with an obscure "unknown switch") — a refusal keeps the picker and the input on screen; `Esc` — back to the list, the filter untouched (the name lives in a separate buffer) |
+| `m` in menu | Merge into the current branch: input of `<name> [arguments…]` — the first token is the ref, the rest passes into `git merge` as is (`side --no-ff`); the invocation is rebuilt as `git merge <args> -- <name>` — user flags stay flags, a name with a leading dash stays an operand (no option injections), validity — git's problem (visible errors). A conflicted end is not an error but a state: CommandWindow detects unmerged entries (`ls-files -u`) and holds a modal one-key choice — `k` keep for manual resolution (then commit from the git panel), `o`/`t` abort and merge again with `-X ours/theirs` (the user's arguments — `--no-ff` etc. — are preserved in the retry), `Esc` — `git merge --abort`; a new command in the window dismisses the choice |
+| `d` in menu | Delete the selected branch locally: `git branch -d` via CommandWindow (git itself refuses on the current branch — a local guard with a message — and on unmerged work; the picker stays open, `gitCommandFinished` refreshes the list) |
+| `D` in menu | Locally + remote: first `git branch -d`, then `git push <remote> --delete <name>` (the follow-up only after the local half succeeds). The remote — the branch's upstream (`name@{upstream}`), or the repository's only remote when there is none; several remotes without an upstream — refuse with a message, the local half is not silently deleted |
+| `Esc` in menu | Close the window |
 
 ---
 
-## Оптимизации производительности
+## Performance optimizations
 
-1. **Pre-allocation в `rebuildLineIndex()`** — `reserveCapacity` на основе размера файла предотвращает ~22 реаллокации для файлов с миллионами строк
+1. **Pre-allocation in `rebuildLineIndex()`** — `reserveCapacity` based on file size prevents ~22 reallocations for files with millions of lines
 
-2. **`withUnsafeBufferPointer`** — прямой доступ к памяти буферов при сканировании переносов строк
+2. **`withUnsafeBufferPointer`** — direct buffer memory access when scanning for line breaks
 
-3. **Кеш строки** — `getLine()` кеширует последнюю декодированную строку, избегая повторного декодирования UTF-8
+3. **Line cache** — `getLine()` caches the last decoded line, avoiding redundant UTF-8 decoding
 
-4. **Diff-based рендеринг** — перерисовываются только изменившиеся ячейки через сравнение с `prevScreenCells`
+4. **Diff-based rendering** — only changed cells are redrawn via comparison with `prevScreenCells`
 
-5. **Отслеживание атрибутов** — ANSI-escape для изменения цвета/стиля отправляется только если атрибут действительно изменился
+5. **Attribute tracking** — an ANSI escape to change color/style is sent only if the attribute actually changed
 
-6. **Инкрементальный LSP sync** — вместо полного текста на каждое нажатие отправляются только range-based изменения (O(длина строки) на конверсию позиций вместо O(размер файла)); `didOpen` для файлов >5MB по-прежнему пропускается
+6. **Incremental LSP sync** — instead of the full text on every keystroke, only range-based changes are sent (O(line length) for position conversion instead of O(file size)); `didOpen` for files >5MB is still skipped
 
-7. **Пропуск подсветки для больших файлов** — встроенный токенизатор отключается для файлов >50K строк
+7. **Skipping highlighting for large files** — the built-in tokenizer is disabled for files >50K lines
 
-8. **Быстрый JSON-рендеринг** — для `.json` файлов подсветка делается посимвольно прямо при рендеринге, без создания токенов
+8. **Fast JSON rendering** — for `.json` files, highlighting is a character-by-character pass over each visible line at render time, without keyword tables: adjacent same-type characters are merged into `[SemanticToken]` runs right away

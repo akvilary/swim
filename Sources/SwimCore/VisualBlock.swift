@@ -1,58 +1,60 @@
 import Foundation
 
-/// Математика visual-block (Ctrl+V): прямоугольное выделение живёт в
-/// display-колонках (клетках терминала), а по содержимому строки
-/// разрешается в диапазон графем. Чистый модуль без состояния —
-/// окно-редактор кормит его строками (`PieceTable.getLineChars`) и
-/// применяет результат к буферу; тестируется
+/// Visual-block (Ctrl+V) math: a rectangular selection lives in
+/// display columns (terminal cells) and resolves against a line's
+/// contents into a grapheme range. A pure stateless module — the
+/// editor window feeds it lines (`PieceTable.getLineChars`) and
+/// applies the result to the buffer; covered by tests
 /// (Tests/SwimCoreTests/VisualBlockTests).
 ///
-/// Правило принадлежности — ПЕРЕСЕЧЕНИЕ КЛЕТОК, единое для подсветки,
-/// yank и правок (поведение верифицировано по vim 8.2 / nvim 0.11
-/// скриптами на реальном редакторе): графема затрагивается блоком ⟺
-/// её клетки пересекают [left, right). Таб, разрезанный гранью,
-/// РАСКАЛЫВАЕТСЯ — непокрытые клетки возвращаются пробелами, хвост
-/// выравнивается одинаково на всех строках; wide-глиф атомарен —
-/// затрагивается целиком, его непокрытые клетки — пробелами.
-/// Осознанные отличия от vim в микрослучаях (vim сам непоследовательен,
-/// swim выбирает единообразие): блок целиком внутри одного таба vim
-/// игнорирует — swim раскалывает; yank блока внутри одного wide-глифа
-/// vim даёт весь глиф — swim даёт пробелы покрытых клеток; непокрытую
-/// правую часть wide-глифа vim не компенсирует (хвост съезжает) —
-/// swim паддит пробелом, как и для табов.
+/// The membership rule — CELL INTERSECTION, uniform across
+/// highlighting, yank and edits (behavior verified against vim 8.2 /
+/// nvim 0.11 with scripts on the real editor): a grapheme is touched
+/// by the block ⟺ its cells intersect [left, right). A tab cut by an
+/// edge SPLITS — uncovered cells come back as spaces, the tail is
+/// aligned the same way on every line; a wide glyph is atomic —
+/// touched as a whole, its uncovered cells become spaces. Deliberate
+/// deviations from vim in micro-cases (vim itself is inconsistent,
+/// swim chooses uniformity): a block entirely inside a single tab is
+/// ignored by vim — swim splits it; a block yank inside a single wide
+/// glyph gives the whole glyph in vim — swim gives spaces for the
+/// covered cells; the uncovered right part of a wide glyph vim does
+/// not compensate (the tail shifts) — swim pads with a space, as for
+/// tabs.
 public enum VisualBlock {
 
-    /// Границы блока в display-колонках. Правая — исключающая.
-    /// Инвариант ширины: right >= left + 1 — «блок» нулевой ширины
-    /// легален как символ под курсором (Ctrl+V без движения), но не
-    /// как пустое множество.
+    /// The block's bounds in display columns. The right one is exclusive.
+    /// Width invariant: right >= left + 1 — a zero-width "block" is legal
+    /// as the character under the cursor (Ctrl+V without a motion), but
+    /// not as an empty set.
     public struct Span {
         public let left: Int
         public let right: Int
 
-        /// Нормализует пару (min/max) и достраивает ширину до 1.
+        /// Normalizes the pair (min/max) and builds the width up to 1.
         public init(_ a: Int, _ b: Int) {
             let lo = min(a, b)
             left = lo
             right = max(max(a, b), lo + 1)
         }
 
-        /// Точка вставки, не выделение: ширина 0, без нормализации.
-        /// На границе графем (как ставит блоковый `p`/`P` — колонка
-        /// реального курсора) срез пуст — чистая вставка через rowPlan.
-        /// Точка ВНУТРИ глифа (tab/wide) при пересечении клеток даёт
-        /// срез этого глифа — вставка раскалывает его пробелами, как
-        /// vim при 've=block'.
+        /// An insertion point, not a selection: width 0, no normalization.
+        /// At a grapheme boundary (as blockwise `p`/`P` places it — the
+        /// real cursor's column) the slice is empty — pure insertion via
+        /// rowPlan. A point INSIDE a glyph (tab/wide) that intersects
+        /// cells yields a slice of that glyph — insertion splits it with
+        /// spaces, as vim does with 've=block'.
         public static func point(_ col: Int) -> Span {
             Span(rawLeft: col, rawRight: col)
         }
 
-        /// Спан выделения по двум ИНКЛЮЗИВНЫМ углам-колонкам (якорь и
-        /// курсор): [min, max + 1) — оба угла в блоке, как в vim
-        /// (Ctrl+V + l и Ctrl+V + h дают две клетки). Прибавлять «+1»
-        /// к углу ДО упорядочивания нельзя: init(anchor, cursor + 1)
-        /// при курсоре левее якоря даёт [cursor + 1, anchor) — без
-        /// клеток обоих углов. Ширина >= 1 по построению.
+        /// A selection span from two INCLUSIVE corner columns (anchor
+        /// and cursor): [min, max + 1) — both corners in the block, as
+        /// in vim (Ctrl+V + l and Ctrl+V + h give two cells). Adding
+        /// "+1" to a corner BEFORE ordering is not allowed:
+        /// init(anchor, cursor + 1) with the cursor left of the anchor
+        /// gives [cursor + 1, anchor) — without both corners' cells.
+        /// Width >= 1 by construction.
         public static func inclusive(_ a: Int, _ b: Int) -> Span {
             Span(rawLeft: min(a, b), rawRight: max(a, b) + 1)
         }
@@ -63,15 +65,15 @@ public enum VisualBlock {
         }
     }
 
-    /// Полная геометрия блока из состояния окна: строки + display-спан.
-    /// Якорь приходит РЕАЛЬНОЙ позицией (графема на якорной строке) и
-    /// разрешается в display-колонку по содержимому СВОЕЙ строки (у
-    /// каждой строки своя раскладка табов); курсорный угол — уже
-    /// виртуальной клеткой. Оба угла инклюзивны (Span.inclusive),
-    /// строки — min/max. Вся композиция «якорь + угол → прямоугольник»
-    /// живёт здесь под тестами; оконный blockRowsAndSpan — чистая
-    /// проводка (регрессия «пропущенная клетка при Ctrl+V + h» жила
-    /// именно в этой композиции).
+    /// Full block geometry from window state: rows + display span.
+    /// The anchor arrives as a REAL position (a grapheme on the anchor
+    /// line) and resolves to a display column against ITS OWN line's
+    /// contents (each line has its own tab layout); the cursor corner
+    /// is already a virtual cell. Both corners are inclusive
+    /// (Span.inclusive), rows — min/max. The whole "anchor + corner →
+    /// rectangle" composition lives here under tests; the window's
+    /// blockRowsAndSpan is pure wiring (the "missing cell with
+    /// Ctrl+V + h" regression lived precisely in this composition).
     public static func blockGeometry(anchorLine: Int, anchorCharCol: Int,
                                      cursorLine: Int, cursorBlockCol: Int,
                                      anchorChars: [Character], tabWidth: Int)
@@ -81,9 +83,10 @@ public enum VisualBlock {
                 Span.inclusive(anchorDisp, cursorBlockCol))
     }
 
-    /// Display-колонка, с которой начинается графема `charIndex`
-    /// (префиксная сумма шагов; charIndex клэмпится по длине строки —
-    /// позиция «за последним символом» даёт полную ширину строки).
+    /// The display column where grapheme `charIndex` starts
+    /// (a prefix sum of steps; charIndex is clamped to the line
+    /// length — the "past the last character" position gives the
+    /// line's full width).
     public static func displayCol(ofCharIndex charIndex: Int,
                                   chars: [Character], tabWidth: Int) -> Int {
         var col = 0
@@ -93,10 +96,11 @@ public enum VisualBlock {
         return col
     }
 
-    /// Индекс первой графемы, чья стартовая display-колонка >= target
-    /// (строка короче target — длина строки: позиция за хвостом).
-    /// Граница всегда попадает на старт графемы: таб, начавшийся левее
-    /// target, пропускается целиком.
+    /// The index of the first grapheme whose starting display column
+    /// is >= target (line shorter than target — the line length:
+    /// position past the tail). The boundary always lands on a
+    /// grapheme start: a tab that began left of target is skipped
+    /// entirely.
     public static func charIndex(atDisplayCol target: Int,
                                  chars: [Character], tabWidth: Int) -> Int {
         var col = 0
@@ -107,11 +111,11 @@ public enum VisualBlock {
         return chars.count
     }
 
-    /// Клеточные диапазоны графем строки: [i] = [start, end) в
-    /// display-клетках (таб — до следующей позиции табуляции, wide —
-    /// 2 клетки, комбинирующие — 0). Единый источник для принадлежности
-    /// (пересечение с [left, right)), раскола табов в rowPlan и
-    /// подсветки.
+    /// Cell ranges of a line's graphemes: [i] = [start, end) in
+    /// display cells (tab — up to the next tab stop, wide —
+    /// 2 cells, combining — 0). The single source for membership
+    /// (intersection with [left, right)), tab splitting in rowPlan,
+    /// and highlighting.
     public static func glyphCells(_ chars: [Character], tabWidth: Int) -> [(start: Int, end: Int)] {
         var out: [(start: Int, end: Int)] = []
         out.reserveCapacity(chars.count)
@@ -124,11 +128,11 @@ public enum VisualBlock {
         return out
     }
 
-    /// Диапазон графем строки, затрагиваемых блоком: клетки графемы
-    /// пересекают [left, right) — таб/wide, разрезанные гранью, входят
-    /// (раскалываются/берутся целиком, см. правило в шапке модуля).
-    /// nil — пересечений нет (строка пуста, кончилась левее грани или
-    /// целиком за правой).
+    /// The range of a line's graphemes touched by the block: the
+    /// grapheme's cells intersect [left, right) — tabs/wide cut by an
+    /// edge are included (split/taken whole, see the rule in the
+    /// module header). nil — no intersections (the line is empty,
+    /// ended left of the edge, or lies entirely past the right one).
     public static func charRange(_ chars: [Character], span: Span,
                                  tabWidth: Int) -> Range<Int>? {
         let cells = glyphCells(chars, tabWidth: tabWidth)
@@ -143,12 +147,13 @@ public enum VisualBlock {
         return lo < hi ? lo..<hi : nil
     }
 
-    /// Текст блокового yank: вклад каждой строки — графемы среза,
-    /// полностью покрытые блоком, идут как есть; частично покрытые
-    /// (грань внутри глифа) — ПРОБЕЛАМИ покрытых клеток (vim янкает
-    /// видимую клеточную полосу, не символы). nil-срез — пустой вклад;
-    /// строки соединены «\n» без хвостового перевода, короткие строки
-    /// НЕ паддятся до ширины блока (паддинг появляется на вставке).
+    /// Blockwise yank text: each line's contribution — slice graphemes
+    /// fully covered by the block go as-is; partially covered ones
+    /// (an edge inside a glyph) — as SPACES of the covered cells (vim
+    /// yanks the visible cell strip, not the characters). A nil slice —
+    /// an empty contribution; lines are joined with "\n" without a
+    /// trailing break, short lines are NOT padded to the block width
+    /// (padding appears at paste time).
     public static func blockText(rows: [(chars: [Character], range: Range<Int>?)],
                                  span: Span, tabWidth: Int) -> String {
         rows.map { row in
@@ -167,27 +172,28 @@ public enum VisualBlock {
         }.joined(separator: "\n")
     }
 
-    /// План правки одной строки блока: новое содержимое, точка
-    /// «за заменой» для курсора и границы заменяемого диапазона
-    /// (в графемах строки — для перевода в байты).
-    /// - Срез есть: text = префикс + replacement + суффикс, caret — за
-    ///   replacement. Глифы, разрезанные гранями, раскалываются: их
-    ///   клетки вне блока возвращаются пробелами — в префикс (левый
-    ///   straddler) и суффикс (правый), табы и wide одинаково; хвост
-    ///   выравнивается на левую грань блока на каждой строке (vim-
-    ///   паритет, верифицировано: "\tqrs" [2,4) → "  qrs", "x\tz"
+    /// An edit plan for one block line: new contents, the "past the
+    /// replacement" caret point, and the bounds of the replaced range
+    /// (in line graphemes — for conversion to bytes).
+    /// - Slice exists: text = prefix + replacement + suffix, caret —
+    ///   past the replacement. Glyphs cut by edges split: their cells
+    ///   outside the block come back as spaces — into the prefix (the
+    ///   left straddler) and the suffix (the right one), tabs and wide
+    ///   alike; the tail aligns to the block's left edge on every line
+    ///   (vim parity, verified: "\tqrs" [2,4) → "  qrs", "x\tz"
     ///   [1,3) → "x z", "中x" [1,3) → " ").
-    /// - Среза нет (строка не дотягивается до блока): вставка в первую
-    ///   границу графем на/после левой грани, при необходимости строка
-    ///   дополняется пробелами до колонки (правило блоковой вставки —
-    ///   короткие строки паддятся до целевой колонки, как curswant в
-    ///   vim); хвост строки (символы за правой гранью) сохраняется.
+    /// - No slice (the line falls short of the block): insertion at
+    ///   the first grapheme boundary at/after the left edge, with the
+    ///   line padded with spaces up to the column if needed (the
+    ///   blockwise insertion rule — short lines are padded to the
+    ///   target column, like curswant in vim); the line tail
+    ///   (characters past the right edge) is preserved.
     public struct RowPlan {
         public let text: String
         public let caret: Int
-        /// Заменяемый диапазон (nil — чистая вставка).
+        /// The replaced range (nil — pure insertion).
         public let range: Range<Int>?
-        /// Точка вставки в графемах для строки без среза.
+        /// The insertion point in graphemes for a line without a slice.
         public let insertAt: Int
     }
 

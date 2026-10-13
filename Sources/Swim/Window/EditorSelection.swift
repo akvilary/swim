@@ -1,32 +1,32 @@
 import SwimCore
 import Foundation
 
-/// Подсистема выделения редактора — вся механика трёх visual-режимов
-/// (`.visual` charwise, `.visualLine` linewise, `.visualBlock`
-/// blockwise) в одном месте, extension'ом EditorWindow. Разделение
-/// ответственности:
-/// - СОСТОЯНИЕ — per-tab в EditorBuffer (якорь `visualStartLine/Col`,
-///   виртуальная колонка блока `visualBlockCol`, режим); extension
-///   хранит ничего;
-/// - ГЕОМЕТРИЯ — `VisualSelection`: режим определяет только проекцию
-///   «якорь + курсор → геометрия», все операторы потребляют одно
-///   значение, резолвенное один раз на операцию;
-/// - ЧИСТАЯ МАТЕМАТИКА (display-колонки, срезы, пересборка строк) —
-///   SwimCore/VisualBlock.swift, тестируется;
-/// - ПРИМЕНЕНИЕ — континуальные правки напрямую в PieceTable,
-///   многострочные — через `applyBlockEdit` (один контигуальный
-///   replace, модель undo не меняется);
-/// - ИНВАРИАНТЫ: завершающие операторы (`y`/`d`/`x`/вставка поверх)
-///   сами выходят в normal; `H`/`L`-shift режим сознательно сохраняет;
-///   `cursorCol` всегда реален (в блоке — граница графемы на/после
-///   виртуальной колонки).
-/// Движение режимов НЕ объединено — у каждого физически своя семантика
-/// (клэмп графем / только строки / виртуальные клетки).
+/// The editor's selection subsystem — all the mechanics of the three
+/// visual modes (`.visual` charwise, `.visualLine` linewise,
+/// `.visualBlock` blockwise) in one place, as an EditorWindow
+/// extension. Separation of responsibilities:
+/// - STATE — per-tab in EditorBuffer (the anchor `visualStartLine/Col`,
+///   the block's virtual column `visualBlockCol`, the mode); the
+///   extension stores nothing;
+/// - GEOMETRY — `VisualSelection`: the mode only defines the
+///   "anchor + cursor → geometry" projection; all operators consume a
+///   single value resolved once per operation;
+/// - PURE MATH (display columns, slices, line reassembly) —
+///   SwimCore/VisualBlock.swift, tested;
+/// - APPLICATION — contiguous edits directly into the PieceTable,
+///   multi-line ones — through `applyBlockEdit` (one contiguous
+///   replace, the undo model is unchanged);
+/// - INVARIANTS: finishing operators (`y`/`d`/`x`/paste-over) return
+///   to normal themselves; `H`/`L`-shift mode deliberately persists;
+///   `cursorCol` is always real (in block mode — the grapheme boundary
+///   at/after the virtual column).
+/// Mode movement is NOT unified — each has its own physical semantics
+/// (grapheme clamping / lines only / virtual cells).
 extension EditorWindow {
 
-    // MARK: - Геометрия
+    // MARK: - Geometry
 
-    /// Разрешённая геометрия выделения — общая валюта всех visual-режимов.
+    /// The resolved selection geometry — the shared currency of all visual modes.
     enum VisualSelection {
         case charwise(startLine: Int, startCol: Int, endLine: Int, endCol: Int)
         case linewise(ClosedRange<Int>)
@@ -37,7 +37,7 @@ extension EditorWindow {
         mode == .visual || mode == .visualLine || mode == .visualBlock
     }
 
-    /// Проекция «якорь + курсор → геометрия» текущего режима.
+    /// The "anchor + cursor → geometry" projection of the current mode.
     func visualSelection() -> VisualSelection? {
         switch mode {
         case .visual:
@@ -69,15 +69,16 @@ extension EditorWindow {
         return (cursorLine, visualStartLine)
     }
 
-    /// Строки и display-границы текущего блока — чистая проводка
-    /// per-tab состояния в тестируемую VisualBlock.blockGeometry:
-    /// реальный якорь (графема якорной строки, `?? []` без буфера —
-    /// паритет прежнего guard'а: якорь в клетке 0) + виртуальный угол
-    /// (клетки) → строки min/max + спан с инклюзивными углами.
-    /// Математики здесь не остаётся — регрессия «пропущенная клетка
-    /// при Ctrl+V + h» жила в этой композиции, теперь она в SwimCore
-    /// под тестами. Колонки — в клетках терминала, поэтому строки с
-    /// табами и wide-символами дают честный прямоугольник.
+    /// The rows and display bounds of the current block — pure wiring
+    /// of per-tab state into the tested VisualBlock.blockGeometry:
+    /// the real anchor (the anchor line's graphemes, `?? []` without a
+    /// buffer — parity with the former guard: the anchor in cell 0) +
+    /// the virtual corner (cells) → min/max rows + a span with
+    /// inclusive corners.
+    /// No math remains here — the "missing cell with Ctrl+V + h"
+    /// regression lived in this composition; now it is in SwimCore
+    /// under tests. Columns are in terminal cells, so lines with tabs
+    /// and wide characters yield an honest rectangle.
     func blockRowsAndSpan() -> (rows: ClosedRange<Int>, span: VisualBlock.Span) {
         let anchorChars = buffer?.getLineChars(visualStartLine) ?? []
         return VisualBlock.blockGeometry(anchorLine: visualStartLine,
@@ -88,42 +89,45 @@ extension EditorWindow {
                                          tabWidth: tabWidth)
     }
 
-    /// Срез блока на строке (графемный диапазон, nil — строка блока не
-    /// касается) — чистое разрешение VisualBlock над содержимым строки.
-    /// Без буфера — деградирует в пустой срез ([], nil), а не падает:
-    /// внутренний метод с force-unwrap был бы миной будущему вызывающему.
+    /// The block's slice on a line (a grapheme range, nil — the line is
+    /// outside the block) — pure resolution of VisualBlock over the
+    /// line's content.
+    /// Without a buffer it degrades to an empty slice ([], nil) rather
+    /// than crashing: an internal method with a force-unwrap would be a
+    /// landmine for a future caller.
     func blockSlice(line: Int, span: VisualBlock.Span) -> (chars: [Character], range: Range<Int>?) {
         guard let buf = buffer else { return ([], nil) }
         let chars = buf.getLineChars(line)
         return (chars, VisualBlock.charRange(chars, span: span, tabWidth: tabWidth))
     }
 
-    // MARK: - Переходы режимов
+    // MARK: - Mode transitions
 
-    /// Единая матрица переходов между visual-режимами (v/V/Ctrl+V из
-    /// normal и из любого visual). Якорные правила:
-    /// - из normal якорь = позиция курсора (visual/блок — line+col,
-    ///   visualLine — только line);
-    /// - visual ↔ block: якорь сохраняется (общая точка входа);
-    /// - visualLine → visual/block: col-якорь = колонка курсора (у
-    ///   построчного выделения своей колонки нет), line-якорь
-    ///   сохраняется;
-    /// - блок → visual/visualLine: ничего — курсор уже реален
-    ///   (syncCursorToBlockCol держит границу графемы).
-    /// Переход в блок инициализирует виртуальную колонку от реального
-    /// курсора.
+    /// The single transition matrix between visual modes (v/V/Ctrl+V
+    /// from normal and from any visual). Anchor rules:
+    /// - from normal the anchor = the cursor position (visual/block —
+    ///   line+col, visualLine — line only);
+    /// - visual ↔ block: the anchor is preserved (a shared entry point);
+    /// - visualLine → visual/block: the col anchor = the cursor column
+    ///   (linewise selection has no column of its own), the line anchor
+    ///   is preserved;
+    /// - block → visual/visualLine: nothing — the cursor is already
+    ///   real (syncCursorToBlockCol holds the grapheme boundary).
+    /// Entering block mode initializes the virtual column: from normal —
+    /// from the real cursor; from visual/visualLine — from the sticky
+    /// curswant (desiredCol), see the corner comment below.
     ///
-    /// Осознанное отличие от vim: повторный ключ СВОЕГО вида в vim
-    /// завершает режим (:h v_v — таблица переходов), swim его
-    /// игнорирует — выделение живёт до Esc/оператора (решение
-    /// проекта, см. ARCHITECTURE.md).
+    /// A deliberate difference from vim: pressing the same mode's key
+    /// again in vim finishes the mode (:h v_v — the transition table);
+    /// swim ignores it — the selection lives until Esc/an operator (a
+    /// project decision, see ARCHITECTURE.md).
     func switchVisualMode(to target: WindowMode) {
         switch target {
         case .visual:
             switch mode {
             case .normal: visualStartLine = cursorLine; visualStartCol = cursorCol
             case .visualLine: visualStartCol = cursorCol
-            default: break // из visual/блока — якорь уже есть
+            default: break // from visual/block — the anchor already exists
             }
             mode = .visual
         case .visualLine:
@@ -133,14 +137,15 @@ extension EditorWindow {
             switch mode {
             case .normal: visualStartLine = cursorLine; visualStartCol = cursorCol
             case .visualLine: visualStartCol = cursorCol
-            default: break // из visual — якорь сохраняется
+            default: break // from visual — the anchor is preserved
             }
-            // Угол блока: из normal — фактическая позиция курсора (свежая
-            // сессия, якорь = угол, как Ctrl+V в vim); из visual/visualLine —
-            // ЛИПКИЙ curswant (desiredCol, display-клетки): колонка пережила
-            // v/V-промежуток и вертикальные ходы, середина таба/wide-глифа
-            // не съезжает на следующую границу графемы (vim-паритет,
-            // верифицировано: ^V h v ^V d == ^V h d).
+            // The block corner: from normal — the cursor's actual
+            // position (a fresh session, anchor = corner, like Ctrl+V in
+            // vim); from visual/visualLine — the STICKY curswant
+            // (desiredCol, display cells): the column survived the
+            // v/V interval and vertical moves, the middle of a tab/wide
+            // glyph does not slide to the next grapheme boundary (vim
+            // parity, verified: ^V h v ^V d == ^V h d).
             let fromVisual = mode == .visual || mode == .visualLine
             mode = .visualBlock
             visualBlockCol = fromVisual
@@ -150,25 +155,27 @@ extension EditorWindow {
         }
     }
 
-    // MARK: - Движение блока
+    // MARK: - Block movement
 
-    /// Блоковое вертикальное движение: строка клэмпится по буферу
-    /// (фантомная строка легальна — вклад пуст, прямоугольник не
-    /// сжимается), виртуальная колонка не трогается. Включая пейджинг —
-    /// общей дельтой pageDelta, мимо moveVertically (клэмп графем).
+    /// Block vertical movement: the line is clamped to the buffer
+    /// (the phantom line is legal — an empty contribution, the
+    /// rectangle does not shrink), the virtual column is untouched.
+    /// Paging included — via the shared pageDelta, bypassing
+    /// moveVertically (grapheme clamping).
     func moveBlockVertically(_ delta: Int) {
         guard let buf = buffer else { return }
         cursorLine = min(max(cursorLine + delta, 0), max(0, buf.lineCount - 1))
     }
 
-    /// Реальная позиция для виртуальной колонки: граница первой
-    /// графемы на/после visualBlockCol (≤ длины строки). Держит
-    /// инвариант «cursorCol всегда реален» для рендера каретки,
-    /// статус-бара и всех остальных потребителей. curswant (desiredCol,
-    /// display-клетки) синхронизируется той же ВИРТУАЛЬНОЙ колонкой —
-    /// не реальным cursorCol: раунд-трип Ctrl+V → v → Ctrl+V обязан
-    /// вернуть угол в середину таба/wide-глифа, где он стоял (vim
-    /// держит curswant; вход в блок из visual берёт desiredCol).
+    /// The real position for the virtual column: the boundary of the
+    /// first grapheme at/after visualBlockCol (≤ the line length).
+    /// Holds the "cursorCol is always real" invariant for the caret
+    /// renderer, the status bar and every other consumer. curswant
+    /// (desiredCol, display cells) is synced to the same VIRTUAL
+    /// column — not the real cursorCol: the Ctrl+V → v → Ctrl+V
+    /// round-trip must return the corner to the middle of the tab/wide
+    /// glyph where it stood (vim keeps curswant; entering block mode
+    /// from visual takes desiredCol).
     func syncCursorToBlockCol() {
         guard let buf = buffer else { return }
         cursorCol = VisualBlock.charIndex(atDisplayCol: visualBlockCol,
@@ -177,7 +184,7 @@ extension EditorWindow {
         desiredCol = visualBlockCol
     }
 
-    // MARK: - Обработчики клавиш
+    // MARK: - Key handlers
 
     func handleVisual(_ key: Key) -> Bool {
         switch key {
@@ -219,13 +226,13 @@ extension EditorWindow {
         return true
     }
 
-    /// Visual-block (Ctrl+V): прямоугольное выделение в display-колонках.
-    /// Курсорный угол — ВИРТУАЛЬНАЯ колонка (не клэмпится по длине
-    /// строки): блок не сжимается на коротких, пустых и фантомной
-    /// строках. Операции — семантика пересечения (см. yankSelection/
-    /// deleteSelection/replaceSelectionWithPaste). Известные
-    /// ограничения против vim (осознанные, см. ARCHITECTURE.md): нет
-    /// `A`/`I`/`c`, нет `$`-растяжения и `o`-обмена углов.
+    /// Visual-block (Ctrl+V): rectangular selection in display columns.
+    /// The cursor corner is a VIRTUAL column (not clamped to the line
+    /// length): the block does not shrink on short, empty and the
+    /// phantom line. Operations use intersection semantics (see
+    /// yankSelection/deleteSelection/replaceSelectionWithPaste). Known
+    /// limitations vs vim (deliberate, see ARCHITECTURE.md): no
+    /// `A`/`I`/`c`, no `$`-extension and no `o` corner swap.
     func handleVisualBlock(_ key: Key) -> Bool {
         switch key {
         case .escape: mode = .normal
@@ -243,25 +250,25 @@ extension EditorWindow {
         }
         if mode == .visualBlock {
             syncCursorToBlockCol()
-            // Блоковое движение сознательно мимо moveVertically (клэмп
-            // графем ломал бы виртуальный угол) — но её скролл мимо не
-            // должен идти: подтягиваем видимость по ОБЕИМ осям после
-            // каждого движения (ensureCursorVisible в block-режиме
-            // читает виртуальную колонку угла и строку курсора).
+            // Block movement deliberately bypasses moveVertically
+            // (grapheme clamping would break the virtual corner) — but
+            // its scrolling must not be skipped: pull visibility on
+            // BOTH axes after every move (ensureCursorVisible in block
+            // mode reads the corner's virtual column and the cursor line).
             ensureCursorVisible()
         }
         dirty = true
         return true
     }
 
-    // MARK: - Операторы (завершающие: сами выходят в normal)
+    // MARK: - Operators (finishing: return to normal themselves)
 
-    /// Yank текущего выделения — единая точка для всех visual-режимов:
-    /// геометрия резолвится один раз, тип регистра следует виду
-    /// (charwise/linewise — обычный, blockwise — прямоугольный).
-    /// Вырожденное выделение (пустой вклад — якорь и курсор за EOL)
-    /// регистр НЕ затирает: пустой yank не должен уничтожать
-    /// предыдущее содержимое (класс: v на one-past-end + y).
+    /// Yank of the current selection — a single point for all visual
+    /// modes: the geometry is resolved once, the register type follows
+    /// the kind (charwise/linewise — plain, blockwise — rectangular).
+    /// A degenerate selection (empty contribution — anchor and cursor
+    /// past EOL) does NOT wipe the register: an empty yank must not
+    /// destroy the previous contents (class: v on one-past-end + y).
     func yankSelection() {
         guard let sel = visualSelection() else { return }
         switch sel {
@@ -289,33 +296,36 @@ extension EditorWindow {
         mode = .normal
     }
 
-    /// Терминатор строки для сборки linewise-регистра: исходный файл
-    /// даёт исходные терминаторы (CRLF-файл — CRLF-регистр, round-trip
-    /// `p` не перекрашивает строки файла в LF), но у последней строки
-    /// без завершающего перевода принудительно "\n" — тип регистра
-    /// снифается по хвосту, linewise-яанк обязан оставаться linewise
-    /// (vim-parity на `p`), иначе вставка деградирует до charwise.
+    /// The line terminator for assembling a linewise register: the
+    /// source file supplies the original terminators (a CRLF file — a
+    /// CRLF register, the `p` round-trip does not repaint the file's
+    /// lines as LF), but the last line without a trailing newline
+    /// forcibly gets "\n" — the register type is sniffed from the
+    /// tail, a linewise yank must stay linewise (vim parity on `p`),
+    /// otherwise the paste degrades to charwise.
     func registerTerminator(after line: Int) -> String {
         let t = lineTerminator(after: line)
         return t.isEmpty ? "\n" : t
     }
 
-    /// Yank байтового диапазона с linewise-гарантией (удаления):
-    /// содержимое заканчивается переводом строки, даже когда удалённый
-    /// span кончался на последней строке файла без терминатора —
-    /// регистр удаления обязан вставляться построчно, как в vim.
+    /// Yank of a byte range with a linewise guarantee (deletions): the
+    /// content ends with a line break even when the deleted span ended
+    /// on the file's last line without a terminator — a delete
+    /// register must paste linewise, as in vim.
     func yankLinewiseRegister(_ text: String) {
         yank(MultilineInsert.endsWithLineBreak(text) ? text : text + "\n")
     }
 
-    /// Удаление текущего выделения — единая точка для всех visual-режимов.
-    /// Charwise/linewise — континуальный delete (один undo-шаг);
-    /// blockwise — applyBlockEdit (построчная пересборка, той же
-    /// undo-моделью). Удалённое — в yank-регистр (тип следует виду:
-    /// charwise/linewise — обычный, blockwise — прямоугольный; пустой
-    /// вклад регистр не затирает). Курсор — на начале выделения и
-    /// прокручивается в видимость (якорь мог уехать за верх экрана,
-    /// пока выделение тянули вниз).
+    /// Deletion of the current selection — a single point for all
+    /// visual modes.
+    /// Charwise/linewise — a contiguous delete (one undo step);
+    /// blockwise — applyBlockEdit (line-by-line reassembly, with the
+    /// same undo model). The deleted text goes to the yank register
+    /// (the type follows the kind: charwise/linewise — plain,
+    /// blockwise — rectangular; an empty contribution does not wipe
+    /// the register). The cursor lands at the selection start and is
+    /// scrolled into view (the anchor may have traveled off the top of
+    /// the screen while the selection was dragged down).
     func deleteSelection() {
         guard let sel = visualSelection(), let buf = buffer else { return }
         switch sel {
@@ -343,10 +353,11 @@ extension EditorWindow {
             cursorLine = min(lines.lowerBound, max(0, buf.lineCount - 1))
             cursorCol = 0
         case .blockwise(let rows, let span):
-            // Удалённый блок — в регистр (blockwise, vim-parity `vd`+`p`):
-            // ДО правки — applyBlockEdit пересобирает строки, срезов
-            // потом не будет. Пустой вклад (блок целиком за EOL)
-            // регистр не затирает.
+            // The deleted block goes to the register (blockwise, vim
+            // parity `vd`+`p`):
+            // BEFORE the edit — applyBlockEdit reassembles the lines,
+            // no slices will exist afterwards. An empty contribution (a
+            // block entirely past EOL) does not wipe the register.
             let text = VisualBlock.blockText(rows: rows.map { blockSlice(line: $0, span: span) },
                                           span: span, tabWidth: tabWidth)
             if !text.isEmpty { yank(text, blockwise: true) }
@@ -356,13 +367,15 @@ extension EditorWindow {
         ensureCursorVisible()
     }
 
-    /// Вставка поверх выделения (bracketed paste в любом visual-режиме —
-    /// vim visual `p`): заменяемое — в yank-регистр (+OSC 52), вставленное
-    /// занимает его место, вся замена — один undo-шаг. Charwise —
-    /// континуальная замена; linewise — построчная; blockwise — срезы
-    /// первых min(строк блока, строк вставки) строк (остальной блок не
-    /// трогается — консервативнее vim, который чистит весь блок; см.
-    /// ARCHITECTURE.md). Завершающий оператор.
+    /// Paste over the selection (bracketed paste in any visual mode —
+    /// vim visual `p`): the replaced text goes to the yank register
+    /// (+OSC 52), the pasted text takes its place, the whole
+    /// replacement is one undo step. Charwise and linewise — one
+    /// contiguous replaceContiguousRange; blockwise — the slices of
+    /// the first min(block rows, pasted rows) lines via applyBlockEdit
+    /// (the rest of the
+    /// block is untouched — more conservative than vim, which clears
+    /// the whole block; see ARCHITECTURE.md). A finishing operator.
     func replaceSelectionWithPaste(_ text: String) {
         guard let buf = buffer, !text.isEmpty, let sel = visualSelection() else { return }
         switch sel {
@@ -383,15 +396,16 @@ extension EditorWindow {
             let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
             let n = min(rows.count, lines.count)
             let target = rows.lowerBound..<(rows.lowerBound + n)
-            // Заменяемый блок — в регистр ДО правки (срезов после не
-            // будет); пустой вклад регистр не затирает (вставка "\n"
-            // поверх блока целиком за EOL — правка no-op).
+            // The replaced block goes to the register BEFORE the edit
+            // (no slices afterwards); an empty contribution does not
+            // wipe the register (pasting "\n" over a block entirely
+            // past EOL — the edit is a no-op).
             let replaced = VisualBlock.blockText(rows: target.map { blockSlice(line: $0, span: span) },
                                                span: span, tabWidth: tabWidth)
             if !replaced.isEmpty { yank(replaced, blockwise: true) }
-            // До смены режима: applyBlockEdit внутри синхронизирует
-            // виртуальную колонку и зовёт ensureCursorVisible, пока
-            // режим ещё block.
+            // Before the mode switch: applyBlockEdit internally syncs
+            // the virtual column and calls ensureCursorVisible while
+            // the mode is still block.
             _ = applyBlockEdit(rows: rows.lowerBound...(rows.lowerBound + n - 1), span: span,
                                replacement: { offset, _ in lines[offset] })
         }
@@ -399,11 +413,12 @@ extension EditorWindow {
         ensureCursorVisible()
     }
 
-    /// Континуальная замена диапазона вставкой — общее тело charwise- и
-    /// linewise-веток «вставки поверх»: заменяемое — в yank-регистр
-    /// (как visual `d`), вся замена — один undo-шаг, курсор — по
-    /// правилам `p` (linewise-вставка с trailing-"\n" — на первой
-    /// вставленной строке, иначе — за последним вставленным символом).
+    /// A contiguous replacement of a range with pasted text — the shared
+    /// body of the charwise and linewise branches of "paste over": the
+    /// replaced text goes to the yank register (like visual `d`), the
+    /// whole replacement is one undo step, the cursor follows the `p`
+    /// rules (a linewise paste with a trailing "\n" — on the first
+    /// pasted line, otherwise — after the last pasted character).
     private func replaceContiguousRange(_ range: Range<Int>, with text: String,
                                         anchorLine: Int, anchorCol: Int) {
         guard let buf = buffer else { return }
@@ -422,13 +437,14 @@ extension EditorWindow {
         }
     }
 
-    // MARK: - Блоковое применение
+    // MARK: - Block application
 
-    /// Блоковый `p`/`P`: строки blockwise-регистра вставляются в
-    /// display-колонку курсора на последовательные строки (короткие
-    /// строки дополняются пробелами до колонки), одним undo-шагом.
-    /// Строки за концом буфера не создаются — ограничение v1
-    /// (см. ARCHITECTURE.md).
+    /// Block `p`/`P`: the blockwise register's lines are inserted at
+    /// the cursor's display column on consecutive lines (short lines
+    /// are padded with spaces up to the column), as a single undo
+    /// step.
+    /// Lines past the end of the buffer are not created — a v1
+    /// limitation (see ARCHITECTURE.md).
     func pasteBlock() {
         guard let buf = buffer else { return }
         let lines = yankBuffer.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
@@ -440,25 +456,27 @@ extension EditorWindow {
                            replacement: { offset, _ in lines[offset] })
     }
 
-    /// Общий исполнитель блоковых правок: пересобирает строки ОДНИМ
-    /// контигуальным replace построчным span-ом (lineStart первой
-    /// изменённой .. lineEnd последней; вставка = пересобранные строки,
-    /// каждая со своим исходным терминатором; неизменённые строки между
-    /// границами пересобираются тождественно) — модель undo не меняется,
-    /// действие остаётся тройкой (offset, deleted, inserted).
-    /// `replacement(offset, range)` получает смещение строки внутри
-    /// блока и её срез; nil — «строку не менять»; строка без среза с
-    /// пустой заменой тоже не меняется. Курсор — на первой изменённой
-    /// строке, за вставленным текстом (для удаления — на месте начала
-    /// среза). Возвращает false, когда менять нечего.
+    /// The shared executor of block edits: reassembles the lines with
+    /// ONE contiguous replace over the per-line span (lineStart of the
+    /// first changed .. lineEnd of the last; the insertion = the
+    /// reassembled lines, each with its own original terminator;
+    /// unchanged lines between the bounds are reassembled identically)
+    /// — the undo model is unchanged, the action remains the triple
+    /// (offset, deleted, inserted).
+    /// `replacement(offset, range)` receives the line's offset within
+    /// the block and its slice; nil — "leave the line unchanged"; a
+    /// line without a slice and with an empty replacement is also left
+    /// unchanged. The cursor lands on the first changed line, after
+    /// the pasted text (for deletion — at the start of the slice).
+    /// Returns false when there is nothing to change.
     @discardableResult
     func applyBlockEdit(rows: ClosedRange<Int>, span: VisualBlock.Span,
                         replacement: (Int, Range<Int>?) -> String?) -> Bool {
         guard let buf = buffer, !rows.isEmpty else { return false }
         let t = tabWidth
 
-        // План каждой строки: nil — тождественная пересборка (строка
-        // без изменений в середине span-а остаётся байт-в-байт).
+        // The plan for each line: nil — an identical reassembly (an
+        // unchanged line in the middle of the span stays byte-for-byte).
         var plans: [(line: Int, plan: VisualBlock.RowPlan?)] = []
         plans.reserveCapacity(rows.count)
         var firstChanged = -1
@@ -485,10 +503,11 @@ extension EditorWindow {
         let endOffset = min(buf.lineEnd(line: lastLine), buf.totalLength)
 
         let deletedText = endOffset > startOffset ? buf.getText(range: startOffset..<endOffset) : ""
-        // Пересборка всех строк между первым и последним изменением,
-        // каждая со СВОИМ терминатором (lineEnd включает терминатор
-        // последней). Разделитель — по индексу, а не по непустоте
-        // накопленного: пересобранная строка может быть и пустой.
+        // Reassemble all lines between the first and last change,
+        // each with ITS OWN terminator (lineEnd includes the last
+        // one's terminator). The separator is joined by index, not by
+        // non-emptiness of the accumulated text: a reassembled line
+        // may itself be empty.
         var insertedText = ""
         for entry in plans[firstChanged...lastChanged] {
             insertedText += (entry.plan?.text ?? buf.getLine(entry.line))
@@ -504,19 +523,19 @@ extension EditorWindow {
 
         cursorLine = firstLine
         cursorCol = min(firstPlan.caret, buf.lineCharLength(line: firstLine))
-        // Блоковая правка ставит РЕАЛЬНЫЙ курсор — виртуальная колонка
-        // следует за ним (ensureCursorVisible ниже читает её в block-режиме);
-        // curswant — той же клеткой.
+        // A block edit positions the REAL cursor — the virtual column
+        // follows it (ensureCursorVisible below reads it in block mode);
+        // curswant — to the same cell.
         visualBlockCol = displayColForChar(line: firstLine, charCol: cursorCol)
         desiredCol = visualBlockCol
         ensureCursorVisible()
         return true
     }
 
-    /// Терминатор строки ("\n", "\r\n" или "" у последней строки файла
-    /// без завершающего перевода) — по байтовому зазору между концом
-    /// контента и началом следующей строки; исходный буфер, звать до
-    /// мутации.
+    /// The line terminator ("\n", "\r\n", or "" for the file's last
+    /// line without a trailing newline) — from the byte gap between
+    /// the content's end and the next line's start; the original
+    /// buffer, call before mutation.
     func lineTerminator(after line: Int) -> String {
         guard let buf = buffer else { return "\n" }
         let contentEnd = buf.lineStart(line: line) + buf.getLine(line).utf8.count
@@ -525,7 +544,7 @@ extension EditorWindow {
         return nextStart - contentEnd == 2 ? "\r\n" : "\n"
     }
 
-    // MARK: - Построчный сдвиг (visualLine, режим сохраняет)
+    // MARK: - Line shift (visualLine, mode is kept)
 
     /// Shifts the visual-line selection by the per-language indent width:
     /// positive indents, negative outdents (removes at most |delta| leading
@@ -583,10 +602,11 @@ extension EditorWindow {
         ensureCursorVisible()
     }
 
-    // MARK: - Подсветка
+    // MARK: - Highlighting
 
-    /// Диспетчер подсветки: одна точка входа из update(), геометрия
-    /// резолвится один раз, ветки красят каждую свою форму.
+    /// The highlighting dispatcher: a single entry point from update(),
+    /// the geometry is resolved once, the branches paint each their own
+    /// shape.
     func drawVisualSelection(lnWidth: Int) {
         guard let sel = visualSelection() else { return }
         switch sel {
@@ -600,14 +620,14 @@ extension EditorWindow {
         }
     }
 
-    /// Экранная строка выделения (nil — вне вьюпорта).
+    /// The selection's screen row (nil — outside the viewport).
     private func selectionScreenRow(_ lineNum: Int) -> Int? {
         let screenRow = lineNum - scrollY + contentTop
         return (screenRow >= contentTop && screenRow < height) ? screenRow : nil
     }
 
-    /// Покраска клеток текстовой области в цвет выделения — общий
-    /// внутренний цикл charwise- и блоковой подсветки.
+    /// Painting the text-area cells in the selection color — the shared
+    /// inner loop of the charwise and block highlighting.
     private func paintSelectionCells(screenRow: Int, dispFrom: Int, dispTo: Int, lnWidth: Int) {
         guard dispFrom < dispTo else { return }
         for sc in (dispFrom - scrollX)..<(dispTo - scrollX) {
@@ -632,8 +652,8 @@ extension EditorWindow {
         }
     }
 
-    /// Построчная подсветка красит ВСЮ строку, включая гуттер, —
-    /// геометрия выделения не ограничена колонками.
+    /// Linewise highlighting paints the WHOLE line, gutter included —
+    /// the selection geometry is not bounded by columns.
     private func drawLinewiseHighlight(lines: ClosedRange<Int>) {
         for lineNum in lines {
             guard let screenRow = selectionScreenRow(lineNum) else { continue }
@@ -645,15 +665,15 @@ extension EditorWindow {
         }
     }
 
-    /// Прямоугольная подсветка блока — ровно то, что затрагивают
-    /// правки: правило пересечения клеток (VisualBlock), раскола
-    /// «красится, но не оперируется» больше не существует. Таб красится
-    /// ПОКРЫТЫМИ клетками (раскалывается — клетки таба независимы в
-    /// cell-буфере, рендерер рисует их пробелами), прочие глифы —
-    /// целиком (атомарны, операции их тоже берут целиком, даже если
-    /// клетки выходят за грань). Пустые клетки за концом строки внутри
-    /// полосы красятся и далее — прямоугольник читается на коротких
-    /// строках.
+    /// The block's rectangular highlight — exactly what the edits
+    /// touch: the cell intersection rule (VisualBlock); the "painted
+    /// but not operated on" split no longer exists. A tab is painted
+    /// by its COVERED cells (it splits — a tab's cells are
+    /// independent in the cell buffer, the renderer draws them as
+    /// spaces), other glyphs — whole (atomic; operations take them
+    /// whole too, even when their cells stick out past the edge).
+    /// Empty cells past the line's end inside the band are painted as
+    /// well — the rectangle stays readable on short lines.
     private func drawBlockwiseHighlight(rows: ClosedRange<Int>, span: VisualBlock.Span,
                                         lnWidth: Int) {
         guard let buf = buffer else { return }

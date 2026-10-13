@@ -1,22 +1,23 @@
 import Foundation
 
-/// Движение normal-режима — vim-модель: одно и то же движение в
-/// normal-режиме двигает курсор, а взведённому оператору (d/y/c,
-/// operator-pending) задаёт диапазон действия. Категоризация vim:
-/// - exclusive — диапазон БЕЗ конечной позиции (`w`, `b`, `0`, `h`);
-/// - inclusive — включая конечную позицию (`e`, `$`, `l`);
-/// - linewise — целыми строками (`j`, `k`, `gg`, `G`).
+/// A normal-mode motion — the vim model: the same motion moves the
+/// cursor in normal mode, and gives an armed operator (d/y/c,
+/// operator-pending) its range of action. Vim categorization:
+/// - exclusive — range WITHOUT the end position (`w`, `b`, `0`, `h`);
+/// - inclusive — including the end position (`e`, `$`, `l`);
+/// - linewise — whole lines (`j`, `k`, `gg`, `G`).
 ///
-/// Чистая логика без курсорного состояния: потребитель (EditorWindow)
-/// передаёт позицию курсора и счёт, получает назначение; применение
-/// оператора получает нормализованный диапазон. Математика диапазонов
-/// (сортировка концов назад-идущих движений, vim adjustment
-/// «exclusive-конец в начале строки → конец предыдущей строки» — без
-/// него `dw` на последнем слове строки склеивал бы строки) — здесь же
-/// и тестируется. Line-индексы обязан clamp'ить в 0…lineCount-1 ДО
-/// обращения к PieceTable.lineStart/lineEnd: вне диапазона те молча
-/// возвращают 0/totalLength — верная бухгалтерия при неверном
-/// диапазоне (класс баги, пойманный стресс-тестом delete).
+/// Pure logic without cursor state: the consumer (EditorWindow)
+/// passes the cursor position and count, and gets a destination;
+/// applying the operator receives a normalized range. Range math
+/// (sorting the ends of backward motions, the vim adjustment
+/// "exclusive end at start of line → end of previous line" — without
+/// it `dw` on the last word of a line would glue lines together) —
+/// lives here and is tested here too. Line indices MUST be clamped
+/// to 0…lineCount-1 BEFORE calling PieceTable.lineStart/lineEnd:
+/// out of range those silently return 0/totalLength — correct
+/// bookkeeping over an invalid range (a class of bugs caught by
+/// the delete stress test).
 public enum NormalMotion: Equatable {
     case left, right, up, down
     case wordForward, wordBackward, wordEnd
@@ -24,15 +25,15 @@ public enum NormalMotion: Equatable {
     case fileStart, fileEnd
 
     public enum Kind: Equatable {
-        /// h/l — exclusive в operator-контексте (vim): `dl` = один
-        /// символ = `x`, `[курсор, курсор+1)`.
+        /// h/l — exclusive in the operator context (vim): `dl` = one
+        /// character = `x`, `[cursor, cursor+1)`.
         case exclusive, inclusive, linewise
     }
 
-    /// Назначение движения: строка/колонка (0-based, char-индексы) и
-    /// vim-категория. Для `up`/`down` колонка носительна только для
-    /// диапазонов — обычное перемещение применяет sticky-колонку
-    /// (desiredCol) само окно.
+    /// The motion's destination: line/column (0-based, char indices) and
+    /// the vim category. For `up`/`down` the column matters only for
+    /// ranges — ordinary movement applies the sticky column
+    /// (desiredCol) in the window itself.
     public struct Destination: Equatable {
         public let line: Int
         public let col: Int
@@ -45,20 +46,20 @@ public enum NormalMotion: Equatable {
         }
     }
 
-    /// Нормализованный диапазон оператора. charwise-конец EXCLUSIVE —
-    /// колонка первого символа ЗА диапазоном (единая конвенция с
-    /// visual-выделениями). Пустой диапазон — nil: потребитель no-op
-    /// (а `c` просто входит в insert).
+    /// The operator's normalized range. The charwise end is EXCLUSIVE —
+    /// the column of the first character OUTSIDE the range (the same
+    /// convention as visual selections). Empty range — nil: the consumer
+    /// no-ops (and `c` simply enters insert).
     public enum OperatorRange: Equatable {
         case linewise(lower: Int, upper: Int)
         case charwise(startLine: Int, startCol: Int, endLine: Int, endCol: Int)
     }
 
-    /// Назначение движения от позиции курсора со счётом. count == nil —
-    /// счёта не было вовсе: для движений это 1, для `gg`/`G` — их
-    /// дефолты (первая/последняя строка; vim различает `G` и `1G`).
-    /// Word-примитивы применяются счёт раз; `endOfLine` (`$`) спускается
-    /// на count-1 строк вниз — всё как в vim.
+    /// The motion's destination from the cursor position with a count.
+    /// count == nil — no count was given at all: for motions this is 1,
+    /// for `gg`/`G` — their defaults (first/last line; vim distinguishes
+    /// `G` from `1G`). Word primitives are applied count times;
+    /// `endOfLine` (`$`) moves down count-1 lines — all as in vim.
     public static func destination(of motion: NormalMotion, in buffer: PieceTable,
                                    line: Int, col: Int, count: Int?) -> Destination {
         let last = max(0, buffer.lineCount - 1)
@@ -68,8 +69,8 @@ public enum NormalMotion: Equatable {
         case .left:
             return Destination(line: l, col: max(0, col - n), kind: .exclusive)
         case .right:
-            // one-past-end (col == len, вертикальные перемещения) — без
-            // движения: `dl` в этой позиции no-op, паритет с `x`
+            // one-past-end (col == len, vertical moves) — no
+            // motion: `dl` at this position is a no-op, parity with `x`
             let len = buffer.lineCharLength(line: l)
             if col >= len { return Destination(line: l, col: col, kind: .exclusive) }
             return Destination(line: l, col: min(col + n, max(0, len - 1)), kind: .exclusive)
@@ -104,15 +105,16 @@ public enum NormalMotion: Equatable {
         }
     }
 
-    /// Диапазон оператора [курсор … назначение] по vim-категории:
-    /// - linewise — целые строки от min до max включительно;
-    /// - charwise — упорядоченная пара концов; inclusive-конец
-    ///   переводится в exclusive-форму (+1 колонка);
-    /// - adjustment: exclusive-конец в (line > 0, col 0) — конец
-    ///   предыдущей строки, БЕЗ терминатора (vim :h exclusive
-    ///   правило 1). Оба поведения одним правилом: `dw` на последнем
-    ///   слове строки и `db` на BOL сохраняют перевод строки.
-    /// Пустой диапазон — nil.
+    /// The operator range [cursor … destination] by vim category:
+    /// - linewise — whole lines from min to max inclusive;
+    /// - charwise — an ordered pair of ends; the inclusive end
+    ///   is converted to exclusive form (+1 column);
+    /// - adjustment: an exclusive end at (line > 0, col 0) becomes
+    ///   the end of the previous line, WITHOUT the terminator
+    ///   (vim :h exclusive rule 1). Both behaviors via one rule:
+    ///   `dw` on the last word of a line and `db` at BOL preserve
+    ///   the line break.
+    /// Empty range — nil.
     public static func operatorRange(cursorLine: Int, cursorCol: Int,
                                      destination: Destination,
                                      in buffer: PieceTable) -> OperatorRange? {
@@ -130,8 +132,8 @@ public enum NormalMotion: Equatable {
             end = (destination.line, destination.col)
             exclusive = true
         case .inclusive:
-            // +1 в exclusive-форму; clamp — one-past-end `l` (dl там
-            // no-op) не должен давать колонку за пределами строки
+            // +1 into exclusive form; clamp — one-past-end `l` (dl there
+            // is a no-op) must not produce a column beyond the end of the line
             end = (destination.line,
                    min(destination.col + 1, buffer.lineCharLength(line: destination.line)))
             exclusive = false

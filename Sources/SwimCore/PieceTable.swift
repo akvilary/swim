@@ -416,9 +416,9 @@ public final class PieceTable {
         min(wordForwardCore(from: offset), max(totalLength - 1, 0))
     }
 
-    /// wordForward без clamp к последнему байту — для операторных
-    /// диапазонов: `dw` на последнем слове буфера идёт до конца текста
-    /// (totalLength), а курсорный `w` остаётся на последнем символе.
+    /// wordForward without clamping to the last byte — for operator
+    /// ranges: `dw` on the buffer's last word goes to the end of the
+    /// text (totalLength), while the cursor's `w` stays on the last character.
     public func wordForwardUnclamped(from offset: Int) -> Int {
         wordForwardCore(from: offset)
     }
@@ -456,10 +456,10 @@ public final class PieceTable {
         return pos
     }
 
-    /// Конец слова от offset (vim `e`): строго внутри слова — конец
-    /// ЭТОГО слова, на его последнем символе или вне слова — конец
-    /// следующего. Двухклассная модель (word-символ / прочие), как у
-    /// wordForward/wordBackward; следующего слова нет — без движения.
+    /// End of word from offset (vim `e`): strictly inside a word — the
+    /// end of THIS word; on its last character or outside a word — the
+    /// end of the next one. Two-class model (word character / everything
+    /// else), as in wordForward/wordBackward; no next word — no motion.
     public func wordEnd(from offset: Int) -> Int {
         guard totalLength > 0 else { return offset }
         func byte(_ i: Int) -> UInt8? {
@@ -469,14 +469,14 @@ public final class PieceTable {
             return buffer(for: pieces[pieceIdx])[pieces[pieceIdx].start + localOff]
         }
         var pos = min(offset, totalLength - 1)
-        // Строго внутри word-рана (за курсором ещё word-символ) —
-        // конец текущего слова
+        // Strictly inside a word run (another word character after
+        // the cursor) — the end of the current word
         if let b = byte(pos), isWordChar(b), let next = byte(pos + 1), isWordChar(next) {
             while let next = byte(pos + 1), isWordChar(next) { pos += 1 }
             return pos
         }
-        // Иначе (на последнем символе слова или вне слова) — конец
-        // СЛЕДУЮЩЕГО рана: выйти из текущего, пропустить не-word ран
+        // Otherwise (on a word's last character or outside a word) —
+        // the end of the NEXT run: leave the current one, skip the non-word run
         if let b = byte(pos), isWordChar(b) { pos += 1 }
         while let b = byte(pos), !isWordChar(b) { pos += 1 }
         if let b = byte(pos), isWordChar(b) {
@@ -518,9 +518,9 @@ public final class PieceTable {
         while pos > 0 {
             retreat()
             guard let ch = currentByte(), isWordChar(ch) else {
-                // retreat зашёл на не-word символ — старт слова это
-                // pos+1. Возврат pos сажал b на пробел ПЕРЕД словом
-                // (off-by-one латентный с рождения примитива).
+                // retreat stepped onto a non-word character — the word's
+                // start is pos+1. Returning pos seated b on the space BEFORE
+                // the word (an off-by-one latent since the primitive's birth).
                 return pos + 1
             }
         }

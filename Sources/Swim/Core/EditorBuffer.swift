@@ -35,10 +35,10 @@ final class EditorBuffer {
     var scrollY: Int = 0
     var visualStartLine: Int = 0
     var visualStartCol: Int = 0
-    /// Виртуальная колонка visual-block (display-клетки, см.
-    /// SwimCore/VisualBlock): правый/левый угол курсора, НЕ клэмпится
-    /// по длине строки — только в `.visualBlock`; вне его мертва и
-    /// переинициализируется при следующем входе.
+    /// Virtual visual-block column (display cells, see
+    /// SwimCore/VisualBlock): the cursor's right/left corner, NOT clamped
+    /// to the line length — only in `.visualBlock`; outside it it is dead
+    /// and is re-initialized on the next entry.
     var visualBlockCol: Int = 0
     var undoStack: [(offset: Int, deleted: String, inserted: String)] = []
     var redoStack: [(offset: Int, deleted: String, inserted: String)] = []
@@ -47,7 +47,8 @@ final class EditorBuffer {
     var diagnostics: [LSPDiagnostic] = []
     var markdownCache = MarkdownTokenizer.Cache()
     /// State of multi-line strings before each line; built lazily for the
-    /// visible viewport, truncated on edits below the cursor.
+    /// visible viewport, truncated from the edited line onward (the edit's
+    /// own line — NOT the cursor line: undo/redo can edit far from it).
     var mlStringStates: [SyntaxTokenizer.MultilineStringState] = []
     /// File mtime as of the last load/save — the external-change sweep
     /// compares against it to detect disk rewrites (a git pull merge, a

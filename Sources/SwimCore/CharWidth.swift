@@ -1,18 +1,18 @@
-/// Ширина символов в клетках терминала — единый авторитет для всего,
-/// что рисует текст в cell-буфер и считает колонки: рендерер
-/// (wideContinuation-клетки), редактор/проводник (свои проходы) и
-/// горизонтальный скролл поверхностей ввода (`InputLine`). Живёт в
-/// SwimCore — чистая логика без зависимостей, тестируется
-/// (Tests/SwimCoreTests/CharWidthTests).
+/// Character widths in terminal cells — the single authority for
+/// everything that draws text into the cell buffer and computes
+/// columns: the renderer (wideContinuation cells), the editor/explorer
+/// (their own passes), and the horizontal scrolling of input surfaces
+/// (`InputLine`). Lives in SwimCore — pure logic with no dependencies,
+/// covered by tests (Tests/SwimCoreTests/CharWidthTests).
 extension Character {
-    /// Ширина символа в клетках терминала (детерминированная, без зависимости от локали —
-    /// в отличие от libc-wcwidth, которая в C-локали считает кириллицу/CJK невидимыми):
-    /// 0 — управляющие (C0/C1) и нуль-ширинные (комбинирующие метки, ZWJ/ZWNJ и т.п.);
-    /// 1 — обычные (латиница, кириллица, ...);
-    /// 2 — wide (CJK, эмодзи — см. `isWide`, таблица Unicode East Asian Width).
-    /// Графемный кластер оцениваем по первому скаляру: Swift уже склеил базовый символ
-    /// с модификаторами/комбинирующими в один `Character`, поэтому ZWJ-эмодзи-последовательности
-    /// корректно получают ширину 2.
+    /// The character's width in terminal cells (deterministic, independent of locale —
+    /// unlike libc-wcwidth, which in the C locale treats Cyrillic/CJK as invisible):
+    /// 0 — control (C0/C1) and zero-width (combining marks, ZWJ/ZWNJ etc.);
+    /// 1 — ordinary (Latin, Cyrillic, ...);
+    /// 2 — wide (CJK, emoji — see `isWide`, the Unicode East Asian Width table).
+    /// A grapheme cluster is measured by its first scalar: Swift has already glued the
+    /// base character with modifiers/combining marks into a single `Character`, so ZWJ
+    /// emoji sequences correctly get width 2.
     public var displayWidth: Int {
         guard let scalar = unicodeScalars.first else { return 0 }
         let v = scalar.value
@@ -24,20 +24,20 @@ extension Character {
         return isWide ? 2 : 1
     }
 
-    /// Шаг display-колонки при выводе символа в строке с позиции
-    /// `col`: таб — до следующей границы tabstop (ширина зависит от
-    /// позиции), wide — 2, нуль-ширинные (комбинирующие, ZWJ) — 0,
-    /// прочие — 1. Единый авторитет колоночной арифметики: рендер
-    /// строк, горизонтальный скролл и visual-block (SwimCore.
-    /// VisualBlock) считают шаги только через него.
+    /// The display-column step when the character is emitted on a line
+    /// at position `col`: tab — up to the next tabstop boundary (width
+    /// depends on position), wide — 2, zero-width (combining, ZWJ) — 0,
+    /// everything else — 1. The single authority for column arithmetic:
+    /// line rendering, horizontal scrolling, and visual-block (SwimCore.
+    /// VisualBlock) compute steps only through it.
     public func displayStep(atDisplayCol col: Int, tabWidth: Int) -> Int {
         if self == "\t" { return tabWidth - (col % tabWidth) }
         let w = displayWidth
         return w > 0 ? w : 0
     }
 
-    /// Wide-диапазоны Unicode East Asian Width (отсортированы по возрастанию).
-    /// Бинарный поиск по таблице вместо цепочки `if` — O(log n) (~6 сравнений).
+    /// Wide ranges of Unicode East Asian Width (sorted in ascending order).
+    /// Binary search over the table instead of an `if` chain — O(log n) (~6 comparisons).
     private static let wideRanges: [(low: UInt32, high: UInt32)] = [
         (0x1100, 0x115F), (0x231A, 0x231B), (0x2329, 0x232A), (0x23E9, 0x23EC),
         (0x23F0, 0x23F0), (0x23F3, 0x23F3), (0x25FD, 0x25FE), (0x2614, 0x2615),
