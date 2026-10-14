@@ -29,6 +29,18 @@ final class Terminal {
     nonisolated(unsafe) static let shared = Terminal()
     private init() {}
 
+    /// The minimum terminal size swim serves its layout in: 60 columns
+    /// (beside the explorer's 22-column floor the editor keeps a
+    /// workable 38) and 5 rows (the status bar plus a few content
+    /// rows). Startup refuses less (run()); a runtime shrink below this
+    /// paints the too-small overlay instead of a degenerate layout.
+    static let minimumWidth = 60
+    static let minimumHeight = 5
+
+    var isTooSmall: Bool {
+        width < Self.minimumWidth || height < Self.minimumHeight
+    }
+
     var hasResizeEvent: Bool {
         guard resizePipeReadFd >= 0 else { return false }
         var pfd = pollfd(fd: resizePipeReadFd, events: Int16(POLLIN), revents: 0)
@@ -201,6 +213,20 @@ final class Terminal {
 
     func resetAttributes() {
         outputBuffer.append(contentsOf: "\u{1b}[0m".utf8)
+    }
+
+    /// Whole-string append — one reserve-and-copy of the UTF-8 bytes,
+    /// where a writeChar loop would build a tiny String per character.
+    /// For direct overlays and one-shot messages; the diff renderer
+    /// keeps its per-glyph writeChar.
+    func writeString(_ s: String) {
+        outputBuffer.append(contentsOf: s.utf8)
+    }
+
+    /// Erases the full screen with the CURRENT background — callers
+    /// that cannot trust the inherited pen reset the attributes first.
+    func eraseScreen() {
+        outputBuffer.append(contentsOf: "\u{1b}[2J".utf8)
     }
 
     func writeChar(_ c: Character) {

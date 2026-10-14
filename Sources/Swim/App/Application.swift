@@ -131,9 +131,9 @@ class Application: WindowDelegate {
     func run() {
         terminal.setup()
 
-        if terminal.width < 10 || terminal.height < 5 {
+        if terminal.isTooSmall {
             terminal.restore()
-            let msg = "Error: Swim requires a terminal with at least 10x5 size.\n"
+            let msg = "Error: Swim requires a terminal with at least \(Terminal.minimumWidth)x\(Terminal.minimumHeight) size (current \(terminal.width)x\(terminal.height)).\n"
             let bytes = [UInt8](msg.utf8)
             bytes.withUnsafeBufferPointer { ptr in
                 _ = write(STDERR_FILENO, ptr.baseAddress, bytes.count)
@@ -151,7 +151,21 @@ class Application: WindowDelegate {
             tickSpinners()
             if terminal.hasResizeEvent {
                 terminal.consumeResizeEvent()
-                relayoutAndRepaint()
+                if terminal.isTooSmall {
+                    // Below the minimum the layout is refused, not
+                    // degraded: the overlay replaces the frame and
+                    // input keeps working (':q' must still exit). The
+                    // overlay repaints on EVERY resize event while
+                    // small — event-driven, not per-iteration — so the
+                    // message re-centers as the terminal keeps
+                    // shrinking; the render() gate (terminalTooSmall)
+                    // is what protects the idle loop rate.
+                    terminalTooSmall = true
+                    renderTooSmallOverlay()
+                } else {
+                    terminalTooSmall = false
+                    relayoutAndRepaint()
+                }
             }
             if terminal.bytesAvailable() {
                 if let key = Key.parse(from: terminal) {
@@ -1178,7 +1192,60 @@ class Application: WindowDelegate {
         spaces.current.visibleWindows.first { $0.mode == .command }
     }
 
+    private var terminalTooSmall = false
+
+    /// The too-small state's frame: wipe the last real frame and center
+    /// the message. Buffered through Terminal's append pipeline — one
+    /// flush, one write(2), no intermediate byte arrays — and
+    /// deliberately outside the diff renderer: there is nothing to
+    /// diff against; recovery goes through relayoutAndRepaint, whose
+    /// needsFullRedraw makes the first real frame paint from scratch.
+    private func renderTooSmallOverlay() {
+        renderer.needsFullRedraw = true
+        // Two lines: the caption, then the numbers. A single combined
+        // line would truncate the numbers first — exactly on the
+        // narrowest terminals, where the user needs them most; split,
+        // the full line fits from ~37 columns and both sizes stay
+        // readable down to ~28 (the "at least" tail clips first). The
+        // current size tells the user how far to stretch; without it
+        // the message demands an unseen target.
+        let caption = "Terminal too small"
+        let numbers = "current \(terminal.width)x\(terminal.height), required \(Terminal.minimumWidth)x\(Terminal.minimumHeight) at least"
+        // SGR reset first — direct writes inherit the terminal's pen,
+        // and the last real frame can end on a cell whose fg equals its
+        // bg (editor padding cells do): without the reset, 2J would
+        // flood the screen with that background and the message would
+        // be written invisible. Default colors are always readable.
+        terminal.resetAttributes()
+        terminal.eraseScreen()
+        terminal.showCursor(false)
+        // moveCursor takes 0-based coordinates; the two-line block is
+        // centered as a unit — top row (h-2)/2, each line (w-len)/2
+        // (the lines are ASCII: character count is cell count). A
+        // zero-size report (a minimized window) clamps to the home
+        // position — the terminal clips what it cannot show, including
+        // the second row when the height is nearly gone.
+        let row = max(0, (terminal.height - 2) / 2)
+        terminal.moveCursor(row: row, col: max(0, (terminal.width - caption.count) / 2))
+        terminal.writeString(caption)
+        terminal.moveCursor(row: row + 1, col: max(0, (terminal.width - numbers.count) / 2))
+        terminal.writeString(numbers)
+        terminal.flush()
+        // The overlay left the terminal pen at the reset defaults —
+        // resync the renderer's tracker to the same baseline (see
+        // notePenResetToDefaults). Empirically dormant with today's
+        // frame patterns (the stale tracker mismatches the recovery's
+        // early cells, and the emissions resync it anyway) — this is
+        // invariant insurance: whoever writes behind the renderer's
+        // back must tell it what the pen is now.
+        renderer.notePenResetToDefaults()
+    }
+
     private func render() {
+        // Content renders are suppressed while the too-small overlay
+        // owns the screen: pollers and key handlers all funnel here,
+        // and none of them may paint a degenerate frame over it.
+        guard !terminalTooSmall else { return }
         // Each visible window may own a typing surface (editor insert
         // caret, status-bar command caret) and provides the terminal
         // cursor for it; by focus rules at most one is active.

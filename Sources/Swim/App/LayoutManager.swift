@@ -53,7 +53,20 @@ struct LayoutManager {
 
         if showExplorer {
             if showEditor {
-                explorerW = halfScreen == .explorer ? max(10, w / 2) : min(28, w / 4)
+                // Explorer width: w/3.4 of the screen — computed as
+                // w*5/17, exact integer math (5/17 == 1/3.4), no
+                // Double in the layout — floored at 22: below that a
+                // tree cannot fit the row chrome (tree indent, a wide
+                // emoji icon, spaces) plus a readable name fragment.
+                // The floor yields only when the terminal cannot
+                // afford it: the editor keeps its own minimum (10) and
+                // the explorer shrinks first — the horizontal twin of
+                // the vertical squeeze policy below. Half-screen still
+                // means half, but never below the floor.
+                let minExplorerW = 22
+                let minEditorW = 10
+                let desired = halfScreen == .explorer ? max(w / 2, minExplorerW) : max(w * 5 / 17, minExplorerW)
+                explorerW = min(desired, max(0, w - minEditorW))
                 editorX = explorerW
                 editorW = w - explorerW
             } else {

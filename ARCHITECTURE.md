@@ -194,9 +194,10 @@ The `Terminal.shared` singleton is marked `nonisolated(unsafe)` for Swift 6.
 **Resize:**
 - `hasResizeEvent` — a pending SIGWINCH ping in the self-pipe (poll with zero timeout)
 - `consumeResizeEvent()` — drains the pipe (the non-blocking drain coalesces a resize storm into the latest size) and re-reads `TIOCGWINSZ`; the run loop then applies `relayoutAndRepaint()` — the one full reaction to a terminal-size change, also serving the first frame
+- `minimumWidth`/`minimumHeight` (60x5 — beside the explorer's 22-column floor the editor keeps a workable 38) and `isTooSmall` — startup refuses less (the error names the current size too); a runtime shrink paints the too-small overlay instead of a degenerate layout — two lines, the caption and `current WxH, required 60x5 at least`, so the user sees how far to stretch — and content renders are gated off until the size recovers
 
 **Output (buffered):**
-- `moveCursor(row:col:)`, `setFG()`, `setBG()`, `setBold()`, `setDim()`, `setUnderline()`, `setReverse()`, `resetAttributes()`, `writeChar()` — append ANSI escape sequences to `outputBuffer`
+- `moveCursor(row:col:)`, `setFG()`, `setBG()`, `setBold()`, `setDim()`, `setUnderline()`, `setReverse()`, `resetAttributes()`, `writeChar()`, `writeString()` (whole-string append — one copy, no per-character Strings), `eraseScreen()` (clears with the CURRENT background — reset the attributes first when the inherited pen is untrusted) — append ANSI escape sequences to `outputBuffer`
 - `flush()` — writes the entire buffer to stdout through raw `write(2)`, looping over partial writes and retrying on `EINTR` (the only handled signal is SIGWINCH, so every EINTR here is a resize arriving mid-write; the frame must not be truncated), then clears the buffer
 
 All terminal writes go through `write(STDOUT_FILENO, ...)` directly, bypassing stdio buffering.
@@ -667,7 +668,11 @@ while running:
     poll git stats
     tick spinners (git tasks, search, terminal)
     if resize event:
-        relayoutAndRepaint (forget the frame, relayout,
+        if too small (Terminal.isTooSmall): paint the too-small
+        overlay (every resize event while small, so the message
+        re-centers; input keeps working — ':q' exits; content renders
+        are suppressed until the size recovers)
+        else: relayoutAndRepaint (forget the frame, relayout,
         update current space windows, render — inline:
         a resize arrives with no key behind it)
     if input available:
@@ -713,7 +718,7 @@ while running:
 
 **Layout (`recalculateLayout()`):**
 - Single invariant: everything lives strictly above the status bar; its line is untouchable at any number of windows. The bottom stack (git → branches → command window → terminal) holds its desired heights while they fit; on overflow (already `h/2 + h/2` on any even-height terminal ≤ 50 lines — an odd 49 fits, `min(25, h/2)` floors) it compresses waterfall-style — each window gets an honest share of the remainder, a minimum of one line. The upper zone (explorer/tab bar/editor) gets the remainder and may legitimately be squeezed to 0 lines — the panels then start at the very top row, without dead padding (a squeezed window draws nothing: `Window.resize` allows 0, all bounds are guarded, the caret is clamped)
-- File explorer: up to 28 columns or 1/4 of the width, on the left (`Ctrl+S` — half the width)
+- File explorer: w/3.4 of the width (exact integer `w*5/17`), floored at 22 columns (the crossover sits at 75 columns; a narrower tree is decoration, not navigation), yielded only when the terminal cannot keep the editor's own 10-column minimum — on the left (`Ctrl+S` — half the width, same 22-column floor)
 - Editor: the remaining space on the right
 - Git panel / branches / command window / terminal: up to 25 lines or 1/2 of the height, at the bottom (`Ctrl+S` — exactly half the height)
 - Search: results up to 1/3 of the width, preview — the rest (`Ctrl+S` — half the width for either panel)

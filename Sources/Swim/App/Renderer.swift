@@ -44,6 +44,23 @@ class Renderer {
         self.terminal = terminal
     }
 
+    /// The terminal's SGR state was changed outside the renderer (the
+    /// too-small overlay paints directly and ends on a reset): resync
+    /// the tracked pen to that known baseline, or the next frame would
+    /// compare cells against a stale tracker, emit no SGR for
+    /// "unchanged" attributes, and paint glyphs with the wrong pen —
+    /// recording them as correctly painted, so the wrong colors would
+    /// never be repaired. The rule: whoever writes behind the
+    /// renderer's back must tell it what the pen is now.
+    func notePenResetToDefaults() {
+        termFG = .default
+        termBG = .default
+        termBold = false
+        termDim = false
+        termUnderline = false
+        termReverse = false
+    }
+
     func render(windows: [Window], cursorInfo: CursorRenderInfo?) {
         ensureScreenSize()
 
