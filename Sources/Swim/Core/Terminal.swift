@@ -8,8 +8,14 @@ import Foundation
 private nonisolated(unsafe) var resizePipeWriteFd: Int32 = -1
 
 private func sigwinchHandler(_: Int32) {
+    // errno is thread-local state shared with the interrupted code: a
+    // failed write here (EAGAIN on a full pipe) would overwrite the
+    // EINTR the interrupted syscall is about to report to readByte or
+    // writeBuffer. Save/restore is the async-signal-safety discipline.
+    let savedErrno = errno
     var byte: UInt8 = 1
     _ = write(resizePipeWriteFd, &byte, 1)
+    errno = savedErrno
 }
 
 final class Terminal {
@@ -54,6 +60,19 @@ final class Terminal {
         _ = pipe(&fds)
         resizePipeReadFd = fds[0]
         resizePipeWriteFd = fds[1]
+        // Both pipe ends must be non-blocking — a blocking self-pipe
+        // freezes the editor on the first resize: the drain loop in
+        // consumeResizeEvent parks forever on the empty pipe (the write
+        // end lives in this process, so no EOF ever arrives), and a
+        // blocking write inside the SIGWINCH handler could deadlock the
+        // process outright when resizes outpace the drained bytes.
+        // CLOEXEC keeps the signal pipe out of every child (git, LSP,
+        // the embedded shell) — they neither need it nor keep it alive.
+        for fd in fds {
+            let flags = fcntl(fd, F_GETFL, 0)
+            if flags >= 0 { _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK) }
+            _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+        }
 
         updateSize()
         writeRaw("\u{1b}[?1049h")
@@ -76,6 +95,13 @@ final class Terminal {
     }
 
     func restore() {
+        // The resize handler comes off before anything else: with it
+        // gone, a late SIGWINCH cannot interrupt restore's own writes
+        // (an EINTR truncation would leave the terminal stuck in the
+        // alt screen) nor touch the pipe descriptors torn down below.
+        // Default SIGWINCH disposition is to ignore — same state the
+        // process was born with.
+        signal(SIGWINCH, SIG_DFL)
         if let orig = originalTermios {
             var copy = orig
             tcsetattr(STDIN_FILENO, TCSANOW, &copy)
@@ -121,6 +147,11 @@ final class Terminal {
             while written < data.count {
                 let n = write(STDOUT_FILENO, ptr.baseAddress! + written, data.count - written)
                 if n > 0 { written += n }
+                // SIGWINCH is the only signal with a handler in this
+                // process, so every EINTR here is a resize arriving
+                // mid-write; retry instead of dropping the tail of the
+                // frame (readByte does the same for the read side).
+                else if n == -1 && errno == EINTR { continue }
                 else { break }
             }
         }

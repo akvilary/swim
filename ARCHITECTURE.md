@@ -183,17 +183,21 @@ The `Terminal.shared` singleton is marked `nonisolated(unsafe)` for Swift 6.
 4. Switches to the alternate screen buffer (`\e[?1049h`)
 5. Enables bracketed paste mode (`\e[?2004h`) — a paste from the system clipboard arrives as a single chunk wrapped in `ESC[200~…ESC[201~` instead of a stream of key presses (a key press stream broke indentation: every pasted line break went through auto-indent on top of the text's own indentation, and the indent accumulated line by line)
 6. Clears the screen and homes the cursor (`\e[2J`, `\e[H`) — the cursor is not hidden here; its visibility is decided per frame by the renderer (`showCursor`)
-7. Installs a SIGWINCH handler (to track resize events)
+7. Installs a SIGWINCH handler as a non-blocking self-pipe: the handler writes one byte (saving/restoring `errno` — a failed write must not clobber the `EINTR` the interrupted syscall is about to report) into a pipe whose both ends are `O_NONBLOCK` + `FD_CLOEXEC`. Both properties are load-bearing: a blocking pipe parks the drain loop in `consumeResizeEvent()` forever on the first resize (no EOF can arrive while the write end lives in-process), a blocking handler write could deadlock the process inside the signal, and CLOEXEC keeps the pipe out of children (git, LSP, the embedded shell). The handler is installed last — after the pipe exists, so an early SIGWINCH cannot write to an invalid fd
 
-**Restore (`restore()`):** Restores the original termios settings, disables bracketed paste (`\e[?2004l`), switches back to the main buffer, shows the cursor.
+**Restore (`restore()`):** Uninstalls the SIGWINCH handler first (default disposition — a late resize must not interrupt the remaining steps via EINTR nor touch the descriptors being closed), restores the original termios settings, disables bracketed paste (`\e[?2004l`), switches back to the main buffer, shows the cursor, closes the pipe.
 
 **Input:**
 - `readByte() -> UInt8?` — reads one byte from stdin (blocking; EINTR from SIGWINCH is retried — a resize during a read, including a long bracketed-paste insertion, does not break input)
 - `bytesAvailable() -> Bool` — checks for available data via `poll()` with a 5 ms timeout
 
+**Resize:**
+- `hasResizeEvent` — a pending SIGWINCH ping in the self-pipe (poll with zero timeout)
+- `consumeResizeEvent()` — drains the pipe (the non-blocking drain coalesces a resize storm into the latest size) and re-reads `TIOCGWINSZ`; the run loop then applies `relayoutAndRepaint()` — the one full reaction to a terminal-size change, also serving the first frame
+
 **Output (buffered):**
 - `moveCursor(row:col:)`, `setFG()`, `setBG()`, `setBold()`, `setDim()`, `setUnderline()`, `setReverse()`, `resetAttributes()`, `writeChar()` — append ANSI escape sequences to `outputBuffer`
-- `flush()` — writes the entire buffer to stdout in a single system call via `write(STDOUT_FILENO, ...)`, then clears the buffer
+- `flush()` — writes the entire buffer to stdout through raw `write(2)`, looping over partial writes and retrying on `EINTR` (the only handled signal is SIGWINCH, so every EINTR here is a resize arriving mid-write; the frame must not be truncated), then clears the buffer
 
 All terminal writes go through `write(STDOUT_FILENO, ...)` directly, bypassing stdio buffering.
 
@@ -663,9 +667,9 @@ while running:
     poll git stats
     tick spinners (git tasks, search, terminal)
     if resize event:
-        recalculate layout, full redraw
-        update current space windows
-        render
+        relayoutAndRepaint (forget the frame, relayout,
+        update current space windows, render — inline:
+        a resize arrives with no key behind it)
     if input available:
         parse key
         poll windows (consume landed background results before the key)

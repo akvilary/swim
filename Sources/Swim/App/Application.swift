@@ -141,9 +141,9 @@ class Application: WindowDelegate {
             return
         }
 
-        recalculateLayout()
-        spaces.current.update()
-        render()
+        // The first frame is the terminal-size reaction applied to the
+        // startup size — the same pipeline a resize goes through.
+        relayoutAndRepaint()
 
         while running {
             pollLSP()
@@ -151,11 +151,7 @@ class Application: WindowDelegate {
             tickSpinners()
             if terminal.hasResizeEvent {
                 terminal.consumeResizeEvent()
-                renderer.needsFullRedraw = true
-                recalculateLayout()
-                spaces.markAllDirty()
-                spaces.current.update()
-                render()
+                relayoutAndRepaint()
             }
             if terminal.bytesAvailable() {
                 if let key = Key.parse(from: terminal) {
@@ -879,8 +875,7 @@ class Application: WindowDelegate {
             return
         }
         spaces.current.updateFocusStates()
-        recalculateLayout()
-        spaces.markAllDirty()
+        relayout()
         updateStatusBar()
     }
 
@@ -922,8 +917,7 @@ class Application: WindowDelegate {
     private func toggleFileExplorer() {
         if maximized != nil {
             restoreMaximized()
-            recalculateLayout()
-            spaces.markAllDirty()
+            relayout()
         }
         // Without an editor there is nothing else to show — keep the explorer.
         guard editor.visible || !fileExplorer.visible else { return }
@@ -938,8 +932,7 @@ class Application: WindowDelegate {
             popWindow(fileExplorer)
             return
         }
-        recalculateLayout()
-        spaces.markAllDirty()
+        relayout()
     }
 
     private func toggleGitPanel() {
@@ -964,8 +957,7 @@ class Application: WindowDelegate {
             popWindow(gitPanel)
             return
         }
-        recalculateLayout()
-        spaces.markAllDirty()
+        relayout()
     }
 
     /// Ctrl+B — the branch picker toggle: closes when open, otherwise
@@ -990,8 +982,7 @@ class Application: WindowDelegate {
             : gitPanel.workingDirectory)
         gitBranches.visible = true
         focus(gitBranches)
-        recalculateLayout()
-        spaces.markAllDirty()
+        relayout()
     }
 
     private func toggleSearch() {
@@ -1033,8 +1024,7 @@ class Application: WindowDelegate {
         terminalWindow.prepare(workingDirectory: cwd)
         terminalWindow.visible = true
         focus(terminalWindow)
-        recalculateLayout()
-        spaces.markAllDirty()
+        relayout()
     }
 
     private func switchToSpace(_ spaceId: String) {
@@ -1045,8 +1035,7 @@ class Application: WindowDelegate {
             removeFromStack(preview)
         }
         spaces.switchTo(spaceId)
-        recalculateLayout()
-        spaces.markAllDirty()
+        relayout()
     }
 
     private func cycleFocus() {
@@ -1076,8 +1065,7 @@ class Application: WindowDelegate {
         guard let target = spaces.current.focused,
               target !== statusBar, target !== tabBar else { return }
         halfScreenWindow = halfScreenWindow === target ? nil : target
-        recalculateLayout()
-        spaces.markAllDirty()
+        relayout()
     }
 
     private func halfScreenRole() -> HalfScreenWindow {
@@ -1095,8 +1083,7 @@ class Application: WindowDelegate {
     private func toggleMaximize() {
         if maximized != nil {
             restoreMaximized()
-            recalculateLayout()
-            spaces.markAllDirty()
+            relayout()
             return
         }
         guard let target = spaces.current.focused, target !== statusBar else { return }
@@ -1105,8 +1092,7 @@ class Application: WindowDelegate {
         for window in maximizeHidden {
             window.visible = false
         }
-        recalculateLayout()
-        spaces.markAllDirty()
+        relayout()
     }
 
     private func restoreMaximized() {
@@ -1115,6 +1101,31 @@ class Application: WindowDelegate {
         }
         maximizeHidden = []
         maximized = nil
+    }
+
+    /// The single reaction to a geometry change: rebuild every window's
+    /// rectangle for the current terminal size and mark both spaces'
+    /// windows dirty (a resized window revisited later must not paint a
+    /// stale frame). Shared by every layout-moving event — panel
+    /// toggles, half-screen switches, maximize — and by the two
+    /// terminal-size reactions below. Repainting is left to the caller:
+    /// key-driven callers ride the input branch's frame tail.
+    private func relayout() {
+        recalculateLayout()
+        spaces.markAllDirty()
+    }
+
+    /// The full terminal-size reaction: the screen SHAPE changed, so the
+    /// renderer must forget its previous frame, and the repaint cannot
+    /// wait for the input branch's tail — a resize arrives with no key
+    /// behind it. Serves the run loop's resize branch and the first
+    /// frame. Content-only refreshes (pollGitStats/pollLSP) deliberately
+    /// do not use it: they change no geometry and diff-paint cheaply.
+    private func relayoutAndRepaint() {
+        renderer.needsFullRedraw = true
+        relayout()
+        spaces.current.update()
+        render()
     }
 
     private func recalculateLayout() {
@@ -1355,9 +1366,8 @@ class Application: WindowDelegate {
         if commitWindow.visible { popWindow(commitWindow) }
         command.workingDirectory = gitPanel.workingDirectory
         command.runCommand(label, args: args, then: followUp)
-        recalculateLayout()
         focus(command)
-        spaces.markAllDirty()
+        relayout()
     }
 
     /// Any finished git command (pull, push, commit) may have changed the
@@ -1453,8 +1463,7 @@ class Application: WindowDelegate {
         commitWindow.headerPlate = HeaderPlate(text: " Commit @ \(gitPanel.currentBranch) ", fg: Theme.orange)
         commitWindow.visible = true
         focus(commitWindow)
-        recalculateLayout()
-        spaces.markAllDirty()
+        relayout()
         updateStatusBar()
     }
 
