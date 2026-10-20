@@ -264,7 +264,7 @@ class GitPanelWindow: Window {
         if mode == .visualLine {
             headerPlate = HeaderPlate(text: " [ VISUAL ] \(branchLabel) ", fg: Theme.purple)
         } else {
-            headerPlate = HeaderPlate(text: " \(branchLabel) (a: add, d: unstage/discard, c/C/A: commit / + last msg / amend) ", fg: Theme.orange)
+            headerPlate = HeaderPlate(text: " \(branchLabel) (a: add, d: unstage/discard, D: discard incl. staged, c/C/A: commit / + last msg / amend) ", fg: Theme.orange)
         }
         drawPlate()
 
@@ -563,6 +563,9 @@ class GitPanelWindow: Window {
         case .char("d"):
             mode = .menu; pendingY = false
             dropSelected()
+        case .char("D"):
+            mode = .menu; pendingY = false
+            forceDropSelected()
         case .char("c"):
             mode = .menu; pendingY = false
             delegate?.requestCommitMessage(prefill: preparedCommitMessage(), amend: false, amendTarget: "")
@@ -652,9 +655,10 @@ class GitPanelWindow: Window {
     /// section → unstage (`reset HEAD --`; a staged rename resets both
     /// sides) — the worktree keeps the change. Unstaged → discard
     /// (`checkout --`), untracked → delete from disk. A staged change
-    /// can never be destroyed with one press anymore: the destructive
-    /// half only exists where the change is NOT in the index yet —
-    /// discard-after-unstage is the explicit two-step.
+    /// cannot be destroyed with THIS key: the destructive half only
+    /// exists where the change is NOT in the index yet —
+    /// discard-after-unstage is the explicit two-step (`D` is the
+    /// deliberate one-press exception, see forceDropSelected).
     private func dropSelected() {
         let section = statusList.sections.indices.contains(selectedSection)
             ? statusList.sections[selectedSection].kind : nil
@@ -669,6 +673,86 @@ class GitPanelWindow: Window {
                 runGit(["reset", "HEAD", "--"] + paths)
             case .unstaged:
                 if runGit(["checkout", "--", topPathspec(file.filePath)]).exitCode == 0 {
+                    notifyBufferReload(file.filePath)
+                }
+            case .untracked:
+                deleteFileOnDisk(file.filePath)
+            case .commits, nil:
+                break
+            }
+        case .commit, nil:
+            break
+        }
+        refresh()
+        delegate?.gitWorktreeChanged()
+        dirty = true
+    }
+
+    /// `D` — discard outright, bypassing the unstage half-step: the
+    /// change dies wherever it lives, index AND worktree at once. The
+    /// deliberate one-press exception to `d`'s staged protection —
+    /// Shift is the force modifier of the family (`:q!`, `w!`): hard
+    /// to hit by accident, honest about the consequence when it lands.
+    /// The per-status plumbing (all verified against live git):
+    /// a staged plain change (M/D) restores index AND worktree from HEAD
+    /// (`checkout HEAD --`: a staged modification reverts, a staged
+    /// deletion resurrects the file); a staged ADDITION and the new
+    /// side of a staged rename/copy are REMOVED from index and disk
+    /// (`rm -f` — HEAD knows no such path, checkout would refuse with
+    /// a pathspec error); a staged rename ALSO restores its old side
+    /// from HEAD (the rm only runs after the restore succeeded — a
+    /// failed checkout must not strand the change's only copy). A
+    /// file that is ALSO worktree-modified is wiped on both levels by
+    /// the same checkout. Unstaged and untracked rows behave exactly
+    /// like `d` — the destructive half was already theirs. A checkout
+    /// that rewrites the file notifies clean tabs to reload; `rm -f`
+    /// deletes from disk (an open tab keeps the buffer — vim
+    /// semantics, `:w` recreates). An unmerged (`C`) row resolves to
+    /// HEAD's side from EITHER section — `checkout --` refuses
+    /// unmerged paths, and D's contract is discard-anywhere (plain `d`
+    /// keeps showing that refusal from the unstaged side — unchanged).
+    /// A fast double-press re-fires on the stale row before the
+    /// refresh lands — safe by design: checkouts no-op silently,
+    /// `rm -f`/file deletion report a visible error (the same class
+    /// `d`'s untracked delete always had); the cursor is deliberately
+    /// NOT advanced synchronously the way the diff view clears its
+    /// hunks — advancing would let a stray second press destroy the
+    /// NEXT row, a footgun no confirmation could undo. In the diff
+    /// view `D` is a no-op: hunk-level surgery stays `d`'s, per-hunk
+    /// force-discard would need reverse-apply against BOTH trees — a
+    /// separate feature.
+    private func forceDropSelected() {
+        let section = statusList.sections.indices.contains(selectedSection)
+            ? statusList.sections[selectedSection].kind : nil
+        switch selectedItem {
+        case .file(let file):
+            switch section {
+            case .staged:
+                switch file.status {
+                case "A", "C":
+                    runGit(["rm", "-f", "--", topPathspec(file.filePath)])
+                case "R":
+                    if let old = file.origPath,
+                       runGit(["checkout", "HEAD", "--", topPathspec(old)]).exitCode == 0 {
+                        notifyBufferReload(old)
+                        runGit(["rm", "-f", "--", topPathspec(file.filePath)])
+                    }
+                default:
+                    if runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)]).exitCode == 0 {
+                        notifyBufferReload(file.filePath)
+                    }
+                }
+            case .unstaged:
+                // An unmerged row lives in BOTH sections; `checkout --`
+                // refuses unmerged paths (plain `d` shows that refusal —
+                // untouched), but D's contract is discard-anywhere: the
+                // conflict resolves to HEAD's side from either section,
+                // symmetric with the staged branch above.
+                if file.status == "U" {
+                    if runGit(["checkout", "HEAD", "--", topPathspec(file.filePath)]).exitCode == 0 {
+                        notifyBufferReload(file.filePath)
+                    }
+                } else if runGit(["checkout", "--", topPathspec(file.filePath)]).exitCode == 0 {
                     notifyBufferReload(file.filePath)
                 }
             case .untracked:
