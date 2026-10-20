@@ -13,8 +13,10 @@ protocol WindowDelegate: AnyObject {
     func terminalCommandFinished()
     /// `amend` — the session will rewrite HEAD (`A` in the git panel):
     /// the commit window prefills with the last message and `:w` runs
-    /// `git commit --amend`.
-    func requestCommitMessage(prefill: String, amend: Bool)
+    /// `git commit --amend`. `amendTarget` — the short hash of the
+    /// commit being rewritten (empty for a plain commit): shown in the
+    /// plate so the user sees WHICH commit `:w` will replace.
+    func requestCommitMessage(prefill: String, amend: Bool, amendTarget: String)
     func requestCommit()
     func reportError(_ message: String)
     func requestRender()

@@ -565,10 +565,10 @@ class GitPanelWindow: Window {
             dropSelected()
         case .char("c"):
             mode = .menu; pendingY = false
-            delegate?.requestCommitMessage(prefill: preparedCommitMessage(), amend: false)
+            delegate?.requestCommitMessage(prefill: preparedCommitMessage(), amend: false, amendTarget: "")
         case .char("C"):
             mode = .menu; pendingY = false
-            delegate?.requestCommitMessage(prefill: lastCommitMessage(), amend: false)
+            delegate?.requestCommitMessage(prefill: lastCommitMessage(), amend: false, amendTarget: "")
         case .char("A"):
             mode = .menu; pendingY = false
             requestAmend()
@@ -890,18 +890,23 @@ class GitPanelWindow: Window {
     /// `A` — amend HEAD: the commit window opens with the last
     /// commit's message (what `git commit --amend` would show in the
     /// CLI editor) and `:w` runs `git commit --amend` instead of a new
-    /// commit. Refused upfront wherever git itself would refuse — the
-    /// status bar says so BEFORE the typing, because the commit funnel
-    /// closes the window when `:w` fires: a late git refusal ("You are
-    /// in the middle of a … -- cannot amend") would eat the typed
-    /// message. Blocked states: no HEAD (a fresh repository has
-    /// nothing to amend) and an in-progress operation that owns the
-    /// next commit — merge, cherry-pick, revert (`c` concludes each).
-    /// A rebase `edit` stop is deliberately NOT in the list: amending
-    /// there IS the standard rebase workflow, and git allows it.
+    /// commit; the plate names the target — `Amend @ <hash> branch` —
+    /// so the rewrite is visible while typing (the hash is the stdout
+    /// of the very verify probe below, truncated to the panel's 7-char
+    /// convention — no extra subprocess). Refused upfront wherever git
+    /// itself would refuse — the status bar says so BEFORE the typing,
+    /// because the commit funnel closes the window when `:w` fires: a
+    /// late git refusal ("You are in the middle of a … -- cannot
+    /// amend") would eat the typed message. Blocked states: no HEAD (a
+    /// fresh repository has nothing to amend) and an in-progress
+    /// operation that owns the next commit — merge, cherry-pick,
+    /// revert (`c` concludes each). A rebase `edit` stop is
+    /// deliberately NOT in the list: amending there IS the standard
+    /// rebase workflow, and git allows it.
     private func requestAmend() {
         let workDir = workingDirectory
-        guard Shell.git(["rev-parse", "-q", "--verify", "HEAD"], workDir: workDir).exitCode == 0 else {
+        let head = Shell.git(["rev-parse", "-q", "--verify", "HEAD"], workDir: workDir)
+        guard head.exitCode == 0 else {
             delegate?.reportError("amend: no commits yet")
             return
         }
@@ -915,7 +920,8 @@ class GitPanelWindow: Window {
             delegate?.reportError("amend: finish the \(op.name) first (c concludes it)")
             return
         }
-        delegate?.requestCommitMessage(prefill: lastCommitMessage(), amend: true)
+        delegate?.requestCommitMessage(prefill: lastCommitMessage(), amend: true,
+                                       amendTarget: head.stdout.prefix(7).trimmingCharacters(in: .whitespaces))
     }
 
     /// Notifies the app that a discard rewrote a working-tree file — a

@@ -62,6 +62,11 @@ class Application: WindowDelegate {
     /// a new commit. Set on every open/refocus request, consumed by
     /// `requestCommit()`.
     private var commitIsAmend = false
+    /// The short hash of the commit an amend session will rewrite —
+    /// the plate names the target while the user types. Rides the
+    /// same lifecycle as `commitIsAmend` (set together, reset
+    /// together); empty for plain commits.
+    private var commitAmendTarget = ""
     private let searchResults = SearchResultsWindow()
     private let preview = PreviewWindow()
     private let command = CommandWindow()
@@ -1509,13 +1514,18 @@ class Application: WindowDelegate {
                               text: fresh.buffer.getAllText())
     }
 
-    /// The commit editor's plate — speaks "Amend" while the session
-    /// rewrites HEAD, so the mode is visible while typing.
+    /// The commit editor's plate — an amend session names its target
+    /// (`Amend @ <hash> branch`), so the rewrite is visible while
+    /// typing; a plain commit keeps the classic `Commit @ branch`.
     private var commitPlateTitle: String {
-        " \(commitIsAmend ? "Amend" : "Commit") @ \(gitPanel.currentBranch) "
+        if commitIsAmend {
+            let target = commitAmendTarget.isEmpty ? "" : commitAmendTarget + " "
+            return " Amend @ \(target)\(gitPanel.currentBranch) "
+        }
+        return " Commit @ \(gitPanel.currentBranch) "
     }
 
-    func requestCommitMessage(prefill: String, amend: Bool) {
+    func requestCommitMessage(prefill: String, amend: Bool, amendTarget: String) {
         if maximized != nil { restoreMaximized() }
         // Already composing — just refocus, don't wipe the typed message.
         // The latest explicit intent wins: `A` after `c` (or the other
@@ -1523,6 +1533,7 @@ class Application: WindowDelegate {
         // retitles to match.
         if commitWindow.visible {
             commitIsAmend = amend
+            commitAmendTarget = amendTarget
             commitWindow.headerPlate = HeaderPlate(text: commitPlateTitle, fg: Theme.orange)
             focus(commitWindow)
             spaces.markAllDirty()
@@ -1530,6 +1541,7 @@ class Application: WindowDelegate {
             return
         }
         commitIsAmend = amend
+        commitAmendTarget = amendTarget
         // The commit editor shares the command window's layout slot —
         // never show both at once (they would overdraw each other).
         if command.visible { popWindow(command) }
@@ -1561,6 +1573,7 @@ class Application: WindowDelegate {
         }
         let amend = commitIsAmend
         commitIsAmend = false
+        commitAmendTarget = ""
         closeWindow(commitWindow)
         // Amend rewrites HEAD with the staged state + the edited
         // message (the same funnel: output/errors visible, the
