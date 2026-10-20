@@ -101,6 +101,34 @@ extension EditorWindow {
         return (chars, VisualBlock.charRange(chars, span: span, tabWidth: tabWidth))
     }
 
+    /// `s` in any visual mode — the substitute prefill. The selection's
+    /// geometry is resolved ONCE (its lines; a block also lends its
+    /// display span), the command line opens with `'<,'>s/` ready for
+    /// the pattern, and the scope is armed for exactly this command
+    /// session: `enterCommandMode` (called first, below) has already
+    /// cleared any stale scope, the command line then owns every key
+    /// (no edit can shift the captured lines), and the next :s
+    /// execution consumes it. A deviation from vim, deliberate: in vim
+    /// visual `s` deletes the selection and enters insert; here it is
+    /// the substitute prefill (the project's choice — the range comes
+    /// to the command line instead of a register).
+    func prefillSubstituteFromSelection() {
+        guard let sel = visualSelection() else { return }
+        let lines: ClosedRange<Int>
+        var span: VisualBlock.Span? = nil
+        switch sel {
+        case .charwise(let startLine, _, let endLine, _):
+            lines = startLine...endLine          // whole lines — the '<,'> semantic
+        case .linewise(let range):
+            lines = range
+        case .blockwise(let rows, let blockSpan):
+            lines = rows
+            span = blockSpan
+        }
+        enterCommandMode(prefill: "'<,'>s/")
+        pendingSubstituteScope = SubstitutionScope(lines: lines, blockSpan: span)
+    }
+
     // MARK: - Mode transitions
 
     /// The single transition matrix between visual modes (v/V/Ctrl+V
@@ -197,6 +225,7 @@ extension EditorWindow {
         case .ctrl("k"), .ctrlUp, .pageUp: pageCursorUp()
         case .char("y"): yankSelection()
         case .char("d"), .char("x"): deleteSelection()
+        case .char("s"): prefillSubstituteFromSelection()
         case .char("V"): switchVisualMode(to: .visualLine)
         case .ctrl("v"): switchVisualMode(to: .visualBlock)
         default: return false
@@ -215,6 +244,7 @@ extension EditorWindow {
         case .ctrl("k"), .ctrlUp, .pageUp: pageCursorUp()
         case .char("y"): yankSelection()
         case .char("d"), .char("x"): deleteSelection()
+        case .char("s"): prefillSubstituteFromSelection()
         case .char("H"), .shiftLeft: shiftVisualLines(by: -indentSize())
         case .char("L"), .shiftRight: shiftVisualLines(by: indentSize())
         case .char("v"): switchVisualMode(to: .visual)
@@ -244,6 +274,7 @@ extension EditorWindow {
         case .ctrl("k"), .ctrlUp, .pageUp: moveBlockVertically(-pageDelta)
         case .char("y"): yankSelection()
         case .char("d"), .char("x"): deleteSelection()
+        case .char("s"): prefillSubstituteFromSelection()
         case .char("v"): switchVisualMode(to: .visual)
         case .char("V"): switchVisualMode(to: .visualLine)
         default: return false

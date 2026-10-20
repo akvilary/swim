@@ -98,8 +98,13 @@ class EditorWindow: Window {
 
     /// The command line is opened globally too (`:` in Application
     /// bypassing the window's handleKey) — the same leak class: `d : Esc d`.
+    /// Entering also drops any armed substitution scope: the scope
+    /// belongs to exactly one command session (armed by visual `s`
+    /// AFTER this call — see EditorSelection), so an Esc'd prefill can
+    /// never be resurrected by a manually typed `'<,'>` after edits.
     override func enterCommandMode(prefill: String = "") {
         pending.reset()
+        pendingSubstituteScope = nil
         super.enterCommandMode(prefill: prefill)
     }
 
@@ -779,11 +784,13 @@ class EditorWindow: Window {
 
     /// `:s` / `:%s` — substitution over the WHOLE buffer (`%` is
     /// accepted and ignored; a deliberate deviation — vim's bare `:s`
-    /// covers the current line only). The pure half — command-line
-    /// parsing, the vim-magic→ICU pattern translation, the edit plan
-    /// in byte coordinates — is SwimCore.Substitute (tested); what
-    /// lives here is the effects: applying the plan, the undo record,
-    /// the cursor, the report.
+    /// covers the current line only); `'<,'>s` (armed by visual `s`)
+    /// — over the selection's lines, and for a blockwise selection
+    /// only inside the rectangle (byte windows per line). The pure
+    /// half — command-line parsing, the vim-magic→ICU pattern
+    /// translation, the edit plan in byte coordinates — is
+    /// SwimCore.Substitute (tested); what lives here is the effects:
+    /// applying the plan, the undo record, the cursor, the report.
     private func runSubstitute(_ cmd: Substitute.Command) {
         guard let buf = buffer else { return }
         guard !cmd.pattern.isEmpty else {
@@ -810,13 +817,45 @@ class EditorWindow: Window {
             lastError = "Illegal back reference"
             return
         }
+        // The scope: the whole buffer, or the selection marks the
+        // command line was armed with (visual `s`). The armed scope is
+        // consumed by ANY substitute execution — the command that runs
+        // is the one the user finished typing.
+        let armed = pendingSubstituteScope
+        pendingSubstituteScope = nil
+        let lastLine = max(0, buf.lineCount - 1)
+        let scopeLines: ClosedRange<Int>
+        let blockSpan: VisualBlock.Span?
+        switch cmd.scope {
+        case .wholeBuffer:
+            scopeLines = 0...lastLine
+            blockSpan = nil
+        case .selectionStart, .selectionEnd, .selectionRange:
+            guard let sc = armed else {
+                lastError = "Selection range expired — press s in visual mode"
+                return
+            }
+            let single: Int?
+            switch cmd.scope {
+            case .selectionStart: single = sc.lines.lowerBound
+            case .selectionEnd: single = sc.lines.upperBound
+            default: single = nil
+            }
+            // A single mark ('< or '>) addresses one whole line; only
+            // the pair carries the block's column band.
+            blockSpan = single == nil ? sc.blockSpan : nil
+            let base = single ?? sc.lines.lowerBound
+            let raw = single != nil ? base...base : sc.lines
+            scopeLines = raw.clamped(to: 0...lastLine)
+        }
         // The plan is computed on the ORIGINAL text, one line at a
         // time — text without its terminator, so `$` anchors to the
-        // line end, and a pattern cannot match across lines.
-        let lastLine = max(0, buf.lineCount - 1)
-        var lineInfos: [(index: Int, text: String, byteStart: Int)] = []
-        lineInfos.reserveCapacity(lastLine + 1)
-        for ln in 0...lastLine {
+        // line end, and a pattern cannot match across lines. A
+        // block's per-line byte window restricts matches to the
+        // rectangle (a line with no covered text contributes nothing).
+        var lineInfos: [(index: Int, text: String, byteStart: Int, byteWindow: Range<Int>?)] = []
+        lineInfos.reserveCapacity(scopeLines.count)
+        for ln in scopeLines {
             var text = buf.getText(range: buf.lineStart(line: ln)..<buf.lineEnd(line: ln))
             // Strip the FULL terminator grapheme: "\n", "\r\n" (ONE
             // Character in Swift — hasSuffix("\n") is false for it and
@@ -827,7 +866,15 @@ class EditorWindow: Window {
             if let last = text.last, last == "\n" || last == "\r" || last == "\r\n" {
                 text.removeLast()
             }
-            lineInfos.append((ln, text, buf.lineStart(line: ln)))
+            var window: Range<Int>? = nil
+            if let span = blockSpan {
+                guard let gr = blockSlice(line: ln, span: span).range,
+                      gr.lowerBound < gr.upperBound else { continue }
+                let lo = buf.charToByteOffsetInLine(line: ln, charIndex: gr.lowerBound)
+                let hi = buf.charToByteOffsetInLine(line: ln, charIndex: gr.upperBound)
+                window = lo..<hi
+            }
+            lineInfos.append((ln, text, buf.lineStart(line: ln), window))
         }
         let edits = Substitute.edits(lines: lineInfos, regex: regex,
                                      segments: segments, global: cmd.global)
@@ -844,8 +891,8 @@ class EditorWindow: Window {
         // The undo record spans the whole substituted range — captured
         // BEFORE any edit lands (replacements with \r shift line
         // indices, byte arithmetic with `delta` stays exact).
-        let rangeStart = buf.lineStart(line: 0)
-        let rangeEnd = buf.lineEnd(line: lastLine)
+        let rangeStart = buf.lineStart(line: scopeLines.lowerBound)
+        let rangeEnd = buf.lineEnd(line: scopeLines.upperBound)
         let originalText = buf.getText(range: rangeStart..<rangeEnd)
 
         if cmd.confirm {
@@ -1096,6 +1143,23 @@ class EditorWindow: Window {
     }
 
     private var pendingSubConfirm: SubConfirmSession?
+
+    /// The selection scope armed by `s` in a visual mode — the lines
+    /// (and, for a block, its display span) the typed `'<,'>s/…`
+    /// command runs on. Lifecycle, stale-proof by construction:
+    /// armed by the visual `s` AFTER enterCommandMode (entering a
+    /// command line clears any previous scope), consumed by the next
+    /// :s execution, and unreachable by buffer edits — the command
+    /// line owns every key between arming and Enter, so no edit can
+    /// shift the captured line numbers.
+    struct SubstitutionScope {
+        let lines: ClosedRange<Int>
+        let blockSpan: VisualBlock.Span?   // nil — charwise/linewise
+    }
+
+    /// Internal, not private: EditorSelection (another file of the
+    /// same target) arms it from the visual `s` handler.
+    var pendingSubstituteScope: SubstitutionScope?
 
     func moveCursorLeft(_ n: Int = 1) {
         cursorCol = max(0, cursorCol - n)

@@ -8,9 +8,12 @@ import Foundation
 /// side-effect-free and pinned by Tests/SwimCoreTests.
 ///
 /// Scope (deliberate, documented in ARCHITECTURE.md):
-/// - the range is ALWAYS the whole buffer — `%` is accepted and
-///   ignored (a deviation: in vim a bare `:s` works on the current
-///   line only);
+/// - the line scope is the WHOLE buffer by default — `%` is accepted
+///   and ignored (a deviation: in vim a bare `:s` works on the
+///   current line only); the alternative is the selection marks
+///   `'<` / `'>` / `'<,'>` — visual mode's `s` prefills `'<,'>s/`,
+///   and a blockwise selection additionally restricts matches to the
+///   block's column band (byte windows in `edits`);
 /// - flags: `g` (every occurrence in a line; without it — the first
 ///   one), `i` (ignore case), `c` (confirm each substitution);
 /// - a pattern never matches across lines: every line is scanned on
@@ -36,21 +39,35 @@ public enum Substitute {
     // MARK: - Command line
 
     /// A parsed `:s` command: the fields exactly as typed plus the
-    /// resolved flags. There is no line range here — substitution
-    /// always covers the whole buffer.
+    /// resolved flags and the line scope.
     public struct Command: Equatable {
+        /// Which lines the command covers. `wholeBuffer` is what `%`
+        /// (or no prefix) means; the selection* forms come from the
+        /// `'<`/`'>` prefixes — visual mode's `s` prefills `'<,'>s/`
+        /// and the editor resolves the marks from the selection that
+        /// armed the command line (a scope that lives exactly one
+        /// command session — see EditorWindow.pendingSubstituteScope).
+        public enum Scope: Equatable {
+            case wholeBuffer
+            case selectionStart     // '< — the selection's first line
+            case selectionEnd       // '> — the selection's last line
+            case selectionRange     // '<,'> — the selection's lines
+        }
         public let pattern: String
         public let replacement: String
         public let global: Bool       // g — every occurrence in a line
         public let ignoreCase: Bool   // i
         public let confirm: Bool      // c — ask before each substitution
+        public let scope: Scope
         public init(pattern: String, replacement: String,
-                    global: Bool, ignoreCase: Bool, confirm: Bool) {
+                    global: Bool, ignoreCase: Bool, confirm: Bool,
+                    scope: Scope = .wholeBuffer) {
             self.pattern = pattern
             self.replacement = replacement
             self.global = global
             self.ignoreCase = ignoreCase
             self.confirm = confirm
+            self.scope = scope
         }
     }
 
@@ -60,10 +77,11 @@ public enum Substitute {
     /// branches (`w`, `e`, `/query`, a line number, window
     /// management).
     ///
-    ///     "%s/a/b/gc"   → Command(a, b, global, confirm)
-    ///     "s,a,b,"      → the same, comma separator
-    ///     "su/a/b/"     → any prefix of "substitute" names the command
-    ///     "s/a\\/b/c/"  → a literal slash inside a field
+    ///     "%s/a/b/gc"    → Command(a, b, global, confirm)
+    ///     "'<,'>s/a/b/g" → the same, scoped to the selection's lines
+    ///     "s,a,b,"       → the same, comma separator
+    ///     "su/a/b/"      → any prefix of "substitute" names the command
+    ///     "s/a\\/b/c/"   → a literal slash inside a field
     ///     "5", "wq", "/x", "sh" → nil (somebody else's command)
     ///
     /// Total: no input crashes the parser. The only digits it reads
@@ -78,9 +96,37 @@ public enum Substitute {
         }
 
         skipSpaces()
-        // '%' addresses the whole buffer — which is the only range we
-        // have, so it is accepted and ignored.
-        if i < chars.count, chars[i] == "%" { i += 1 }
+        // '%' addresses the whole buffer — which is the only built-in
+        // range, so it is accepted and ignored. The alternative prefix
+        // is the selection marks (visual mode's `s` prefills
+        // `'<,'>s/`): only the exact forms `'<`, `'>` and `'<,'>` —
+        // numeric/offset addresses are out of scope, and a backwards
+        // pair ('>,'<) is simply not one of the forms.
+        var scope = Command.Scope.wholeBuffer
+        func peekMark() -> Character? {
+            guard i + 1 < chars.count, chars[i] == "'" else { return nil }
+            let m = chars[i + 1]
+            return (m == "<" || m == ">") ? m : nil
+        }
+        if i < chars.count, chars[i] == "%" {
+            i += 1
+        } else if let first = peekMark() {
+            i += 2
+            if first == "<" {
+                skipSpaces()
+                if i < chars.count, chars[i] == "," {
+                    i += 1
+                    skipSpaces()
+                    guard let second = peekMark(), second == ">" else { return nil }
+                    i += 2
+                    scope = .selectionRange
+                } else {
+                    scope = .selectionStart
+                }
+            } else {
+                scope = .selectionEnd
+            }
+        }
         skipSpaces()
 
         // The command token: any prefix of "substitute" (vim's
@@ -137,7 +183,8 @@ public enum Substitute {
             }
         }
         return Command(pattern: pattern, replacement: replacement,
-                       global: global, ignoreCase: ignoreCase, confirm: confirm)
+                       global: global, ignoreCase: ignoreCase,
+                       confirm: confirm, scope: scope)
     }
 
     // MARK: - Pattern translation (vim magic → ICU)
@@ -318,7 +365,16 @@ public enum Substitute {
     /// reports `:s/^//` as a substitution even though no byte moves.
     /// ICU works in UTF-16; the match ranges are converted to bytes
     /// here, in the single place that owns both coordinate systems.
-    public static func edits(lines: [(index: Int, text: String, byteStart: Int)],
+    ///
+    /// `byteWindow` (bytes relative to the line start, nil = the whole
+    /// line) restricts a line to a column band — the blockwise
+    /// selection's territory: a match is kept only when it lies
+    /// ENTIRELY inside the window (partially overlapping matches are
+    /// skipped — a deterministic rule; a zero-length match is admitted
+    /// on either boundary). This is how `'<,'>s` on a Ctrl+V block
+    /// substitutes only inside the rectangle.
+    public static func edits(lines: [(index: Int, text: String, byteStart: Int,
+                                      byteWindow: Range<Int>?)],
                              regex: NSRegularExpression,
                              segments: [Segment],
                              global: Bool) -> [Edit] {
@@ -332,9 +388,14 @@ public enum Substitute {
                       let lo = mr.lowerBound.samePosition(in: entry.text.utf8),
                       let hi = mr.upperBound.samePosition(in: entry.text.utf8) else { continue }
                 let utf8 = entry.text.utf8
+                let relLo = utf8.distance(from: utf8.startIndex, to: lo)
+                let relHi = relLo + utf8.distance(from: lo, to: hi)
+                if let w = entry.byteWindow {
+                    guard relLo >= w.lowerBound, relHi <= w.upperBound else { continue }
+                }
                 result.append(Edit(
-                    offset: entry.byteStart + utf8.distance(from: utf8.startIndex, to: lo),
-                    length: utf8.distance(from: lo, to: hi),
+                    offset: entry.byteStart + relLo,
+                    length: relHi - relLo,
                     replacement: expand(segments, line: entry.text, match: m),
                     line: entry.index))
             }

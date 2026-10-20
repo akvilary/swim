@@ -101,9 +101,9 @@ swim <file>       # Open file
 |---|---|---|
 | `i` | Normal | Enter Insert mode |
 | `Esc` | Any | Return to Normal mode / close focused panel |
-| `v` | Normal | Enter Visual mode |
+| `v` | Normal | Enter Visual mode (in any visual mode `s` prefills `'<,'>s/` — substitution over the selection) |
 | `V` | Normal | Enter Visual-line mode |
-| `Ctrl+V` | Normal | Enter Visual-block mode (rectangular selection in terminal cells; survives short/empty lines; `y` yanks a blockwise register, `d`/`x` delete the block, `p` pastes it as a rectangle) |
+| `Ctrl+V` | Normal | Enter Visual-block mode (rectangular selection in terminal cells; survives short/empty lines; `y` yanks a blockwise register, `d`/`x` delete the block, `p` pastes it as a rectangle; `s` substitutes only inside the rectangle) |
 | `:` | Any (not Insert) | Command line (via status bar) |
 | `/` | Normal | Search |
 | `n` / `N` | Normal | Next / previous search match |
@@ -132,7 +132,7 @@ swim <file>       # Open file
 - `:qa` — quit the app
 - `:e <path>` — open file (reveals a hidden editor)
 - `:terminal` / `:term` / `:sh` — open the built-in terminal
-- `:s/pat/rep/[gic]` — substitute over the whole buffer (vim-magic regex: `\(…\)` groups with `\1`–`\9` back references; flags: `g` — every occurrence in a line, `i` — ignore case, `c` — confirm each with `y/n/a/q/l`)
+- `:s/pat/rep/[gic]` — substitute over the whole buffer (vim-magic regex: `\(…\)` groups with `\1`–`\9` back references; flags: `g` — every occurrence in a line, `i` — ignore case, `c` — confirm each with `y/n/a/q/l`); `s` in any visual mode prefills `'<,'>s/` — the same substitution over the selection (a Ctrl+V block restricts matches to the rectangle)
 
 ## Project structure
 

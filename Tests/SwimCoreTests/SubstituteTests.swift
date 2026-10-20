@@ -67,6 +67,18 @@ import SwimCore
         }
     }
 
+    @Test func parseSelectionMarks() {
+        #expect(parsed("'<,'>s/a/b/g")?.scope == .selectionRange)
+        #expect(parsed("'<s/a/b/")?.scope == .selectionStart)
+        #expect(parsed("'>s/a/b/")?.scope == .selectionEnd)
+        #expect(parsed("'<,'>su/a/b/")?.scope == .selectionRange)   // command prefixes too
+        #expect(parsed("'<,'>s/a/b/g")?.global == true)             // the rest parses as usual
+        // not mark forms — somebody else's command (or a typo)
+        for bad in ["'>,'<s/a/b/", "'<,5s/a/b/", "%'<,'>s/a/b/", "'x s/a/b/", "'s/a/b/"] {
+            #expect(parsed(bad) == nil, "expected nil for \(bad)")
+        }
+    }
+
     // MARK: - pattern translation (vim magic → ICU)
 
     private func icu(_ vim: String) -> String {
@@ -179,7 +191,9 @@ import SwimCore
         }
         let regex = try! NSRegularExpression(pattern: pattern,
                                              options: caseInsensitive ? [.caseInsensitive] : [])
-        return Substitute.edits(lines: lines, regex: regex,
+        let windowed: [(index: Int, text: String, byteStart: Int, byteWindow: Range<Int>?)] =
+            lines.map { (index: $0.index, text: $0.text, byteStart: $0.byteStart, byteWindow: nil) }
+        return Substitute.edits(lines: windowed, regex: regex,
                                 segments: Substitute.translateReplacement(replacement),
                                 global: global)
     }
@@ -223,6 +237,58 @@ import SwimCore
         let raw = plan("\\s\\+$", replacement: "", over: [(0, "x  \r\n", 0)])
         #expect(raw.count == 1)
         #expect(raw[0].length == 4)   // "  \r\n" — the terminator is swallowed
+    }
+
+    // MARK: - byte windows (the blockwise selection's territory)
+
+    private func planWindowed(_ vimPattern: String, replacement: String,
+                              text: String, byteStart: Int = 0,
+                              window: Range<Int>?) -> [Substitute.Edit] {
+        guard case .success(let pattern) = Substitute.translatePattern(vimPattern) else {
+            Issue.record("bad test pattern")
+            return []
+        }
+        let regex = try! NSRegularExpression(pattern: pattern)
+        return Substitute.edits(
+            lines: [(index: 0, text: text, byteStart: byteStart, byteWindow: window)],
+            regex: regex,
+            segments: Substitute.translateReplacement(replacement),
+            global: true)
+    }
+
+    @Test func windowKeepsOnlyFullyInsideMatches() {
+        // X at bytes 1 and 3; the window [2,4) admits only the second
+        let inside = planWindowed("X", replacement: "-", text: "aXbXc", window: 2..<4)
+        #expect(inside.map(\.offset) == [3])
+        // a partially overlapping match (bytes 0..<2 vs window 1..<3) is skipped
+        let partial = planWindowed("aX", replacement: "-", text: "aXbXc", window: 1..<3)
+        #expect(partial.isEmpty)
+        // a wider window admits both
+        let wide = planWindowed("X", replacement: "-", text: "aXbXc", window: 0..<5)
+        #expect(wide.map(\.offset) == [1, 3])
+        // nil window = the whole line
+        let all = planWindowed("X", replacement: "-", text: "aXbXc", window: nil)
+        #expect(all.map(\.offset) == [1, 3])
+    }
+
+    @Test func windowBoundariesAreClosedForZeroLengthMatches() {
+        // zero-length matches sit ON the boundaries — admitted at
+        // either edge (a pinned rule, not an accident)
+        let edges = planWindowed("x*", replacement: "-", text: "abc", window: 1..<2)
+        #expect(edges.map(\.offset) == [1, 2])
+    }
+
+    @Test func windowWorksOnCyrillicBytes() {
+        // "мир" is bytes 13..<19 of "привет мир"; a window that CUTS
+        // into the match by even one byte (left or right) rejects it
+        #expect(planWindowed("мир", replacement: "X", text: "привет мир",
+                             window: 13..<19).map(\.offset) == [13])
+        #expect(planWindowed("мир", replacement: "X", text: "привет мир",
+                             window: 14..<19).isEmpty)   // cuts the left edge
+        #expect(planWindowed("мир", replacement: "X", text: "привет мир",
+                             window: 13..<18).isEmpty)   // cuts the right edge
+        #expect(planWindowed("мир", replacement: "X", text: "привет мир",
+                             window: 0..<13).isEmpty)
     }
 
     @Test func zeroLengthMatchesAreKept() {
