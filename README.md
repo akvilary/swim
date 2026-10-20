@@ -132,7 +132,7 @@ swim <file>       # Open file
 - `:qa` — quit the app
 - `:e <path>` — open file (reveals a hidden editor)
 - `:terminal` / `:term` / `:sh` — open the built-in terminal
-- `:s/pat/rep/[gic]` — substitute over the whole buffer (vim-magic regex: `\(…\)` groups with `\1`–`\9` back references; flags: `g` — every occurrence in a line, `i` — ignore case, `c` — confirm each with `y/n/a/q/l`); `s` in any visual mode prefills `'<,'>s/` — the same substitution over the selection (a Ctrl+V block restricts matches to the rectangle)
+- `:s/pat/rep/[gic]` — substitute (vim-magic regex: `\(…\)` groups with `\1`–`\9` back references; flags: `g` — every occurrence in a line, `i` — ignore case, `c` — confirm each with `y/n/a/q/l`); the scope: the whole buffer by default, `'<,'>` — the selection (`s` in any visual mode prefills it; a Ctrl+V block restricts matches to the rectangle), or an explicit line range `:N[,M]s/…`, `:.,$s`, `:5,+2s`, `:+3s`
 
 ## Project structure
 

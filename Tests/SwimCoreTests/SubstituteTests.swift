@@ -13,6 +13,8 @@ import SwimCore
 /// Cyrillic and empty matches).
 @Suite struct SubstituteTests {
 
+    private typealias LineAddress = Substitute.LineAddress
+
     // MARK: - parse
 
     private func parsed(_ raw: String) -> Substitute.Command? {
@@ -77,6 +79,98 @@ import SwimCore
         for bad in ["'>,'<s/a/b/", "'<,5s/a/b/", "%'<,'>s/a/b/", "'x s/a/b/", "'s/a/b/"] {
             #expect(parsed(bad) == nil, "expected nil for \(bad)")
         }
+    }
+
+    @Test func parseLineRanges() {
+        #expect(parsed("1,5s/a/b/g")?.scope
+                == .addressRange(start: LineAddress(base: .number(1), delta: 0),
+                                 end: LineAddress(base: .number(5), delta: 0)))
+        #expect(parsed("5s/a/b/")?.scope
+                == .addressRange(start: LineAddress(base: .number(5), delta: 0), end: nil))
+        #expect(parsed(".,$s/a/b/")?.scope
+                == .addressRange(start: LineAddress(base: .current, delta: 0),
+                                 end: LineAddress(base: .last, delta: 0)))
+        #expect(parsed(".+2,$-1s/a/b/")?.scope
+                == .addressRange(start: LineAddress(base: .current, delta: 2),
+                                 end: LineAddress(base: .last, delta: -1)))
+        #expect(parsed("1, 5 s/a/b/") != nil)                       // spaces tolerated
+        #expect(parsed(",5s/a/b/")?.scope                           // implicit-current first
+                == .addressRange(start: LineAddress(base: .current, delta: 0),
+                                 end: LineAddress(base: .number(5), delta: 0)))
+        #expect(parsed("+3s/a/b/")?.scope                           // bare offset = current+3
+                == .addressRange(start: LineAddress(base: .current, delta: 3), end: nil))
+        // A bare SECOND offset keeps base == nil — the relativity
+        // marker resolve() reads (relative to the RESOLVED first)
+        #expect(parsed("5,+2s/a/b/")?.scope
+                == .addressRange(start: LineAddress(base: .number(5), delta: 0),
+                                 end: LineAddress(base: nil, delta: 2)))
+    }
+
+    @Test func parseLineRangesRejectTheIncompleteAndForeign() {
+        for bad in ["5,", ",s/a/b/", "1,,5s/a/b/", "1,5,6s/a/b/", "1,5w",
+                    "%,1s/a/b/", "1,'<s/a/b/", "x,5s/a/b/"] {
+            #expect(parsed(bad) == nil, "expected nil for \(bad)")
+        }
+        // The goto-line and unknown branches keep their commands: an
+        // address without the s-token is not a :s
+        for keep in ["5", "+3", "-1", ".", "$", "5,5"] {
+            #expect(parsed(keep) == nil, "expected nil for \(keep)")
+        }
+    }
+
+    @Test func parseLineRangesNeverTrap() {
+        // Capped digit/delta accumulation — a typed overflow must not
+        // crash the parser; resolve clamps the cap to the buffer
+        let huge = parsed("99999999999999999999,5s/a/b/")
+        #expect(huge != nil)
+        guard case .addressRange(let s, _)? = huge?.scope else {
+            Issue.record("expected addressRange"); return
+        }
+        #expect(s == LineAddress(base: .number(1_000_000), delta: 0))
+        #expect(parsed(".+99999999999999999999s/a/b/") != nil)
+    }
+
+    @Test func resolveLineRanges() {
+        let cur = 1, last = 10    // 0-based: the cursor sits on line 2
+        // single line; plain pair; clamping on every edge
+        #expect(Substitute.resolve(LineAddress(base: .number(5), delta: 0), nil,
+                                   currentLine: cur, lastLine: last) == 4...4)
+        #expect(Substitute.resolve(LineAddress(base: .number(1), delta: 0),
+                                   LineAddress(base: .number(5), delta: 0),
+                                   currentLine: cur, lastLine: last) == 0...4)
+        #expect(Substitute.resolve(LineAddress(base: .number(100), delta: 0),
+                                   LineAddress(base: .number(200), delta: 0),
+                                   currentLine: cur, lastLine: last) == 10...10)
+        #expect(Substitute.resolve(LineAddress(base: .number(0), delta: 0), nil,
+                                   currentLine: cur, lastLine: last) == 0...0)   // :0 → first
+        #expect(Substitute.resolve(LineAddress(base: .last, delta: -2),
+                                   LineAddress(base: .last, delta: 0),
+                                   currentLine: cur, lastLine: last) == 8...10)
+        #expect(Substitute.resolve(LineAddress(base: .current, delta: -100), nil,
+                                   currentLine: cur, lastLine: last) == 0...0)
+    }
+
+    @Test func resolveSecondOffsetIsRelativeToResolvedFirst() {
+        // THE relativity fixture: `:.+3,+5` with the cursor at index 1
+        // (vim line 2) → first = vim 5 (index 4), second = 5+5 = vim
+        // 10 (index 9): 4…9 — base inheritance would instead read the
+        // second as cursor+5 and silently give 4…6
+        let r = Substitute.resolve(LineAddress(base: .current, delta: 3),
+                                   LineAddress(base: nil, delta: 5),
+                                   currentLine: 1, lastLine: 20)
+        #expect(r == 4...9)
+        // 5,+2 → 5…7 regardless of the cursor
+        #expect(Substitute.resolve(LineAddress(base: .number(5), delta: 0),
+                                   LineAddress(base: nil, delta: 2),
+                                   currentLine: 0, lastLine: 10) == 4...6)
+        // a negative relative offset going backwards → E493
+        #expect(Substitute.resolve(LineAddress(base: .number(5), delta: 0),
+                                   LineAddress(base: nil, delta: -2),
+                                   currentLine: 0, lastLine: 10) == nil)
+        // plain backwards pair
+        #expect(Substitute.resolve(LineAddress(base: .number(5), delta: 0),
+                                   LineAddress(base: .number(2), delta: 0),
+                                   currentLine: 0, lastLine: 10) == nil)
     }
 
     // MARK: - pattern translation (vim magic → ICU)

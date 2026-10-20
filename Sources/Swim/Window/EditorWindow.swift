@@ -847,6 +847,17 @@ class EditorWindow: Window {
             let base = single ?? sc.lines.lowerBound
             let raw = single != nil ? base...base : sc.lines
             scopeLines = raw.clamped(to: 0...lastLine)
+        case .addressRange(let start, let end):
+            // An explicitly typed range — whole lines, no column band.
+            // `.` reads the cursor line as it is at execution time.
+            guard let lines = Substitute.resolve(start, end,
+                                                 currentLine: cursorLine,
+                                                 lastLine: lastLine) else {
+                lastError = "Backwards range"
+                return
+            }
+            scopeLines = lines
+            blockSpan = nil
         }
         // The plan is computed on the ORIGINAL text, one line at a
         // time — text without its terminator, so `$` anchors to the
