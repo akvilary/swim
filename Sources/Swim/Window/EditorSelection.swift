@@ -129,6 +129,55 @@ extension EditorWindow {
         pendingSubstituteScope = SubstitutionScope(lines: lines, blockSpan: span)
     }
 
+    /// `a` in any visual mode — select ALL of the buffer's content (the
+    /// project's mapping; vim has no bare visual `a` — there it is only
+    /// a text-object prefix, which swim does not have). The MODE is
+    /// preserved, only the geometry grows: charwise spans (0,0)…(last
+    /// line, its last char — endCol is inclusive in the selection
+    /// model, so a phantom last line still selects through the final
+    /// line break), linewise covers 0…lastLine, blockwise takes every
+    /// row with the rectangle widened to the widest line's display
+    /// width (the block's virtual column does not shrink on shorter
+    /// lines, so one width honestly covers everything). The cursor
+    /// lands on the far corner and scrolls into view.
+    func selectAllContent() {
+        guard let buf = buffer else { return }
+        // Guard the mode FIRST: no state is touched on a foreign call
+        // (unreachable from the three handlers, but a method that
+        // mutates shared state does not lean on its callers' purity)
+        switch mode {
+        case .visual, .visualLine, .visualBlock: break
+        default: return
+        }
+        let lastLine = max(0, buf.lineCount - 1)
+        visualStartLine = 0
+        switch mode {
+        case .visual:
+            visualStartCol = 0
+            cursorLine = lastLine
+            // endCol is INCLUSIVE (the consumers read endCol + 1) —
+            // park ON the last char, not past it; an empty/phantom
+            // line takes 0 (its start already sits past the final
+            // line break)
+            cursorCol = max(0, buf.lineCharLength(line: lastLine) - 1)
+        case .visualLine:
+            cursorLine = lastLine
+            cursorCol = min(cursorCol, buf.lineCharLength(line: lastLine))
+        case .visualBlock:
+            visualStartCol = 0
+            var width = 0
+            for ln in 0...lastLine {
+                width = max(width, displayColForChar(line: ln,
+                                                     charCol: buf.lineCharLength(line: ln)))
+            }
+            visualBlockCol = max(width, 1)
+            cursorLine = lastLine
+        default:
+            return
+        }
+        ensureCursorVisible()
+    }
+
     // MARK: - Mode transitions
 
     /// The single transition matrix between visual modes (v/V/Ctrl+V
@@ -226,6 +275,7 @@ extension EditorWindow {
         case .char("y"): yankSelection()
         case .char("d"), .char("x"): deleteSelection()
         case .char("s"): prefillSubstituteFromSelection()
+        case .char("a"): selectAllContent()
         case .char("V"): switchVisualMode(to: .visualLine)
         case .ctrl("v"): switchVisualMode(to: .visualBlock)
         default: return false
@@ -245,6 +295,7 @@ extension EditorWindow {
         case .char("y"): yankSelection()
         case .char("d"), .char("x"): deleteSelection()
         case .char("s"): prefillSubstituteFromSelection()
+        case .char("a"): selectAllContent()
         case .char("H"), .shiftLeft: shiftVisualLines(by: -indentSize())
         case .char("L"), .shiftRight: shiftVisualLines(by: indentSize())
         case .char("v"): switchVisualMode(to: .visual)
@@ -275,6 +326,7 @@ extension EditorWindow {
         case .char("y"): yankSelection()
         case .char("d"), .char("x"): deleteSelection()
         case .char("s"): prefillSubstituteFromSelection()
+        case .char("a"): selectAllContent()
         case .char("v"): switchVisualMode(to: .visual)
         case .char("V"): switchVisualMode(to: .visualLine)
         default: return false

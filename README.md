@@ -101,7 +101,7 @@ swim <file>       # Open file
 |---|---|---|
 | `i` | Normal | Enter Insert mode |
 | `Esc` | Any | Return to Normal mode / close focused panel |
-| `v` | Normal | Enter Visual mode (in any visual mode `s` prefills `'<,'>s/` — substitution over the selection) |
+| `v` | Normal | Enter Visual mode (in any visual mode `s` prefills `'<,'>s/` — substitution over the selection; `a` selects all of the buffer) |
 | `V` | Normal | Enter Visual-line mode |
 | `Ctrl+V` | Normal | Enter Visual-block mode (rectangular selection in terminal cells; survives short/empty lines; `y` yanks a blockwise register, `d`/`x` delete the block, `p` pastes it as a rectangle; `s` substitutes only inside the rectangle) |
 | `:` | Any (not Insert) | Command line (via status bar) |
