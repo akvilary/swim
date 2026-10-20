@@ -68,14 +68,14 @@ Custom install path:
 curl -fsSL https://raw.githubusercontent.com/akvilary/swim/main/install.sh | DESTDIR=~/.local/bin bash
 ```
 
-**Build from source** — the repo pins its toolchain in `.swift-version` (6.2.4); [swiftly](https://www.swift.org/install/) picks it up automatically inside the repo.
+**Build from source** — any Swift toolchain **6.0 or newer** builds the project (the floor is `swift-tools-version` in Package.swift, which SwiftPM enforces as "this or later" — 6.2.4 and 6.4.1 are both verified). The repo pins no exact toolchain: [swiftly](https://www.swift.org/install/) simply uses your default inside the repo.
 
 Linux (Ubuntu / Pop!_OS / RHEL / Fedora):
 
 ```bash
 curl -O https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz
 tar zxf swiftly-$(uname -m).tar.gz
-./swiftly init --platform <platform> && swiftly install 6.2.4
+./swiftly init --platform <platform> && swiftly install latest
 bash build.sh
 ```
 
