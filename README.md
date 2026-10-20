@@ -132,7 +132,7 @@ swim <file>       # Open file
 - `:qa` — quit the app
 - `:e <path>` — open file (reveals a hidden editor)
 - `:terminal` / `:term` / `:sh` — open the built-in terminal
-- `:%s/old/new/g` — substitute
+- `:s/pat/rep/[gic]` — substitute over the whole buffer (vim-magic regex: `\(…\)` groups with `\1`–`\9` back references; flags: `g` — every occurrence in a line, `i` — ignore case, `c` — confirm each with `y/n/a/q/l`)
 
 ## Project structure
 

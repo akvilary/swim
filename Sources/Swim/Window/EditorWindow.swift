@@ -754,8 +754,8 @@ class EditorWindow: Window {
             } else if cmd.hasPrefix("e ") {
                 if modified { lastError = "No write since last change (add ! to override)" }
                 else { editFile(String(cmd.dropFirst(2)).trimmingCharacters(in: .whitespaces)) }
-            } else if cmd.hasPrefix("%s/") {
-                handleSubstitute(cmd)
+            } else if let sub = Substitute.parse(cmd) {
+                runSubstitute(sub)
             } else if cmd.hasPrefix("/") {
                 searchQuery = String(cmd.dropFirst())
                 lastSearchForward = true
@@ -777,26 +777,206 @@ class EditorWindow: Window {
         return true
     }
 
-    private func handleSubstitute(_ cmd: String) {
-        let parts = String(cmd.dropFirst(3)).split(separator: "/", omittingEmptySubsequences: false)
-        guard parts.count >= 2 else { return }
-        let search = String(parts[0])
-        let replace = String(parts[1])
-        let flags = parts.count > 2 ? String(parts[2]) : ""
+    /// `:s` / `:%s` — substitution over the WHOLE buffer (`%` is
+    /// accepted and ignored; a deliberate deviation — vim's bare `:s`
+    /// covers the current line only). The pure half — command-line
+    /// parsing, the vim-magic→ICU pattern translation, the edit plan
+    /// in byte coordinates — is SwimCore.Substitute (tested); what
+    /// lives here is the effects: applying the plan, the undo record,
+    /// the cursor, the report.
+    private func runSubstitute(_ cmd: Substitute.Command) {
         guard let buf = buffer else { return }
-        let lineStart = buf.lineStart(line: cursorLine)
-        let lineEnd = buf.lineEnd(line: cursorLine)
-        let lineText = buf.getText(range: lineStart..<lineEnd)
-        let result: String
-        if flags.contains("g") { result = lineText.replacingOccurrences(of: search, with: replace) }
-        else {
-            if let range = lineText.range(of: search) { result = lineText.replacingCharacters(in: range, with: replace) }
-            else { result = lineText }
+        guard !cmd.pattern.isEmpty else {
+            lastError = "Empty pattern"
+            return
         }
-        let deletedLen = lineText.utf8.count
-        buf.delete(at: lineStart, length: deletedLen)
-        buf.insert(result, at: lineStart)
-        recordAction(offset: lineStart, deleted: lineText, inserted: result)
+        let translated: String
+        switch Substitute.translatePattern(cmd.pattern) {
+        case .success(let icu): translated = icu
+        case .failure:
+            lastError = "Magic-mode prefixes (\\v \\m \\M \\V) are not supported"
+            return
+        }
+        let regex: NSRegularExpression
+        do {
+            regex = try NSRegularExpression(pattern: translated,
+                                            options: cmd.ignoreCase ? [.caseInsensitive] : [])
+        } catch {
+            lastError = "Invalid pattern: \(cmd.pattern)"
+            return
+        }
+        let segments = Substitute.translateReplacement(cmd.replacement)
+        if Substitute.maxGroup(in: segments) > regex.numberOfCaptureGroups {
+            lastError = "Illegal back reference"
+            return
+        }
+        // The plan is computed on the ORIGINAL text, one line at a
+        // time — text without its terminator, so `$` anchors to the
+        // line end, and a pattern cannot match across lines.
+        let lastLine = max(0, buf.lineCount - 1)
+        var lineInfos: [(index: Int, text: String, byteStart: Int)] = []
+        lineInfos.reserveCapacity(lastLine + 1)
+        for ln in 0...lastLine {
+            var text = buf.getText(range: buf.lineStart(line: ln)..<buf.lineEnd(line: ln))
+            // Strip the FULL terminator grapheme: "\n", "\r\n" (ONE
+            // Character in Swift — hasSuffix("\n") is false for it and
+            // the terminator would leak into the matchable text: ICU's
+            // \s matches \r and \n, so `:%s/\s\+/ /g` would join every
+            // CRLF line), or a lone "\r". Terminators stay in the
+            // buffer — only the scanned text sheds them.
+            if let last = text.last, last == "\n" || last == "\r" || last == "\r\n" {
+                text.removeLast()
+            }
+            lineInfos.append((ln, text, buf.lineStart(line: ln)))
+        }
+        let edits = Substitute.edits(lines: lineInfos, regex: regex,
+                                     segments: segments, global: cmd.global)
+        guard !edits.isEmpty else {
+            lastError = "Pattern not found: \(cmd.pattern)"
+            return
+        }
+        // vim shares the substitution pattern with `n`/`N`; the `/`
+        // search here is literal, so it will look for the pattern's
+        // text exactly as typed.
+        searchQuery = cmd.pattern
+        lastSearchForward = true
+
+        // The undo record spans the whole substituted range — captured
+        // BEFORE any edit lands (replacements with \r shift line
+        // indices, byte arithmetic with `delta` stays exact).
+        let rangeStart = buf.lineStart(line: 0)
+        let rangeEnd = buf.lineEnd(line: lastLine)
+        let originalText = buf.getText(range: rangeStart..<rangeEnd)
+
+        if cmd.confirm {
+            pendingSubConfirm = SubConfirmSession(edits: edits,
+                                                  rangeStart: rangeStart,
+                                                  rangeEnd: rangeEnd,
+                                                  originalText: originalText,
+                                                  rawReplacement: cmd.replacement)
+            enterCommandMode()
+            promptNextSubstitution()
+            return
+        }
+        // Plain path — apply in REVERSE: an edit never shifts the
+        // offsets of the edits before it, so no delta bookkeeping
+        // exists on this path at all.
+        for edit in edits.reversed() {
+            if edit.length > 0 { buf.delete(at: edit.offset, length: edit.length) }
+            if !edit.replacement.isEmpty { buf.insert(edit.replacement, at: edit.offset) }
+        }
+        let delta = edits.reduce(0) { $0 + $1.replacement.utf8.count - $1.length }
+        completeSubstitution(rangeStart: rangeStart, rangeEnd: rangeEnd,
+                             originalText: originalText, delta: delta,
+                             substitutions: edits.count,
+                             lines: Set(edits.map(\.line)).count,
+                             lastCursorOffset: edits[edits.count - 1].offset)
+    }
+
+    /// Closes a substitution — both the plain run and a finished
+    /// `c`-session. The whole `:s` is ONE undo step (a composite
+    /// action over the full range — vim's undo granularity; a single
+    /// `u` restores every replaced line at once), the report counts
+    /// what actually landed, and the cursor parks on the start of the
+    /// last substitution. The equality guard: a substitution that
+    /// changed no bytes (`:s/^//`) is not an edit — no undo entry, no
+    /// modified flag; the report still shows, exactly like vim's.
+    private func completeSubstitution(rangeStart: Int, rangeEnd: Int,
+                                      originalText: String, delta: Int,
+                                      substitutions: Int, lines: Int,
+                                      lastCursorOffset: Int) {
+        if let buf = buffer, substitutions > 0 {
+            let finalText = buf.getText(range: rangeStart..<(rangeEnd + delta))
+            if finalText != originalText {
+                recordAction(offset: rangeStart, deleted: originalText, inserted: finalText)
+            }
+        }
+        if lastCursorOffset >= 0 { moveCursorToOffset(lastCursorOffset) }
+        lastError = Substitute.report(substitutions: substitutions, lines: lines)
+        dirty = true
+    }
+
+    /// Asks the question for the upcoming edit and parks the cursor
+    /// on the match (live coordinates: the original offset plus the
+    /// bytes the already-applied edits added) — its line scrolls into
+    /// view, the cursor pointing at the match the way vim highlights
+    /// it.
+    private func promptNextSubstitution() {
+        guard let s = pendingSubConfirm else { return }
+        if s.index >= s.edits.count { finishSubConfirm(); return }
+        let edit = s.edits[s.index]
+        moveCursorToOffset(edit.offset + s.delta)
+        lastError = Substitute.confirmPrompt(replacement: s.rawReplacement)
+        dirty = true
+    }
+
+    /// The `c`-flag key handler — the SINGLE point that mutates the
+    /// session (one copy in, one write-back before anything re-reads
+    /// it; with value semantics a forgotten write-back would silently
+    /// drop the applied edits). y — apply and ask again; n — skip; a
+    /// — apply this and every remaining one; l — apply this and stop
+    /// (last); q/Esc — stop, keeping what already landed. Anything
+    /// else re-asks, the write-confirm's behavior.
+    private func handleSubConfirmKey(_ key: Key) {
+        guard var s = pendingSubConfirm else { return }
+        func applyCurrent() {
+            let edit = s.edits[s.index]
+            let live = edit.offset + s.delta
+            if let buf = buffer {
+                if edit.length > 0 { buf.delete(at: live, length: edit.length) }
+                if !edit.replacement.isEmpty { buf.insert(edit.replacement, at: live) }
+            }
+            s.delta += edit.replacement.utf8.count - edit.length
+            s.applied += 1
+            s.appliedLines.insert(edit.line)
+            s.lastPlacedCursor = live
+        }
+        switch key {
+        case .char("y"), .char("Y"):
+            applyCurrent(); s.index += 1
+            pendingSubConfirm = s
+            promptNextSubstitution()
+        case .char("n"), .char("N"):
+            s.index += 1
+            pendingSubConfirm = s
+            promptNextSubstitution()
+        case .char("a"), .char("A"):
+            applyCurrent()
+            while s.index + 1 < s.edits.count {
+                s.index += 1
+                applyCurrent()
+            }
+            pendingSubConfirm = s
+            finishSubConfirm()
+        case .char("l"), .char("L"):
+            applyCurrent()
+            pendingSubConfirm = s
+            finishSubConfirm()
+        case .char("q"), .char("Q"), .escape:
+            pendingSubConfirm = s
+            finishSubConfirm()
+        default:
+            lastError = Substitute.confirmPrompt(replacement: s.rawReplacement)
+        }
+    }
+
+    /// Ends the session: the composite undo record covers every
+    /// applied edit, the command line is released, the report counts
+    /// what landed. An all-`n`/first-`q` session leaves no trace at
+    /// all — no record, no message (vim parity).
+    private func finishSubConfirm() {
+        guard let s = pendingSubConfirm else { return }
+        pendingSubConfirm = nil
+        exitCommandMode()
+        if s.applied > 0 {
+            completeSubstitution(rangeStart: s.rangeStart, rangeEnd: s.rangeEnd,
+                                 originalText: s.originalText, delta: s.delta,
+                                 substitutions: s.applied, lines: s.appliedLines.count,
+                                 lastCursorOffset: s.lastPlacedCursor)
+        } else {
+            lastError = nil
+            dirty = true
+        }
     }
 
     private func saveFile() {
@@ -840,6 +1020,13 @@ class EditorWindow: Window {
     /// decides, anything else re-prompts (vim's modal dialog). Escape is
     /// the abort.
     override func handleCommandModeKey(_ key: Key) -> Bool {
+        // The :s///c session owns the command line exactly like the
+        // write-confirm below: one key decides, anything else re-asks.
+        if pendingSubConfirm != nil {
+            handleSubConfirmKey(key)
+            dirty = true
+            return true
+        }
         guard pendingWriteConfirm else { return super.handleCommandModeKey(key) }
         switch key {
         case .char("w"), .char("W"):
@@ -885,6 +1072,30 @@ class EditorWindow: Window {
     /// The changed-on-disk confirm prompt is armed (see `saveOrConfirm`)
     /// while the user answers it.
     private var pendingWriteConfirm = false
+
+    /// Interactive `:s///c` session state. The plan is precomputed on
+    /// the original text; each applied edit updates `delta`, so the
+    /// next edit's live position is its original offset plus that
+    /// delta (edits are walked in ascending order — only the edits
+    /// BEFORE the current one shift it). Like the write-confirm, the
+    /// session owns the command line: command-mode routing is the
+    /// first consumer of every key (Application.handleGlobalKey), so
+    /// nothing else can touch the buffer mid-session and the
+    /// precomputed offsets only ever meet `delta`.
+    private struct SubConfirmSession {
+        let edits: [Substitute.Edit]     // ascending by offset
+        let rangeStart: Int              // original bytes, incl. the last line's \n
+        let rangeEnd: Int
+        let originalText: String
+        let rawReplacement: String
+        var index = 0
+        var delta = 0                    // bytes added by the applied edits
+        var applied = 0
+        var appliedLines = Set<Int>()
+        var lastPlacedCursor = -1        // live offset of the last applied edit
+    }
+
+    private var pendingSubConfirm: SubConfirmSession?
 
     func moveCursorLeft(_ n: Int = 1) {
         cursorCol = max(0, cursorCol - n)
