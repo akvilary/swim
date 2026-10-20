@@ -57,6 +57,11 @@ class Application: WindowDelegate {
     private let gitPanel = GitPanelWindow()
     private let gitBranches = GitBranchesWindow()
     private let commitWindow = CommitWindow()
+    /// The live commit session's intent: true — `:w` in the commit
+    /// editor rewrites HEAD (`A` in the git panel) instead of creating
+    /// a new commit. Set on every open/refocus request, consumed by
+    /// `requestCommit()`.
+    private var commitIsAmend = false
     private let searchResults = SearchResultsWindow()
     private let preview = PreviewWindow()
     private let command = CommandWindow()
@@ -1504,20 +1509,32 @@ class Application: WindowDelegate {
                               text: fresh.buffer.getAllText())
     }
 
-    func requestCommitMessage(prefill: String) {
+    /// The commit editor's plate — speaks "Amend" while the session
+    /// rewrites HEAD, so the mode is visible while typing.
+    private var commitPlateTitle: String {
+        " \(commitIsAmend ? "Amend" : "Commit") @ \(gitPanel.currentBranch) "
+    }
+
+    func requestCommitMessage(prefill: String, amend: Bool) {
         if maximized != nil { restoreMaximized() }
         // Already composing — just refocus, don't wipe the typed message.
+        // The latest explicit intent wins: `A` after `c` (or the other
+        // way) flips the mode under the existing text; the plate
+        // retitles to match.
         if commitWindow.visible {
+            commitIsAmend = amend
+            commitWindow.headerPlate = HeaderPlate(text: commitPlateTitle, fg: Theme.orange)
             focus(commitWindow)
             spaces.markAllDirty()
             updateStatusBar()
             return
         }
+        commitIsAmend = amend
         // The commit editor shares the command window's layout slot —
         // never show both at once (they would overdraw each other).
         if command.visible { popWindow(command) }
         commitWindow.newFile()
-        // `C` — prefill with the last commit's message. Inserted as
+        // `C`/`A` — prefill with the last commit's message. Inserted as
         // initial content (no undo entry, not modified): `u` can't wipe
         // the template, `:q` stays quota-free. Cursor lands at the end
         // of the text so typing appends.
@@ -1527,7 +1544,7 @@ class Application: WindowDelegate {
             commitWindow.goToPosition(line: lastLine, colUtf16: buf.getLine(lastLine).utf16.count)
         }
         commitWindow.mode = .insert
-        commitWindow.headerPlate = HeaderPlate(text: " Commit @ \(gitPanel.currentBranch) ", fg: Theme.orange)
+        commitWindow.headerPlate = HeaderPlate(text: commitPlateTitle, fg: Theme.orange)
         commitWindow.visible = true
         focus(commitWindow)
         relayout()
@@ -1542,8 +1559,14 @@ class Application: WindowDelegate {
             reportError("Commit message is empty")
             return
         }
+        let amend = commitIsAmend
+        commitIsAmend = false
         closeWindow(commitWindow)
-        runGitCommand(label: "git commit", args: ["commit", "-m", message])
+        // Amend rewrites HEAD with the staged state + the edited
+        // message (the same funnel: output/errors visible, the
+        // post-finish service — stats, panel, mtime-sweep — free).
+        let args = amend ? ["commit", "--amend", "-m", message] : ["commit", "-m", message]
+        runGitCommand(label: amend ? "git commit --amend" : "git commit", args: args)
     }
 
     func requestRender() {

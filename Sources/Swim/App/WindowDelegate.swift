@@ -11,7 +11,10 @@ protocol WindowDelegate: AnyObject {
     func runGitCommand(label: String, args: [String], then followUp: (label: String, args: [String])?)
     func gitCommandFinished(_ label: String)
     func terminalCommandFinished()
-    func requestCommitMessage(prefill: String)
+    /// `amend` — the session will rewrite HEAD (`A` in the git panel):
+    /// the commit window prefills with the last message and `:w` runs
+    /// `git commit --amend`.
+    func requestCommitMessage(prefill: String, amend: Bool)
     func requestCommit()
     func reportError(_ message: String)
     func requestRender()

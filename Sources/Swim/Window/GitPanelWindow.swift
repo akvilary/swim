@@ -264,7 +264,7 @@ class GitPanelWindow: Window {
         if mode == .visualLine {
             headerPlate = HeaderPlate(text: " [ VISUAL ] \(branchLabel) ", fg: Theme.purple)
         } else {
-            headerPlate = HeaderPlate(text: " \(branchLabel) (a: add, d: unstage/discard, c/C: commit / + last msg) ", fg: Theme.orange)
+            headerPlate = HeaderPlate(text: " \(branchLabel) (a: add, d: unstage/discard, c/C/A: commit / + last msg / amend) ", fg: Theme.orange)
         }
         drawPlate()
 
@@ -565,10 +565,13 @@ class GitPanelWindow: Window {
             dropSelected()
         case .char("c"):
             mode = .menu; pendingY = false
-            delegate?.requestCommitMessage(prefill: preparedCommitMessage())
+            delegate?.requestCommitMessage(prefill: preparedCommitMessage(), amend: false)
         case .char("C"):
             mode = .menu; pendingY = false
-            delegate?.requestCommitMessage(prefill: lastCommitMessage())
+            delegate?.requestCommitMessage(prefill: lastCommitMessage(), amend: false)
+        case .char("A"):
+            mode = .menu; pendingY = false
+            requestAmend()
         case .char("y"):
             if pendingY {
                 if let item = selectedItem { Terminal.shared.osc52Copy(item.visibleText) }
@@ -882,6 +885,37 @@ class GitPanelWindow: Window {
         let result = Shell.git(["log", "-1", "--format=%B"], workDir: workingDirectory)
         guard result.exitCode == 0 else { return "" }
         return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// `A` — amend HEAD: the commit window opens with the last
+    /// commit's message (what `git commit --amend` would show in the
+    /// CLI editor) and `:w` runs `git commit --amend` instead of a new
+    /// commit. Refused upfront wherever git itself would refuse — the
+    /// status bar says so BEFORE the typing, because the commit funnel
+    /// closes the window when `:w` fires: a late git refusal ("You are
+    /// in the middle of a … -- cannot amend") would eat the typed
+    /// message. Blocked states: no HEAD (a fresh repository has
+    /// nothing to amend) and an in-progress operation that owns the
+    /// next commit — merge, cherry-pick, revert (`c` concludes each).
+    /// A rebase `edit` stop is deliberately NOT in the list: amending
+    /// there IS the standard rebase workflow, and git allows it.
+    private func requestAmend() {
+        let workDir = workingDirectory
+        guard Shell.git(["rev-parse", "-q", "--verify", "HEAD"], workDir: workDir).exitCode == 0 else {
+            delegate?.reportError("amend: no commits yet")
+            return
+        }
+        let blockingOperations = [
+            (ref: "MERGE_HEAD", name: "merge"),
+            (ref: "CHERRY_PICK_HEAD", name: "cherry-pick"),
+            (ref: "REVERT_HEAD", name: "revert"),
+        ]
+        for op in blockingOperations
+        where Shell.git(["rev-parse", "-q", "--verify", op.ref], workDir: workDir).exitCode == 0 {
+            delegate?.reportError("amend: finish the \(op.name) first (c concludes it)")
+            return
+        }
+        delegate?.requestCommitMessage(prefill: lastCommitMessage(), amend: true)
     }
 
     /// Notifies the app that a discard rewrote a working-tree file — a
