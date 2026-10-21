@@ -17,7 +17,7 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
 - **Git panel** (`Ctrl+G`) — staged/unstaged files, commits, diff with color highlighting
 - **Branch picker** (`Ctrl+B`) — opens on the branch list; `Enter` switches, `Ctrl+Enter` switches and pulls, `a` creates a new branch (`git switch -c`), `m` merges (`side --no-ff` — name plus pass-through args; conflicts offer keep / ours / theirs / abort), `d`/`D` deletes local / local+remote, `i` live-filters — the filter also finds remote branches fetched but not yet checked out (Enter creates the local tracking branch)
 - **Git gutter** — editor line numbers colored by line status (added lines/files — green, staged — blue, unstaged — teal); diagnostics show as severity-colored circles after the line number (error + warning stack in one cell)
-- **Project search** (`Ctrl+F`) — recursive file search with grouped results
+- **Project search** (`Ctrl+F`) — recursive file search, results as a tree from the working-directory root
 - **Built-in terminal** (`Ctrl+T`) — run shell commands inside the editor: the prompt is the last line of the scrollback, arrows scroll the output, `Ctrl+Left/Right` recalls commands, `Tab` completes paths; `cd` and `clear` are handled by the window itself
 - **Bracketed paste** — text from the system clipboard lands verbatim in every mode (insert at the cursor, normal like `p`, visual replaces the selection); tabs in pasted text follow the file's indent policy, and the command line / filters accept single-line paste
 - **Full UTF-8 support** — Cyrillic, CJK, emoji
@@ -38,7 +38,7 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
 
 ![Branch picker](docs/screenshots/branches.png)
 
-**Project search** — grouped results with a preview pane:
+**Project search** — results as a full tree from the working-directory root, with a preview pane:
 
 ![Project search](docs/screenshots/search.png)
 

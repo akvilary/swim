@@ -1,19 +1,20 @@
 import Foundation
 import SwimCore
 
-struct SearchResult {
-    let filePath: String
-    let lineNumber: Int
-    let lineContent: String
-    let matchStart: Int
-    let matchLength: Int
-}
-
 class SearchResultsWindow: Window {
     override var availableModes: [WindowMode] { [.insert, .menu, .command] }
     private(set) var results: [SearchResult] = []
-    private(set) var groupedResults: [(dir: String, files: [(name: String, results: [SearchResult])])] = []
+    /// The results as a tree rooted at the working directory (the pure
+    /// SwimCore `SearchTree.build`): every path component from the
+    /// root down to a matched file is a navigable expand/collapse
+    /// level — the full chain, not the old single-level
+    /// "parent dir → file" grouping.
+    private(set) var resultRoot: SearchTree.DirNode?
     private(set) var selectedIndex: Int = 0
+    /// Expansion keys are the nodes' absolute paths (NOT state on the
+    /// nodes): the tree is rebuilt on every search, path keys survive
+    /// the rebuild — a directory re-expanded after a re-query stays
+    /// expanded for the results that return.
     private(set) var expandedDirs: Set<String> = []
     private(set) var expandedFiles: Set<String> = []
     private var scrollOffset: Int = 0
@@ -21,7 +22,13 @@ class SearchResultsWindow: Window {
     private let horizontalStep: Int = 4
     private var flatItems: [SearchItem] = []
     private var flatItemsDirty: Bool = false
-    private let searchTask = BackgroundTask<[SearchResult]>()
+    /// The scan result carries its own root: the mailbox may be
+    /// consumed long after the search started (polling runs over the
+    /// current space — leaving the search space defers the pickup), so
+    /// building the tree from a separately stored directory would tie
+    /// correctness to the consume timing. The root rides with the
+    /// data; correctness holds by construction.
+    private let searchTask = BackgroundTask<(root: String, results: [SearchResult])>()
     var workingDirectory: String = ""
     private(set) var isSearching: Bool = false
     /// The query-input phase is the window's insert mode; results
@@ -38,10 +45,14 @@ class SearchResultsWindow: Window {
         dirty = true
     }
 
+    /// A visible row. Directory and file rows carry their tree node
+    /// (its `path` is the expansion key, its `matchCount` the row's
+    /// count); result rows carry the match and the depth they indent
+    /// to — one past their file.
     private enum SearchItem {
-        case directory(String, Int)
-        case file(String, String, Int)
-        case result(SearchResult)
+        case directory(SearchTree.DirNode, Int)
+        case file(SearchTree.FileNode, Int)
+        case result(SearchResult, Int)
     }
 
     override func update() {
@@ -81,10 +92,7 @@ class SearchResultsWindow: Window {
     }
 
     private func drawResults() {
-        if flatItemsDirty {
-            buildFlatItems()
-            flatItemsDirty = false
-        }
+        ensureFlatItems()
         let visibleH = max(0, height - 1)
         for row in 0..<visibleH {
             let itemIdx = scrollOffset + row
@@ -96,21 +104,29 @@ class SearchResultsWindow: Window {
             fillRegion(row: y, col: 0, width: width, height: 1, cell: Cell.colored(" ", fg: Theme.fg, bg: bg))
 
             switch flatItems[itemIdx] {
-            case .directory(let dir, let count):
-                let expanded = expandedDirs.contains(dir)
+            case .directory(let node, let depth):
+                let expanded = expandedDirs.contains(node.path)
                 let icon = expanded ? "▾ " : "▸ "
-                let dirName = URL(fileURLWithPath: dir).lastPathComponent
-                let text = "\(icon)\(dirName) (\(count))"
+                let indent = String(repeating: " ", count: depth * 2)
+                let text = indent + icon + node.name + " (\(node.matchCount))"
                 drawShifted([(text: text, fg: Theme.blue, bold: true)], row: y, bg: bg)
-            case .file(let dir, let name, let count):
-                let expanded = expandedFiles.contains(dir + "/" + name)
+            case .file(let node, let depth):
+                let expanded = expandedFiles.contains(node.path)
                 let icon = expanded ? "▾ " : "▸ "
-                let text = "  \(icon)\(name) (\(count))"
+                let indent = String(repeating: " ", count: depth * 2)
+                let text = indent + icon + node.name + " (\(node.matchCount))"
                 drawShifted([(text: text, fg: Theme.fgDark, bold: false)], row: y, bg: bg)
-            case .result(let result):
-                let indent = "      "
+            case .result(let result, let depth):
+                let indent = String(repeating: " ", count: depth * 2)
                 let linePrefix = "\(indent)\(result.lineNumber): "
-                let availW = width - linePrefix.count - result.matchLength
+                // availW is the room left for the before-match text so
+                // the match itself starts on screen; CLAMPED at 0 — a
+                // match longer than the window (a deep indent plus a
+                // long query in the narrow half-screen panel) must
+                // draw from its start truncated by drawShifted, not
+                // feed prefix() a negative length (a fatal error —
+                // String.prefix traps on negative input).
+                let availW = max(0, width - linePrefix.count - result.matchLength)
                 let beforeEnd = min(result.matchStart, availW)
                 let beforeMatch = String(result.lineContent.prefix(beforeEnd).trimmingCharacters(in: .whitespaces).prefix(availW))
                 let startIndex = result.lineContent.index(result.lineContent.startIndex, offsetBy: result.matchStart)
@@ -141,23 +157,52 @@ class SearchResultsWindow: Window {
         }
     }
 
+    /// Flattens the visible part of the tree: a node's children appear
+    /// only while it is expanded. Depth drives the row indent: a file
+    /// sits at its parent directory's depth + 1, a match line one past
+    /// its file. The branch row an action acts on always persists
+    /// through the rebuild (only its children vanish below), so an
+    /// index pointing at a branch stays valid across it.
     private func buildFlatItems() {
         flatItems = []
-        for group in groupedResults {
-            let dirExpanded = expandedDirs.contains(group.dir)
-            flatItems.append(.directory(group.dir, group.files.reduce(0) { $0 + $1.results.count }))
-            if dirExpanded {
-                for fileGroup in group.files {
-                    let fileKey = group.dir + "/" + fileGroup.name
-                    let fileExpanded = expandedFiles.contains(fileKey)
-                    flatItems.append(.file(group.dir, fileGroup.name, fileGroup.results.count))
-                    if fileExpanded {
-                        for result in fileGroup.results {
-                            flatItems.append(.result(result))
-                        }
-                    }
+        appendDir(resultRoot, depth: 0)
+    }
+
+    private func appendDir(_ dir: SearchTree.DirNode?, depth: Int) {
+        guard let dir else { return }
+        flatItems.append(.directory(dir, depth))
+        guard expandedDirs.contains(dir.path) else { return }
+        let childDepth = depth + 1
+        for child in dir.dirs {
+            appendDir(child, depth: childDepth)
+        }
+        for file in dir.files {
+            flatItems.append(.file(file, childDepth))
+            if expandedFiles.contains(file.path) {
+                for result in file.results {
+                    flatItems.append(.result(result, childDepth + 1))
                 }
             }
+        }
+    }
+
+    /// Every list-reading path (the renderer, the key handlers) goes
+    /// through here: a rebuild happens exactly once per dirty flag, so
+    /// each consumer sees the CURRENT list. Without this in the key
+    /// handlers, a j after an Enter-collapse would bound-check against
+    /// the stale (longer) list and could step the selection past the
+    /// real end — an invisible, silently drifting cursor.
+    private func ensureFlatItems() {
+        guard flatItemsDirty else { return }
+        buildFlatItems()
+        flatItemsDirty = false
+    }
+
+    /// Row depth — the TreeCollapse policy's view of the list.
+    private func depth(of item: SearchItem) -> Int {
+        switch item {
+        case .directory(_, let depth), .file(_, let depth), .result(_, let depth):
+            return depth
         }
     }
 
@@ -165,7 +210,7 @@ class SearchResultsWindow: Window {
         guard !query.isEmpty else { return }
         workingDirectory = directory
         results = []
-        groupedResults = []
+        resultRoot = nil
         selectedIndex = 0
         scrollOffset = 0
         horizontalOffset = 0
@@ -196,7 +241,7 @@ class SearchResultsWindow: Window {
                     SearchResultsWindow.searchIn(content: content, filePath: fullPath, query: query, results: &found)
                 }
             }
-            return found
+            return (root: dir, results: found)
         }
     }
 
@@ -206,18 +251,26 @@ class SearchResultsWindow: Window {
 
     func pollSearch() {
         guard let found = searchTask.consume() else { return }
-        results = found
+        // A fresh result set is a fresh navigation session: cursor at
+        // the root row, view at the top — self-contained, not relying
+        // on the start-of-search reset having survived the scanning
+        // window. Nothing auto-expands — the tree lands collapsed on
+        // its root row; the user opens the nodes they need (Enter/`l`
+        // descend to the first child, the explorer's mechanic).
+        results = found.results
         isSearching = false
-        groupResults()
-        if !groupedResults.isEmpty {
-            expandedDirs.insert(groupedResults[0].dir)
-            if !groupedResults[0].files.isEmpty {
-                let firstFile = groupedResults[0].files[0].name
-                expandedFiles.insert(groupedResults[0].dir + "/" + firstFile)
-            }
-        }
-        dirty = true
+        resultRoot = SearchTree.build(results: found.results, root: found.root)
+        selectedIndex = 0
+        scrollOffset = 0
+        // The tree changed, so the flat list is stale by definition —
+        // arm the flag (a frame drawn during the scan has already
+        // consumed the start-of-search one over an empty tree), then
+        // rebuild NOW so notifyPreviewUpdate reads the new rows
+        // instead of the old list.
         flatItemsDirty = true
+        ensureFlatItems()
+        notifyPreviewUpdate()
+        dirty = true
         delegate?.requestRender()
     }
 
@@ -232,21 +285,6 @@ class SearchResultsWindow: Window {
                 ))
             }
         }
-    }
-
-    private func groupResults() {
-        var dirMap: [String: [String: [SearchResult]]] = [:]
-        for result in results {
-            let dir = (result.filePath as NSString).deletingLastPathComponent
-            let file = (result.filePath as NSString).lastPathComponent
-            dirMap[dir, default: [:]][file, default: []].append(result)
-        }
-        flatItemsDirty = true
-        groupedResults = dirMap.map { dir, files in
-            (dir: dir, files: files.map { name, results in
-                (name: name, results: results.sorted { $0.lineNumber < $1.lineNumber })
-            }.sorted { $0.name < $1.name })
-        }.sorted { $0.dir < $1.dir }
     }
 
     /// The query-input caret is a terminal cursor — the shared
@@ -266,6 +304,7 @@ class SearchResultsWindow: Window {
         if inputMode {
             return handleInputKey(key)
         }
+        ensureFlatItems()
         switch key {
         case .char("j"), .down:
             if selectedIndex < flatItems.count - 1 { selectedIndex += 1; ensureVisible(); notifyPreviewUpdate(); dirty = true }
@@ -273,7 +312,8 @@ class SearchResultsWindow: Window {
             if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); notifyPreviewUpdate(); dirty = true }
         case .right: shiftHorizontally(horizontalStep)
         case .left: shiftHorizontally(-horizontalStep)
-        case .enter, .char("l"), .ctrlRight, .ctrl("l"): handleEnter()
+        case .enter: handleActivate()
+        case .char("l"), .ctrlRight, .ctrl("l"): handleSelect()
         case .char("h"), .ctrlLeft, .ctrl("h"): handleCollapse()
         case .escape:
             mode = .insert
@@ -308,36 +348,108 @@ class SearchResultsWindow: Window {
         return true
     }
 
-    private func handleEnter() {
+    /// Enter — the explorer's activateCurrent: on a match line opens
+    /// the file; on a directory/file row toggles it — expanding
+    /// descends to the first child, collapsing keeps the row.
+    private func handleActivate() {
         guard selectedIndex < flatItems.count else { return }
         switch flatItems[selectedIndex] {
-        case .directory(let dir, _):
-            if expandedDirs.contains(dir) { expandedDirs.remove(dir) } else { expandedDirs.insert(dir) }
+        case .directory(let node, _):
+            if expandedDirs.contains(node.path) { expandedDirs.remove(node.path) } else { expandedDirs.insert(node.path) }
             flatItemsDirty = true
-        case .file(let dir, let name, _):
-            let key = dir + "/" + name
-            if expandedFiles.contains(key) { expandedFiles.remove(key) } else { expandedFiles.insert(key) }
+            ensureFlatItems()
+            descendToFirstChild()
+        case .file(let node, _):
+            if expandedFiles.contains(node.path) { expandedFiles.remove(node.path) } else { expandedFiles.insert(node.path) }
             flatItemsDirty = true
-        case .result(let r): delegate?.openFileAtLine(r.filePath, line: r.lineNumber)
+            ensureFlatItems()
+            descendToFirstChild()
+        case .result(let r, _):
+            delegate?.openFileAtLine(r.filePath, line: r.lineNumber)
         }
         dirty = true
     }
 
-    private func handleCollapse() {
+    /// `l` / Ctrl+Right — the explorer's selectCurrent: never
+    /// collapses. A collapsed row expands and descends, an expanded
+    /// one just descends; a match line opens the file.
+    private func handleSelect() {
         guard selectedIndex < flatItems.count else { return }
         switch flatItems[selectedIndex] {
-        case .directory(let dir, _): expandedDirs.remove(dir); flatItemsDirty = true
-        case .file(let dir, let name, _): expandedFiles.remove(dir + "/" + name); flatItemsDirty = true
-        case .result: break
+        case .directory(let node, _):
+            if !expandedDirs.contains(node.path) {
+                expandedDirs.insert(node.path)
+                flatItemsDirty = true
+                ensureFlatItems()
+            }
+            descendToFirstChild()
+        case .file(let node, _):
+            if !expandedFiles.contains(node.path) {
+                expandedFiles.insert(node.path)
+                flatItemsDirty = true
+                ensureFlatItems()
+            }
+            descendToFirstChild()
+        case .result(let r, _):
+            delegate?.openFileAtLine(r.filePath, line: r.lineNumber)
         }
+        dirty = true
+    }
+
+    /// The descend after an expand — the explorer's mechanic, on the
+    /// shared pure policy (`TreeListNavigation.firstChild`): the
+    /// selection moves onto the branch's first child, the row right
+    /// below one depth deeper; a collapsed-again branch has no such
+    /// row — the selection stays. The selection moving rows means the
+    /// preview follows.
+    private func descendToFirstChild() {
+        let child = TreeListNavigation.firstChild(
+            rowCount: flatItems.count,
+            selectedIndex: selectedIndex,
+            depthAt: { depth(of: flatItems[$0]) }
+        )
+        if let child {
+            selectedIndex = child
+            ensureVisible()
+            notifyPreviewUpdate()
+        }
+    }
+
+    /// The explorer-style `h` (the shared TreeListNavigation policy):
+    /// the key acts on the selected row's PARENT branch — the nearest
+    /// row above one depth shallower — selecting it and collapsing it
+    /// (a nested row's parent is always expanded, or the row would not
+    /// be visible; remove, never insert — expanding is `l`/Enter's
+    /// job). At the top level the row acts on itself: the root
+    /// collapses the whole tree, a collapsed root makes the press a
+    /// no-op.
+    private func handleCollapse() {
+        guard selectedIndex < flatItems.count else { return }
+        let target = TreeListNavigation.collapseTarget(
+            rowCount: flatItems.count,
+            selectedIndex: selectedIndex
+        ) { depth(of: flatItems[$0]) }
+        selectedIndex = target
+        switch flatItems[target] {
+        case .directory(let node, _):
+            expandedDirs.remove(node.path)
+            flatItemsDirty = true
+        case .file(let node, _):
+            expandedFiles.remove(node.path)
+            flatItemsDirty = true
+        case .result:
+            // Unreachable: the target is a parent branch by the
+            // flatten invariant; kept total for the switch.
+            break
+        }
+        ensureVisible()
+        // The selection moved rows — the preview follows, like j/k.
+        notifyPreviewUpdate()
         dirty = true
     }
 
     private func shiftHorizontally(_ delta: Int) {
-        if flatItemsDirty {
-            buildFlatItems()
-            flatItemsDirty = false
-        }
+        ensureFlatItems()
         let maxOffset = max(0, maxVisibleContentLength() - width + 1)
         horizontalOffset = max(0, min(horizontalOffset + delta, maxOffset))
         dirty = true
@@ -350,13 +462,13 @@ class SearchResultsWindow: Window {
             let itemIdx = scrollOffset + row
             guard itemIdx < flatItems.count else { break }
             switch flatItems[itemIdx] {
-            case .directory(let dir, let count):
-                let dirName = URL(fileURLWithPath: dir).lastPathComponent
-                maxLen = max(maxLen, 2 + dirName.count + 3 + String(count).count)
-            case .file(_, let name, let count):
-                maxLen = max(maxLen, 4 + name.count + 3 + String(count).count)
-            case .result(let r):
-                maxLen = max(maxLen, 6 + String(r.lineNumber).count + 2 + r.lineContent.count)
+            case .directory(let node, let depth):
+                // indent + icon + name + " (" + count + ")"
+                maxLen = max(maxLen, depth * 2 + 2 + node.name.count + 3 + String(node.matchCount).count)
+            case .file(let node, let depth):
+                maxLen = max(maxLen, depth * 2 + 2 + node.name.count + 3 + String(node.matchCount).count)
+            case .result(let r, let depth):
+                maxLen = max(maxLen, depth * 2 + String(r.lineNumber).count + 2 + r.lineContent.count)
             }
         }
         return maxLen
@@ -368,10 +480,10 @@ class SearchResultsWindow: Window {
             return
         }
         switch flatItems[selectedIndex] {
-        case .result(let r):
+        case .result(let r, _):
             delegate?.updatePreview(path: r.filePath, highlightLine: r.lineNumber)
-        case .file(let dir, let name, _):
-            delegate?.updatePreview(path: dir + "/" + name, highlightLine: -1)
+        case .file(let node, _):
+            delegate?.updatePreview(path: node.path, highlightLine: -1)
         case .directory:
             delegate?.updatePreview(path: nil, highlightLine: -1)
         }

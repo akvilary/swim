@@ -339,20 +339,20 @@ class FileExplorerWindow: Window {
     /// selection descends, expanded collapses and selection stays.
     private func activateCurrent() {
         guard selectedIndex < flatEntries.count else { return }
-        let (entry, depth) = flatEntries[selectedIndex]
+        let (entry, _) = flatEntries[selectedIndex]
         guard entry.isDirectory else {
             delegate?.openFile(entry.path)
             return
         }
         toggleExpand(at: selectedIndex)
-        descendToFirstChild(depth: depth)
+        descendToFirstChild()
     }
 
     /// `l` / Ctrl+Right: opens a file; expands a collapsed directory or
     /// descends into an already expanded one — never collapses.
     private func selectCurrent() {
         guard selectedIndex < flatEntries.count else { return }
-        let (entry, depth) = flatEntries[selectedIndex]
+        let (entry, _) = flatEntries[selectedIndex]
         guard entry.isDirectory else {
             delegate?.openFile(entry.path)
             return
@@ -360,35 +360,41 @@ class FileExplorerWindow: Window {
         if !entry.isExpanded {
             toggleExpand(at: selectedIndex)
         }
-        descendToFirstChild(depth: depth)
+        descendToFirstChild()
     }
 
-    private func descendToFirstChild(depth: Int) {
-        let nextIdx = selectedIndex + 1
-        if nextIdx < flatEntries.count && flatEntries[nextIdx].depth == depth + 1 {
-            selectedIndex = nextIdx
+    /// The descend onto the first child runs through the shared pure
+    /// policy (`TreeListNavigation.firstChild` — the same rule the
+    /// search results use): the row right below the branch when it is
+    /// one depth deeper.
+    private func descendToFirstChild() {
+        let child = TreeListNavigation.firstChild(
+            rowCount: flatEntries.count,
+            selectedIndex: selectedIndex,
+            depthAt: { flatEntries[$0].depth }
+        )
+        if let child {
+            selectedIndex = child
             ensureVisible()
             dirty = true
         }
     }
 
+    /// The `h` collapse target comes from the shared pure policy
+    /// (`TreeListNavigation` — the same one the search results use):
+    /// the selected row's parent branch, the nearest row above one
+    /// depth shallower, or the row itself at the top level. The old
+    /// inline walker checked `isDirectory` on the parent candidate;
+    /// the nearest shallower row IS the parent directory by the
+    /// flatten order (a file never emits children — see the policy's
+    /// invariant), so the shared policy is behavior-identical without
+    /// the check.
     private func collapseCurrent() {
         guard selectedIndex < flatEntries.count else { return }
-        let (_, depth) = flatEntries[selectedIndex]
-
-        var targetIdx = selectedIndex
-        if depth > 0 {
-            var idx = selectedIndex - 1
-            while idx >= 0 {
-                let (e, d) = flatEntries[idx]
-                if d == depth - 1 && e.isDirectory {
-                    targetIdx = idx
-                    break
-                }
-                idx -= 1
-            }
-        }
-
+        let targetIdx = TreeListNavigation.collapseTarget(
+            rowCount: flatEntries.count,
+            selectedIndex: selectedIndex
+        ) { flatEntries[$0].depth }
         selectedIndex = targetIdx
         let (entry, _) = flatEntries[targetIdx]
         if entry.isDirectory && entry.isExpanded {

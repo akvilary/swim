@@ -72,6 +72,8 @@ Sources/SwimCore/                       — Library target: pure dependency-free
 ├── SyntaxTokenizer.swift              — Built-in syntax highlighting + `mergeWithLSP` (builtin tokens as a layer under LSP; tested)
 ├── MarkdownTokenizer.swift           — Markdown highlighting with a viewport cache (incremental scan of fenced blocks; tested)
 ├── SemanticToken.swift               — Shared value types of the LSP protocol (`SemanticToken`, `LSPTextChange`, `LSPDiagnostic`, `LSPDefinition`; Sendable)
+├── SearchTree.swift                  — Results tree of the project search: `SearchResult` (path, line, match span) + the builder rooted at the working directory — one node per path component, the full chain root → … → dir → file → lines (dictionary-indexed build, subtree counts folded; tested)
+├── TreeListNavigation.swift          — Navigation policy for a flattened tree list, shared by the explorer and the search results: the collapse target of the explorer-style `h` (the selected row's parent branch — the nearest row above one depth shallower, or itself at the top level; flatten-order invariant proven in the doc comment) and the first-child descend of Enter/`l` (the row right below, one depth deeper; tested)
 
 Sources/Swim/                           — Executable target (depends on SwimCore)
 ├── main.swift                    — Entry point
@@ -125,9 +127,11 @@ Tests/SwimCoreTests/                    — swift-testing (`swift test`): regres
 ├── MultilineInsertTests.swift          — Cursor after a bulk insert: whole lines down + graphemes on the final line (never bytes — a CJK/emoji tail is one column-step), empty lines, a dangling `\n`
 ├── NormalPendingTests.swift            — Pending accumulator: count slots before/after the operator (multiplication — 2d3d = 6), the g-prefix in a separate slot, explicit consumption, one reset
 ├── StatusListSelectionTests.swift      — Sectioned-list selection: the cursor follows the record within its section and holds the row when it moves to another section or vanishes
+├── SearchTreeTests.swift               — Results tree: the full chain root → … → dir → file → lines (not the file's immediate parent alone), same-named dirs at different depths distinct, line sorting, trailing-slash root, empty → nil, out-of-root defensive path, exotic names, the root count == total invariant
 ├── SyntaxTokenizerTests.swift          — Python string prefixes (f/r/b/u) open the string token; builtin strings absorb nested LSP interpolation tokens (pyright f-strings)
 ├── TabPolicyTests.swift                — One tab = one indent step in spaces; tab-free text returns identical, untouched
 ├── SubstituteTests.swift               — :s parsing (separators, flags, the selection marks, explicit line ranges with capped overflow and dispatch regressions, nil for foreign commands), magic↔ICU translation (both directions, bracket classes, backslash), replacement segments (`&`, `\r`, `\t`, backrefs), the byte-offset plan (Cyrillic, zero-length matches, g vs first-per-line, byte windows — inside/cutting/edge rules), range resolve (clamping, backwards, the relative-second-offset rule), report word forms
+├── TreeListNavigationTests.swift     — Tree-list navigation: the collapse target (nested row → nearest shallower row above, elder siblings' subtrees skipped; top level → itself; bounds/empty safe) and the first-child descend (lands on the row below one depth deeper, nil for siblings/leaves/list end)
 └── VisualBlockTests.swift              — Block math in display cells: membership by cell intersection, a straddling tab splits (uncovered cells become spaces), a wide glyph is atomic, both corners inclusive
 ```
 
@@ -446,7 +450,7 @@ keyword → magenta, string → green, number → orange, comment → gray, type
 
 ### Window/FileExplorerWindow.swift — File Explorer
 
-A panel with a directory tree. When a file is opened from a search result (Enter in the search space), the explorer expands the branch down to that file and selects it (`reveal(path:)` — expands ancestors, selects the node; paths outside the root are ignored, and paths inside hidden directories are unreachable while the listing filter is on — `H` disables it).
+A panel with a directory tree. When a file is opened from a search result (Enter in the search space), the explorer expands the branch down to that file and selects it (`reveal(path:)` — expands ancestors, selects the node; paths outside the root are ignored, and paths inside hidden directories are unreachable while the listing filter is on — `H` disables it). Two of its navigation rules run on the shared pure policy `TreeListNavigation` (SwimCore, tested) — the same one the search results use: the `h` collapse target (the policy's invariant — the nearest shallower row above IS the parent directory by the flatten order — replaces the walker's old inline `isDirectory` check, behavior-identically) and the Enter/`l` descend onto the first child.
 
 **Sync with the active file:** while the explorer is open, the tree points at the editor's current file — a single funnel `revealActiveFileInExplorer()` (Application) is called from every "current file" event: `activeFileChanged` (switching `gt`/`gT`/Ctrl+H/L, opening, closing a tab, `:e` — the event fires only when the path changes), `openFileAtLine` (an explicit call covering the case where a search result lands in the already active tab — there is no event), starting `swim file.swift` (the init event is useless: the explorer is not yet visible and has no root — reveal happens after `loadDirectory`), and reopening the explorer (`Ctrl+E`). A closed explorer is not touched — the tree is frozen, without flattening or lazy loads; on opening, it syncs with the active file instead of the stale selection. A `[No Name]` tab has no path — no-op. Reveal nuances: collapsed ancestors are re-expanded (the "show where we are" semantics, like reveal in VS Code); the first reveal of a deep path lazily loads every unloaded ancestor from disk (one batched `git check-ignore` per level), after that the `isLoaded` cache makes repeated switches cheap.
 
@@ -567,7 +571,7 @@ The single form of writing to children's stdin/FIFO (`LSPClient` frames, `Shell.
 
 ### Window/SearchResultsWindow.swift + PreviewWindow.swift — Project Search
 
-A pair of windows in the `search` space: on the left — a tree of results grouped by directories and files, on the right — a preview of the selected file with the active line highlighted.
+A pair of windows in the `search` space: on the left — the results as a FULL TREE from the working-directory root (the pure SwimCore `SearchTree.build`): one expand/collapse level per path component, root → … → directory → file → match lines — the whole path of a nested file is visible, shared ancestors merge into one node (the old single-level "immediate parent → file" grouping hid the chain and made same-named directories at different depths indistinguishable); on the right — a preview of the selected file with the active line highlighted.
 
 **Query input:** the input phase is the window's insert mode (`inputMode` — derived from `mode == .insert`); on entering the space (Ctrl+F) the panel takes text immediately, and `:` is typed literally then. Navigating the results is menu mode. Escape from navigation returns to entering a new query.
 
@@ -578,13 +582,21 @@ A pair of windows in the `search` space: on the left — a tree of results group
 - Line-by-line case-insensitive search
 
 **Result structure:**
-- `SearchResult` — filePath, lineNumber, lineContent, matchStart, matchLength
-- `groupedResults` — grouped by directories → files
+- `SearchResult` (SwimCore) — filePath, lineNumber, lineContent, matchStart, matchLength
+- `SearchTree.build` — the tree: read-only nodes after the build, dictionaries index the insertion (O(total), like the old flat grouping), every level sorts directories before files (the explorer's ordering), a directory's `matchCount` is its subtree total folded bottom-up (the root's total always equals the flat count — the header and the root row cannot disagree)
+- The scan result carries its own root (`(root, results)` rides the `BackgroundTask` payload): the mailbox may be consumed long after the search started — polling runs over the current space, so leaving the search space defers the pickup — and the tree is always built against the directory that was actually scanned, never a separately stored path
+- Expansion state lives in the window as path-keyed sets (`expandedDirs`/`expandedFiles`), NOT on the nodes: the tree is rebuilt on every search, path keys survive the rebuild — what was expanded stays expanded for the results that return
+- After a search completes, the tree lands COLLAPSED on its root row (`pollSearch` resets cursor and scroll — a fresh result set is a fresh navigation session); nothing auto-expands — the user opens the nodes they need
+
+**Rendering:** depth-based indents (`depth * 2` cells — a file one past its directory, a match line one past its file), directory rows blue bold with the subtree count, file rows dim with the line count, match rows `N: …` with the match in orange. The before-match width math is clamped at zero: a match longer than the window draws from its start truncated by the cell bounds — `String.prefix` traps on a negative length, and a deep indent plus a long query in the narrow panel made the old unclamped arithmetic reach it (a 20+ character query at the default panel width crashed the render loop).
+
+**List consistency (`ensureFlatItems`):** the flat row list is rebuilt lazily through one funnel — the renderer and every list-reading key handler (`j`/`k`/`Enter`/`h`/`l`) pass through it, so every consumer bounds-checks against the CURRENT list (a `j` after an Enter-collapse, bound-checked against the stale longer list, could step the selection past the real end — an invisible, silently drifting cursor). The branch row an action acts on persists through the rebuild (only its children vanish below), so an index pointing at a branch stays valid across it.
 
 **Controls:**
 - `j/k` — navigation
-- `Enter/l/Ctrl+Right (Ctrl+L)` — expand/collapse a directory/file, go to the result
-- `h/Ctrl+Left (Ctrl+H)` — collapse
+- `Enter` — the explorer's activateCurrent: on a match line opens the file; on a directory/file row toggles it — expanding descends to the first child, collapsing keeps the row
+- `l/Ctrl+Right (Ctrl+L)` — the explorer's selectCurrent: never collapses — a collapsed row expands and descends, an expanded one just descends; on a match line opens the file. The descend itself is the shared `TreeListNavigation.firstChild` policy — the same rule the explorer's `descendToFirstChild` runs on
+- `h/Ctrl+Left (Ctrl+H)` — collapse like the file explorer (the shared `TreeListNavigation.collapseTarget` policy): the key acts on the selected row's PARENT branch — the nearest row above one depth shallower — selecting it and collapsing it; on a match line this folds its file's lines, on a file — its directory, on the root — the whole tree (a second press is a no-op). Expanding is `l`/Enter's job; `h` never expands
 - `left/right` — horizontal shift of result lines (step of 4, for viewing long lines)
 - `Escape` — to query input / exit the space
 
