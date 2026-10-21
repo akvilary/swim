@@ -257,7 +257,7 @@ class Window {
     func executeCommand(_ cmd: String) -> Bool {
         switch cmd {
         case "q", "quit", "bd", "q!", "quit!", "forcequit", "bd!",
-             "qa", "qa!", "terminal", "term", "sh":
+             "qa", "qa!", "terminal", "term", "sh", "log":
             delegate?.handleEditorCommand(cmd)
             return true
         default:
@@ -482,4 +482,22 @@ class Window {
         if selectedIndex >= scrollOffset + visibleCount { return selectedIndex - visibleCount + 1 }
         return scrollOffset
     }
+}
+
+/// A window with a background task worth ticking for — a spinner to
+/// animate, or (the git panel's refresh, the search scan) no spinner
+/// at all, just the idle-loop keep-alive that lets the tick's
+/// anyDirty block consume landed results without a keypress.
+/// Application's `tickSpinners` drives every conformance through one
+/// loop, so a new window connects by conforming, not by growing the
+/// controller.
+protocol SpinnerWindow: AnyObject {
+    /// True while ticking means something: the window is visible and a
+    /// background task it waits on is in flight.
+    var spinnerActive: Bool { get }
+    /// One ~100ms tick: advance the frame and/or mark the window
+    /// dirty. What a tick does is the window's own business — a
+    /// spinner-bearing window advances its frame, a keep-alive window
+    /// just repaints.
+    func tickSpinner()
 }

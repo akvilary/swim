@@ -56,6 +56,7 @@ class Application: WindowDelegate {
     private let fileExplorer = FileExplorerWindow()
     private let gitPanel = GitPanelWindow()
     private let gitBranches = GitBranchesWindow()
+    private let gitLog = GitLogWindow()
     private let commitWindow = CommitWindow()
     /// The live commit session's intent: true — `:w` in the commit
     /// editor rewrites HEAD (`A` in the git panel) instead of creating
@@ -79,6 +80,7 @@ class Application: WindowDelegate {
         editorSpace.addWindow("editor", editor)
         editorSpace.addWindow("gitPanel", gitPanel)
         editorSpace.addWindow("gitBranches", gitBranches)
+        editorSpace.addWindow("gitLog", gitLog)
         editorSpace.addWindow("command", command)
         editorSpace.addWindow("commit", commitWindow)
         editorSpace.addWindow("terminal", terminalWindow)
@@ -489,38 +491,17 @@ class Application: WindowDelegate {
         let now = Date().timeIntervalSince1970
         guard now - lastSpinnerTick >= 0.1 else { return }
         var anyDirty = false
-        if command.visible && command.isRunning {
-            command.spinnerFrame &+= 1
-            command.dirty = true
-            anyDirty = true
-        }
-        if searchResults.visible && searchResults.isSearching {
-            searchResults.dirty = true
-            anyDirty = true
-        }
-        if gitPanel.visible && gitPanel.isRefreshing {
-            // No spinner anymore — but the tick keeps the idle loop
-            // alive for the panel: landed results are consumed by
-            // pollWindows (the anyDirty block below), so the opened
-            // panel's content appears when the fetch lands, not on
-            // the next keypress.
-            gitPanel.dirty = true
-            anyDirty = true
-        }
-        if gitBranches.visible && gitBranches.isRefreshing {
-            gitBranches.spinnerFrame &+= 1
-            gitBranches.dirty = true
-            anyDirty = true
-        }
-        if gitPanel.visible && gitPanel.isDiffLoading {
-            gitPanel.diffSpinnerFrame &+= 1
-            gitPanel.dirty = true
-            anyDirty = true
-        }
-        if terminalWindow.visible && terminalWindow.isRunning {
-            terminalWindow.spinnerFrame &+= 1
-            terminalWindow.dirty = true
-            anyDirty = true
+        // One loop for every window with something to wait for
+        // (SpinnerWindow): a window to tick connects by conforming,
+        // not by growing a branch here. Some ticks animate a spinner;
+        // others (the panel's refresh, the search scan) only keep the
+        // idle loop alive so the anyDirty block below can consume
+        // landed results without a keypress.
+        for window in spaces.current.windows.values {
+            if let spinner = window as? SpinnerWindow, spinner.spinnerActive {
+                spinner.tickSpinner()
+                anyDirty = true
+            }
         }
         if anyDirty {
             lastSpinnerTick = now
@@ -784,6 +765,9 @@ class Application: WindowDelegate {
         case .ctrl("b"):
             toggleGitBranches()
             return true
+        case .ctrl("n"):
+            toggleGitLog()
+            return true
         case .ctrl("o"):
             // Git pull from any window (the same funnel as the git
             // panel's old `p`): output, credentials and the finished
@@ -1009,6 +993,39 @@ class Application: WindowDelegate {
         relayout()
     }
 
+    /// Ctrl+N — the git log toggle: closes when open, otherwise a
+    /// fresh log (empty queries, first page, menu mode, cursor on
+    /// HEAD). The window is the git panel's former "Recent commits"
+    /// section grown into its own domain: history browsing, message
+    /// and hash search, read-only commit diffs. A MAXIMIZED log is
+    /// restored BEFORE the close — popWindow alone would leave the
+    /// maximize state pointing at an invisible window with its hidden
+    /// victims still hidden (the file explorer toggle guards the same
+    /// way).
+    private func toggleGitLog() {
+        if maximized != nil { restoreMaximized() }
+        if gitLog.visible {
+            popWindow(gitLog)
+            return
+        }
+        openGitLog()
+    }
+
+    /// Opens the git log window (`Ctrl+N`, and `:log` — the command is
+    /// open-only like `:terminal`, it never closes what it names).
+    /// Fresh session every open — a commit may have landed since the
+    /// last visit.
+    private func openGitLog() {
+        if maximized != nil { restoreMaximized() }
+        if spaces.current.id != "editor" { switchToSpace("editor") }
+        gitLog.prepare(workingDirectory: gitPanel.workingDirectory.isEmpty
+            ? FileManager.default.currentDirectoryPath
+            : gitPanel.workingDirectory)
+        gitLog.visible = true
+        focus(gitLog)
+        relayout()
+    }
+
     private func toggleSearch() {
         if maximized != nil { restoreMaximized() }
         if spaces.current.id == "search" {
@@ -1094,6 +1111,7 @@ class Application: WindowDelegate {
         if window === fileExplorer { return .explorer }
         if window === gitPanel { return .git }
         if window === gitBranches { return .branches }
+        if window === gitLog { return .log }
         if window === command || window === commitWindow { return .command }
         if window === terminalWindow { return .terminal }
         if window === searchResults { return .searchResults }
@@ -1158,6 +1176,7 @@ class Application: WindowDelegate {
             showEditor: editor.visible,
             showGit: gitPanel.visible,
             showBranches: gitBranches.visible,
+            showLog: gitLog.visible,
             showCommand: command.visible || commitWindow.visible,
             showTerminal: terminalWindow.visible,
             showTabBar: editor.visible && tabBar.visible,
@@ -1169,6 +1188,7 @@ class Application: WindowDelegate {
         editor.resize(x: layout.editor.x, y: layout.editor.y, width: layout.editor.width, height: layout.editor.height)
         gitPanel.resize(x: layout.git.x, y: layout.git.y, width: layout.git.width, height: layout.git.height)
         gitBranches.resize(x: layout.branches.x, y: layout.branches.y, width: layout.branches.width, height: layout.branches.height)
+        gitLog.resize(x: layout.log.x, y: layout.log.y, width: layout.log.width, height: layout.log.height)
         searchResults.resize(x: layout.searchResults.x, y: layout.searchResults.y, width: layout.searchResults.width, height: layout.searchResults.height)
         preview.resize(x: layout.preview.x, y: layout.preview.y, width: layout.preview.width, height: layout.preview.height)
         command.resize(x: layout.command.x, y: layout.command.y, width: layout.command.width, height: layout.command.height)
@@ -1302,6 +1322,8 @@ class Application: WindowDelegate {
             closeCurrentTab(force: false)
         case "terminal", "term", "sh":
             openTerminal()
+        case "log":
+            openGitLog()
         case "qa":
             // vim semantics: refuse to quit all while any tab has unsaved
             // changes; `qa!` discards them.
@@ -1460,6 +1482,10 @@ class Application: WindowDelegate {
         // A command run while the picker stayed open (git panel focused
         // through Tab) may have moved branches — keep the list truthful.
         if gitBranches.visible { gitBranches.refresh() }
+        // History is the log window's whole subject: a commit/pull/
+        // push/switch changed it. The selection follows its commit by
+        // hash where the commit still exists.
+        if gitLog.visible { gitLog.refresh() }
         for fresh in editor.tabs.reloadChangedOnDisk() {
             applyBufferReload(fresh)
         }
@@ -1474,6 +1500,10 @@ class Application: WindowDelegate {
     func terminalCommandFinished() {
         fetchGitStats()
         gitPanel.refresh()
+        // A `git commit`/`pull` typed into the terminal rewrites
+        // history — the log window refreshes with the same contract
+        // as git commands run through the command window.
+        if gitLog.visible { gitLog.refresh() }
         for fresh in editor.tabs.reloadChangedOnDisk() {
             applyBufferReload(fresh)
         }

@@ -5,7 +5,6 @@ private struct GitRefreshResult {
     let branch: String
     let repoRoot: String
     let statusOutput: String
-    let logOutput: String
     /// Value of the panel's request clock when this refresh started —
     /// orders the refresh against diff requests (see reloadOpenDiff).
     let requestSerial: Int
@@ -35,29 +34,23 @@ struct GitFileStatus {
     }
 }
 
-struct GitCommit {
-    let hash: String
-    let author: String
-    let date: String
-    let message: String
-}
-
 private struct DiffHunk {
     let headerLine: Int  // index of the @@ line in diffLines
     let contentEnd: Int  // exclusive: index of next @@ or diffLines.count
 }
 
 /// Ordered sections of the status list; the raw value is the display
-/// order.
+/// order. (The former "Recent commits" section moved to the git log
+/// window — Ctrl+N; history browsing is its own domain, and the panel
+/// stays the index/worktree surface.)
 private enum StatusSection: Int {
-    case staged, unstaged, untracked, commits
+    case staged, unstaged, untracked
 
     var title: String {
         switch self {
         case .staged: return "Staged"
         case .unstaged: return "Unstaged"
         case .untracked: return "Untracked"
-        case .commits: return "Recent commits"
         }
     }
 }
@@ -65,7 +58,6 @@ private enum StatusSection: Int {
 /// One selectable row of the status list.
 private enum StatusItem {
     case file(GitFileStatus)
-    case commit(GitCommit)
 
     /// Stable entry identity, matched by the shared rebuild policy
     /// (`SectionedListSelection`) within a single section: the
@@ -75,14 +67,12 @@ private enum StatusItem {
     var identity: String {
         switch self {
         case .file(let f): return "file:" + f.filePath
-        case .commit(let c): return "commit:" + c.hash
         }
     }
 
     var visibleText: String {
         switch self {
         case .file(let f): return " \(f.sectionLetter) \(f.filePath)"
-        case .commit(let c): return " \(c.hash.prefix(7)) \(c.message)"
         }
     }
 }
@@ -122,7 +112,6 @@ class GitPanelWindow: Window {
     private var stagedFiles: [GitFileStatus] = []
     private var unstagedFiles: [GitFileStatus] = []
     private var untrackedFiles: [GitFileStatus] = []
-    private var recentCommits: [GitCommit] = []
     private var statusList: StatusList = StatusList(sections: [])
     /// Selection as (section index, row within the section) into
     /// `statusList` — never a section header.
@@ -146,7 +135,6 @@ class GitPanelWindow: Window {
     private var diffPath: String = ""
     private var diffStaged: Bool = false
     private var diffUntracked: Bool = false
-    private var diffCommitHash: String = ""
     private(set) var isDiffLoading: Bool = false
     var diffSpinnerFrame: Int = 0
     private let diffTask = BackgroundTask<[Substring]>()
@@ -167,7 +155,7 @@ class GitPanelWindow: Window {
     /// diff that was requested LATER than the refresh began — that
     /// diff is by definition fresher (see reloadOpenDiff).
     private var requestSerial: Int = 0
-    /// Clock value of the latest diff request (runDiff/runDiffForCommit).
+    /// Clock value of the latest diff request (runDiff).
     private var diffRequestSerial: Int = 0
 
     /// Absolute path of the repository root (git paths are always
@@ -313,7 +301,6 @@ class GitPanelWindow: Window {
         stagedFiles = []
         unstagedFiles = []
         untrackedFiles = []
-        recentCommits = []
         selectedSection = 0
         selectedRow = 0
         scrollOffset = 0
@@ -335,15 +322,11 @@ class GitPanelWindow: Window {
             drawLine(statusText, row: row, col: 0, fg: statusColorFor(file, in: section), bg: bg, bold: true)
             let name = file.filePath.prefix(max(0, width - statusText.count))
             drawLine(String(name), row: row, col: statusText.count, fg: selected ? Theme.fg : Theme.fgDark, bg: bg)
-        case .commit(let commit):
-            let commitText = " \(commit.hash.prefix(7)) \(commit.message.prefix(max(0, width - 14)))"
-            drawLine(commitText, row: row, fg: Theme.cyan, bg: bg)
         }
     }
 
     private func drawDiff() {
-        let isCommit = !diffCommitHash.isEmpty
-        let title = isCommit ? "COMMIT \(diffCommitHash)" : "DIFF \(diffPath)"
+        let title = "DIFF \(diffPath)"
 
         if isDiffLoading {
             let spinner = Self.spinnerChars[diffSpinnerFrame % Self.spinnerChars.count]
@@ -372,8 +355,6 @@ class GitPanelWindow: Window {
 
         if mode == .visualLine {
             headerPlate = HeaderPlate(text: " [ VISUAL ] \(title) (y: copy, Esc: cancel) ", fg: Theme.purple)
-        } else if isCommit {
-            headerPlate = HeaderPlate(text: " \(title) (yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
         } else {
             let hunkHint: String
             if diffUntracked {
@@ -386,55 +367,17 @@ class GitPanelWindow: Window {
             headerPlate = HeaderPlate(text: " \(title) (\(hunkHint), yy: copy, V: visual, Esc: close) ", fg: Theme.fg)
         }
         drawPlate()
-        let visibleLines = contentHeight
-        let visualRange = mode == .visualLine ? diffVisualRange() : nil
-        let lnWidth = diffGutterWidth
-        for i in 0..<visibleLines {
-            let lineIdx = diffScrollOffset + i
-            guard lineIdx < diffLines.count else { break }
-            let line = diffLines[lineIdx]
-            let row = i + contentTop
-            let isCursor = lineIdx == diffCursorRow
-
-            let style = diffLineStyle(for: line)
-
-            let bg: Color
-            if let vr = visualRange, vr.contains(lineIdx) {
-                bg = Theme.visualBg
-            } else {
-                bg = isCursor ? Theme.bgHighlight : Theme.bgDark
-            }
-            // Editor-style gutter (the shared drawLineNumberRow primitive):
-            // green numbers on added lines, red on removed, dim elsewhere.
-            // The number color never changes with the cursor — the row
-            // highlight already marks the current line.
-            let gutter = lineIdx < diffGutter.count ? diffGutter[lineIdx] : nil
-            let numFg: Color
-            if gutter?.add == true {
-                numFg = Theme.green
-            } else if gutter?.del == true {
-                numFg = Theme.red
-            } else {
-                numFg = Theme.comment
-            }
-            drawLineNumberRow(row, number: gutter?.num, lnWidth: lnWidth, fg: numFg, bg: bg)
-            drawLine(String(line.prefix(max(0, width - lnWidth))), row: row, col: lnWidth, fg: style.fg, bg: bg, bold: style.bold)
-        }
-    }
-
-    private func diffLineStyle(for line: Substring) -> (fg: Color, bold: Bool) {
-        if line.hasPrefix("commit ") { return (Theme.blue, true) }
-        if line.hasPrefix("Author:") || line.hasPrefix("Date:") { return (Theme.cyan, false) }
-        if line.hasPrefix("diff --git") { return (Theme.magenta, true) }
-        if line.hasPrefix("index ")
-            || line.hasPrefix("new file mode")
-            || line.hasPrefix("deleted file mode")
-            || line.hasPrefix("old mode")
-            || line.hasPrefix("new mode") { return (Theme.comment, false) }
-        if line.hasPrefix("+")  { return (Theme.green, false) }
-        if line.hasPrefix("-")  { return (Theme.red, false) }
-        if line.hasPrefix("@@") { return (Theme.cyan, false) }
-        return (Theme.fgDark, false)
+        // The shared row loop (Window/DiffPaint.swift) — the same
+        // paint the git log window's read-only commit diffs use; the
+        // panel's own copy lived here until the second consumer
+        // arrived.
+        drawDiffRows(
+            diffLines: diffLines,
+            gutter: diffGutter,
+            gutterWidth: diffGutterWidth,
+            scrollOffset: diffScrollOffset,
+            cursorRow: diffCursorRow,
+            visualRange: mode == .visualLine ? diffVisualRange() : nil)
     }
 
     private func drawSectionHeader(_ text: String, screenRow: Int) {
@@ -458,7 +401,7 @@ class GitPanelWindow: Window {
         case .unstaged:
             if file.status == "U" { return Theme.red }
             return file.status == "D" ? Theme.deleteColor : Theme.unstagedColor
-        case .untracked, .commits: return Theme.comment
+        case .untracked: return Theme.comment
         }
     }
 
@@ -628,8 +571,6 @@ class GitPanelWindow: Window {
             runDiff(for: file.filePath,
                     staged: section == .staged,
                     untracked: section == .untracked)
-        case .commit(let commit):
-            runDiffForCommit(commit.hash)
         case nil:
             break
         }
@@ -644,7 +585,7 @@ class GitPanelWindow: Window {
         switch selectedItem {
         case .file(let file):
             runGit(["add", "--", topPathspec(file.filePath)])
-        case .commit, nil:
+        case nil:
             break
         }
         refresh()
@@ -677,10 +618,10 @@ class GitPanelWindow: Window {
                 }
             case .untracked:
                 deleteFileOnDisk(file.filePath)
-            case .commits, nil:
+            case nil:
                 break
             }
-        case .commit, nil:
+        case nil:
             break
         }
         refresh()
@@ -757,10 +698,10 @@ class GitPanelWindow: Window {
                 }
             case .untracked:
                 deleteFileOnDisk(file.filePath)
-            case .commits, nil:
+            case nil:
                 break
             }
-        case .commit, nil:
+        case nil:
             break
         }
         refresh()
@@ -814,7 +755,6 @@ class GitPanelWindow: Window {
         diffPath = path
         diffStaged = staged
         diffUntracked = untracked
-        diffCommitHash = ""
         diffLines = []
         diffHunks = []
         diffGutter = []
@@ -830,32 +770,6 @@ class GitPanelWindow: Window {
         let dir = workDir
         diffTask.start {
             let result = Shell.git(args, workDir: dir)
-            return result.combined.split(separator: "\n", omittingEmptySubsequences: false)
-        }
-    }
-
-    private func runDiffForCommit(_ hash: String) {
-        requestSerial &+= 1
-        diffRequestSerial = requestSerial
-        diffPath = ""
-        diffStaged = false
-        diffUntracked = false
-        diffCommitHash = hash
-        diffLines = []
-        diffHunks = []
-        diffGutter = []
-        diffGutterWidth = 4
-        diffScrollOffset = 0
-        diffCursorRow = 0
-        isDiffLoading = true
-        showDiff = true
-        mode = .menu
-        pendingY = false
-        dirty = true
-
-        let workDir = workingDirectory
-        diffTask.start {
-            let result = Shell.git(["show", hash], workDir: workDir)
             return result.combined.split(separator: "\n", omittingEmptySubsequences: false)
         }
     }
@@ -937,7 +851,7 @@ class GitPanelWindow: Window {
     /// from the worktree (reverse-apply + reload of clean editor
     /// tabs), an untracked file is deleted from disk.
     private func dropFromDiff() {
-        guard !diffPath.isEmpty, diffCommitHash.isEmpty else { return }
+        guard !diffPath.isEmpty else { return }
 
         if diffUntracked {
             deleteFileOnDisk(diffPath)
@@ -1056,7 +970,7 @@ class GitPanelWindow: Window {
     }
 
     /// Rebuilds the status list from the data arrays — the single
-    /// composition point, called after parseStatus/parseLog. Both the
+    /// composition point, called after parseStatus. Both the
     /// selection and the visual anchor are re-resolved through one
     /// shared pure policy (`SectionedListSelection`, SwimCore —
     /// tested): a position follows its entry within its section and
@@ -1069,7 +983,6 @@ class GitPanelWindow: Window {
             .init(kind: .staged, items: stagedFiles.map(StatusItem.file)),
             .init(kind: .unstaged, items: unstagedFiles.map(StatusItem.file)),
             .init(kind: .untracked, items: untrackedFiles.map(StatusItem.file)),
-            .init(kind: .commits, items: recentCommits.prefix(5).map(StatusItem.commit)),
         ].filter { !$0.items.isEmpty }
 
         // Capture before replacing the list — the old sections are the
@@ -1136,11 +1049,10 @@ class GitPanelWindow: Window {
     /// later than this refresh began (the request clock orders the two
     /// pipelines): that diff is by definition fresher — a hunk action
     /// re-ran it right after triggering the refresh, or the user
-    /// opened one while the refresh was in flight. Commit diffs are
-    /// hash-addressed and immutable: left alone. A diff that comes
+    /// opened one while the refresh was in flight. A diff that comes
     /// back empty (the file became clean) closes itself in poll().
     private func reloadOpenDiff(afterRefresh serial: Int) {
-        guard showDiff, !diffPath.isEmpty, diffCommitHash.isEmpty,
+        guard showDiff, !diffPath.isEmpty,
               diffRequestSerial <= serial else { return }
         // An untracked file gone from the fresh status cannot be
         // diffed: `--no-index` answers with an access error (not an
@@ -1168,7 +1080,6 @@ class GitPanelWindow: Window {
                 // -z: NUL-separated entries with raw (unquoted, unescaped)
                 // paths — Cyrillic and other non-ASCII paths stay intact.
                 statusOutput: Shell.git(["status", "--porcelain", "-z"], workDir: workDir).stdout,
-                logOutput: Shell.git(["log", "--oneline", "-10", "--format=%h|%an|%cr|%s"], workDir: workDir).stdout,
                 requestSerial: serial
             )
         }
@@ -1185,7 +1096,6 @@ class GitPanelWindow: Window {
                 repoRoot = result.repoRoot
             }
             parseStatus(result.statusOutput)
-            parseLog(result.logOutput)
             rebuildStatusList()
             // The refresh may describe a world that changed under an
             // open diff (branch switch, pull, terminal command) —
@@ -1231,13 +1141,16 @@ class GitPanelWindow: Window {
         }
     }
 
-    private func parseLog(_ output: String) {
-        recentCommits = []
-        for line in output.components(separatedBy: "\n") {
-            let parts = line.split(separator: "|", maxSplits: 3)
-            guard parts.count >= 4 else { continue }
-            recentCommits.append(GitCommit(hash: String(parts[0]), author: String(parts[1]), date: String(parts[2]), message: String(parts[3])))
-        }
-    }
+}
 
+extension GitPanelWindow: SpinnerWindow {
+    // Two wait states, one conformance (the old two Application
+    // branches net the same): a refresh shows no spinner — the tick
+    // only keeps the idle loop alive so pollWindows consumes landed
+    // results — while a diff load animates its spinner.
+    var spinnerActive: Bool { visible && (isRefreshing || isDiffLoading) }
+    func tickSpinner() {
+        if isDiffLoading { diffSpinnerFrame &+= 1 }
+        dirty = true
+    }
 }

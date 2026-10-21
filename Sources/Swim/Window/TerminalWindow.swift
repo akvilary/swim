@@ -461,3 +461,11 @@ class TerminalWindow: Window {
         return String(prefix)
     }
 }
+
+extension TerminalWindow: SpinnerWindow {
+    var spinnerActive: Bool { visible && isRunning }
+    func tickSpinner() {
+        spinnerFrame &+= 1
+        dirty = true
+    }
+}

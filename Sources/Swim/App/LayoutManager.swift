@@ -12,6 +12,7 @@ enum HalfScreenWindow {
     case explorer
     case git
     case branches
+    case log
     case command
     case terminal
     case searchResults
@@ -27,11 +28,12 @@ struct LayoutManager {
         showEditor: Bool,
         showGit: Bool,
         showBranches: Bool = false,
+        showLog: Bool = false,
         showCommand: Bool,
         showTerminal: Bool,
         showTabBar: Bool = false,
         halfScreen: HalfScreenWindow = .none
-    ) -> (explorer: WindowLayout, editor: WindowLayout, tabbar: WindowLayout, git: WindowLayout, branches: WindowLayout, searchResults: WindowLayout, preview: WindowLayout, command: WindowLayout, terminal: WindowLayout, status: WindowLayout) {
+    ) -> (explorer: WindowLayout, editor: WindowLayout, tabbar: WindowLayout, git: WindowLayout, branches: WindowLayout, log: WindowLayout, searchResults: WindowLayout, preview: WindowLayout, command: WindowLayout, terminal: WindowLayout, status: WindowLayout) {
         let w = max(10, terminalWidth)
         let h = max(5, terminalHeight)
         let statusH = 1
@@ -44,7 +46,7 @@ struct LayoutManager {
             let searchResults = WindowLayout(x: 0, y: 0, width: resultsW, height: h - statusH)
             let preview = WindowLayout(x: resultsW, y: 0, width: w - resultsW, height: h - statusH)
             let status = WindowLayout(x: 0, y: h - statusH, width: w, height: statusH)
-            return (zero, zero, zero, zero, zero, searchResults, preview, zero, zero, status)
+            return (zero, zero, zero, zero, zero, zero, searchResults, preview, zero, zero, status)
         }
 
         var editorX = 0
@@ -86,13 +88,15 @@ struct LayoutManager {
         let availH = h - statusH
         var gitH = 0
         var branchesH = 0
+        var logH = 0
         var cmdH = 0
         var termH = 0
         if showGit { gitH = halfScreen == .git ? h / 2 : min(25, h / 2) }
         if showBranches { branchesH = halfScreen == .branches ? h / 2 : min(25, h / 2) }
+        if showLog { logH = halfScreen == .log ? h / 2 : min(25, h / 2) }
         if showCommand { cmdH = halfScreen == .command ? h / 2 : min(25, h / 2) }
         if showTerminal { termH = halfScreen == .terminal ? h / 2 : min(25, h / 2) }
-        var heights = [gitH, branchesH, cmdH, termH]
+        var heights = [gitH, branchesH, logH, cmdH, termH]
         if heights.reduce(0, +) > availH {
             let shownIdx = heights.indices.filter { heights[$0] > 0 }
             var remaining = availH
@@ -106,10 +110,11 @@ struct LayoutManager {
         }
         gitH = heights[0]
         branchesH = heights[1]
-        cmdH = heights[2]
-        termH = heights[3]
+        logH = heights[2]
+        cmdH = heights[3]
+        termH = heights[4]
 
-        let topH = max(0, availH - gitH - branchesH - cmdH - termH)
+        let topH = max(0, availH - gitH - branchesH - logH - cmdH - termH)
         let tabH = showTabBar ? min(1, topH) : 0
         let editorH = max(0, topH - tabH)
         let explorerH = topH
@@ -118,17 +123,21 @@ struct LayoutManager {
         let tabbar = WindowLayout(x: editorX, y: 0, width: editorW, height: tabH)
         let editor = WindowLayout(x: editorX, y: tabH, width: editorW, height: editorH)
 
+        // The bottom stack keeps the git family together (panel,
+        // branches, log), then the command window, then the terminal.
         var bottomY = topH
         let git = WindowLayout(x: 0, y: bottomY, width: w, height: gitH)
         bottomY += gitH
         let branches = WindowLayout(x: 0, y: bottomY, width: w, height: branchesH)
         bottomY += branchesH
+        let log = WindowLayout(x: 0, y: bottomY, width: w, height: logH)
+        bottomY += logH
         let command = WindowLayout(x: 0, y: bottomY, width: w, height: cmdH)
         bottomY += cmdH
         let terminal = WindowLayout(x: 0, y: bottomY, width: w, height: termH)
 
         let status = WindowLayout(x: 0, y: h - statusH, width: w, height: statusH)
 
-        return (explorer, editor, tabbar, git, branches, zero, zero, command, terminal, status)
+        return (explorer, editor, tabbar, git, branches, log, zero, zero, command, terminal, status)
     }
 }

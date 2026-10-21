@@ -2,7 +2,7 @@
 
 ## Overview
 
-Swim is a vim-like terminal text editor written in pure Swift with no external dependencies. It runs on Linux and macOS. It uses the Tokyo Night Storm theme, a Piece Table data structure, a built-in file explorer, a git panel (stage/unstage/discard/commit), project-wide search, a window stack (focus = top of the stack, closing = pop), a unified window mode model (menu/insert/normal/visual/visualLine/visualBlock/command — the command line belongs to the owning window), and LSP semantic highlighting.
+Swim is a vim-like terminal text editor written in pure Swift with no external dependencies. It runs on Linux and macOS. It uses the Tokyo Night Storm theme, a Piece Table data structure, a built-in file explorer, a git panel (stage/unstage/discard/commit), a git log window (paged history with message/hash search and read-only commit diffs), project-wide search, a window stack (focus = top of the stack, closing = pop), a unified window mode model (menu/insert/normal/visual/visualLine/visualBlock/command — the command line belongs to the owning window), and LSP semantic highlighting.
 
 ---
 
@@ -25,7 +25,8 @@ main.swift
         │     └── SemanticToken[] (LSP highlighting converted to grapheme indices)
         ├── CommitWindow (commit message editor — a thin layer over EditorWindow)
         ├── FileExplorerWindow (file tree)
-        ├── GitPanelWindow (git status/commits/diff/commit)
+        ├── GitPanelWindow (git status/files/diff/commit)
+        ├── GitLogWindow (paged commit history + read-only commit diffs)
         ├── SearchResultsWindow + PreviewWindow (project-wide search)
         ├── CommandWindow (output of long-running git commands)
         ├── TerminalWindow (built-in terminal)
@@ -56,6 +57,7 @@ Sources/SwimCore/                       — Library target: pure dependency-free
 ├── HunkLines.swift                     — Parser for unified diff -u0 hunk line ranges (new line numbers for the editor's git gutter; tested by Tests/SwimCoreTests)
 ├── Porcelain.swift                     — Parser for `status --porcelain -z` (NUL-separated fields, rename/copy orig) + GitChangeClass classification (shared by the git panel and decorations; tested)
 ├── BranchList.swift                    — Parser for the branch picker's `for-each-ref` listing (NUL-separated fields, remote flag, remote HEAD symlink exclusion; request patterns: empty — local only, non-empty — heads+remotes; tested)
+├── CommitLog.swift                     — Parser for the git log window's `git log --format=%h|%s` listing (one commit per line, first-pipe split so subjects keep their pipes, malformed lines skipped, verbatim short hash; tested)
 ├── AppLocale.swift                     — Application locale: the single source of the system message language (git output, LSP handshake, child env; a value, immutable for the process lifetime; tested)
 ├── Locked.swift                        — Synchronous cross-thread mailbox slot: the value is reachable only through withLock; unlocked paths do not exist by construction
 ├── BackgroundTask.swift                — Restartable single-slot mailbox for background results: newest-wins — an in-flight request never races, the queue collapses to the latest one (prevents a late completion of an old task from clobbering a fresh result; tested)
@@ -104,6 +106,8 @@ Sources/Swim/                           — Executable target (depends on SwimCo
 │   ├── TabBarWindow.swift        — Tab bar above the editor
 │   ├── FileExplorerWindow.swift  — File explorer
 │   ├── GitPanelWindow.swift      — Git panel
+│   ├── GitLogWindow.swift        — Git log window (paged history, message/hash search, read-only commit diffs)
+│   ├── DiffPaint.swift           — Shared paint for unified-diff views (line style map + the row loop both diff surfaces use; see GitPanelWindow/GitLogWindow)
 │   ├── GitBranchesWindow.swift   — Branch picker (filter + switch + create)
 │   ├── SearchResultsWindow.swift — Search results (query input + tree)
 │   ├── PreviewWindow.swift       — File preview (search space)
@@ -118,6 +122,7 @@ Tests/SwimCoreTests/                    — swift-testing (`swift test`): regres
 ├── HunkLinesTests.swift                — New-line ranges of -u0 hunks: pure additions, new file, pure deletion (+c,0), header with function context, @@@ vs content @@, rename without edits, multi-file
 ├── PorcelainTests.swift                — Porcelain -z: regular records, rename/copy orig field, raw paths, short fields, classification precedence (MM/AM → unstaged, A /?? → added, M  → staged)
 ├── BranchListTests.swift               — Picker listing: 4 NUL-separated fields, git's order verbatim, remote flag, exclusion of `refs/remotes/<remote>/HEAD`, request patterns (empty — local, non-empty — heads+remotes, glob escaping)
+├── CommitLogTests.swift                — Log listing: `%h|%s` rows, the first-pipe split (subjects keep their pipes), malformed lines skipped, empty output, empty subject, verbatim hash
 ├── AppLocaleTests.swift                — Locale: guaranteed English spelling, region-qualified id, bare language doubles the code into a region
 ├── InputLineTests.swift                — Input line scrolling in cells: tail at rest, Home reveals the head of overflowing text, CJK/emoji take 2 cells and are never cut at an edge, the caret is always in the window (a property-based invariant over narrow/wide texts)
 ├── CharWidthTests.swift                — Grapheme widths: Cyrillic 1, CJK/emoji/flags 2, zero-width 0, wide-range boundaries
@@ -390,6 +395,8 @@ An abstract base class for all UI panels. It implements a virtual cell buffer, t
 
 **Dirty flag:** `dirty = true` means the cell buffer has changed — a write-only vestige (never read, kept for potential future use): `Application.render()` always forwards all visible windows, and `Renderer` does its own cell-level diff against the previous frame (`prevScreenCells`).
 
+**SpinnerWindow (protocol, in this file):** a window with a background task worth ticking for — a spinner to animate, or just the idle-loop keep-alive that lets `tickSpinners`' anyDirty block consume landed results without a keypress. `spinnerActive` (visible + busy) gates the tick; `tickSpinner()` owns what a tick means (advance a frame, or merely repaint — the git panel's refresh and the search scan have no spinner char at all). Application drives every conformance through one loop, so a new window connects by conforming, not by growing the controller — until the git log window arrived, `tickSpinners` grew one branch per window.
+
 ---
 
 ### Window/EditorWindow.swift — Main Editor
@@ -487,11 +494,11 @@ Emoji icons: 🐦 Swift, ⚡ JS/TS, 🐍 Python, ⚙ Rust, 🔵 Go, 🌐 HTML, �
 
 ### Window/GitPanelWindow.swift — Git Panel
 
-Git integration panel: staged/unstaged/untracked files, recent commits, diffs of files and commits, stage/unstage of files and individual hunks, discard, commit, pull/push. Modes: `.menu` (standard behavior), `.visualLine` (line-wise selection), `.command` (`:q` closes the panel).
+Git integration panel: staged/unstaged/untracked files, diffs of files, stage/unstage of files and individual hunks, discard, commit, pull/push. (The former "Recent commits" section lives in its own window now — the git log, `Ctrl+N`/`:log`: history browsing with message/hash search is a separate domain, and the panel stays the index/worktree surface.) Modes: `.menu` (standard behavior), `.visualLine` (line-wise selection), `.command` (`:q` closes the panel).
 
 **Data (`BackgroundTask` background tasks, polled in `poll()`):**
-- `gitTask` — `rev-parse --abbrev-ref HEAD` (branch) + `rev-parse --show-toplevel` (repo root) + `status --porcelain -z` + `log -10 --format=%h|%an|%cr|%s`
-- `diffTask` — `git diff [--cached] -- <path>`; for untracked — `git diff --no-index /dev/null <path>` (run from the repo root — porcelain paths are always relative to the root); for a commit from the log — `git show <hash>`
+- `gitTask` — `rev-parse --abbrev-ref HEAD` (branch) + `rev-parse --show-toplevel` (repo root) + `status --porcelain -z`
+- `diffTask` — `git diff [--cached] -- <path>`; for untracked — `git diff --no-index /dev/null <path>` (run from the repo root — porcelain paths are always relative to the root)
 - `-z` produces NUL-separated records with raw paths: Cyrillic and other non-ASCII paths are not escaped; rename/copy records carry the old path as a separate NUL field — parsing goes through the shared pure parser `Porcelain` (SwimCore, tested; the panel keeps `origPath` in `GitFileStatus` for discard/unstage of renames), the same parser feeds Application's git decorations — the subtle orig-field logic lives exactly once
 
 **Paths and pathspec magic:** all pathspecs (`add`/`reset`/`checkout`/`rm`/`diff`) use `:(top,literal)` — paths from the repo root work from any working-directory subdirectory, and glob metacharacters in file names (`*?[]`) stay literals. Untracked files are deleted by absolute path from `repoRoot`.
@@ -499,7 +506,7 @@ Git integration panel: staged/unstaged/untracked files, recent commits, diffs of
 **Errors:** all mutating git calls go through `runGit()` — on a non-zero exit code, the first line of stderr goes to the status bar in red (`delegate.reportError`, the same channel and life cycle as editor errors: any key dismisses it). No error is swallowed silently.
 
 **Status view:**
-- `j/k` — navigation, `Enter` — diff of the selected file/commit
+- `j/k` — navigation, `Enter` — diff of the selected file
 - Row letter: staged section — `A` in `Theme.stagedColor` (blue1; everything in the index means "added for the next commit"), except staged deletions — those are honestly `D` in `Theme.deleteColor`; an unmerged entry (merge conflict, `UU` from porcelain) — `C` in `Theme.red` in BOTH sections: it is neither an addition nor an edit but a conflict awaiting resolution (`U` would read as unstaged); unstaged — the real worktree letter: `M` in `Theme.unstagedColor` (orange, like the gutter and the explorer), `D` in `Theme.deleteColor`; untracked — the classic dimmed `?`. The `yy` yank text carries the same letter (`GitFileStatus.sectionLetter`). Section headers — blue bold above each non-empty section, as before
 - `a` — add: stages the file's worktree state (`git add`, idempotent when already staged); on an unmerged row (`C`) in EITHER section this is "mark resolved" — add writes the resolution into the index and clears the unmerged stages, the only safe action for a conflict. The cursor stays in place: the list rebuild after refresh resolves the selection (and the visual anchor) with the `SectionedListSelection` policy (SwimCore, tested) — the position follows its entry while it lives in its section, and holds the row (with clamping) when the entry moves to another section or disappears; several files in a row can be added/discarded without the cursor jumping across sections. A vanished section — index clamping (selection) / collapse onto the selection (anchor)
 - `d` — drop "from where the change lives": staged section → unstage (`reset HEAD --`, a staged rename — on both sides), the worktree keeps the change; unstaged → discard (`checkout --`), untracked — delete the file from disk. The destructive half exists only where the change is NOT yet in the index — with this key staged content cannot be destroyed, discard-after-unstage is an explicit two steps (`D` is the deliberate one-press exception). Discard rewrites the file on disk — the panel calls `fileChangedOnDisk` (absolute path), and Application reloads that file's clean editor tab from disk (`BufferManager.reloadIfClean`: the tab's place, mode, and clamped cursor/scroll are preserved, undo is reset; a modified buffer is not touched — unsaved edits outrank the disk; file missing on disk — vim semantics, the buffer lives on, `:w` will recreate it), LSP gets a full didChange (contentChange without range) + a token re-request. add/unstage of a file does NOT rewrite it (index only) — no reload needed
@@ -515,7 +522,7 @@ Git integration panel: staged/unstaged/untracked files, recent commits, diffs of
 - `j/k` — line navigation, `a` — stage the active hunk (a patch from the diff header + the hunk's lines → `apply --cached`; the index — the file is not touched, the editor buffer stays current; on a staged-diff — a quiet no-op), `d` — drop the hunk "from where it lives": staged-diff → unstage (`apply --reverse --cached`, the worktree keeps it; a full discard — a second `d` from the unstaged-diff), unstaged-diff → discard (`apply --reverse`, success → `fileChangedOnDisk` → clean tab reload), untracked — file deletion
 - `yy` / `V`+`y` — copy lines, `Escape` — back to the status view (from visual — exit visual first)
 
-An open file diff is re-requested on every refresh result — `reloadOpenDiff(afterRefresh:)` in `poll()`: a branch switch, pull, or terminal command will not leave stale lines. The panel's hunk actions restart the diff themselves and immediately (spinner in the same frame, hunks are cleared synchronously — a double press will not find a hunk to act on twice); there is no double render: a monotonic request-clock orders the two pipelines — a refresh does not reload a diff requested after its start (that one is fresher by definition). A commit diff is addressed by hash and immutable — not re-requested; an emptied diff (the file became clean) closes itself; an untracked file that disappeared from the status closes the view immediately — `git diff --no-index` on a missing file answers with an access error, not an empty diff.
+An open file diff is re-requested on every refresh result — `reloadOpenDiff(afterRefresh:)` in `poll()`: a branch switch, pull, or terminal command will not leave stale lines. The panel's hunk actions restart the diff themselves and immediately (spinner in the same frame, hunks are cleared synchronously — a double press will not find a hunk to act on twice); there is no double render: a monotonic request-clock orders the two pipelines — a refresh does not reload a diff requested after its start (that one is fresher by definition). An emptied diff (the file became clean) closes itself; an untracked file that disappeared from the status closes the view immediately — `git diff --no-index` on a missing file answers with an access error, not an empty diff.
 
 The diff is highlighted: green — additions, red — deletions, cyan — hunk headers. On the left — a gutter with line numbers in the editor's style: the shared primitive `Window.drawLineNumberRow` (a right-aligned number in the first `width-1` cells + a trailing slot — a space or the caller's mark; width `max(4, digits+2)`) draws both the editor gutter and the diff gutter — no code duplication (only the editor uses the mark — diagnostics dots). Numbers are computed from unified diff counters (`@@ -a +c @@` seeds both) and only inside hunks — commit message lines like `+1 fixed` do not count as content: `+` lines carry the new file's number (in green), `-` the old one's (in red), context — shared (dimmed); `@@` headers, `+++`/`---`, and commit metadata — no number. Combined diffs of merge commits (`diff --cc`, `@@@` headers with two parents and two-column line prefixes) do not fit the two-counter model — their hunks get no numbers; an honest nothing is better than wrong. The number color does not change on the cursor row — the row highlighting already marks the current one. The raw `diffLines` are untouched — yank and gutter patch assembly do not see it. All panel headers (branch/loading/visual/diff with hints) — through the single `HeaderPlate` mechanism; long paths are truncated to the window width (`drawHeader` uses `prefix(width)`).
 
@@ -537,11 +544,30 @@ Branch picker: opened globally with `Ctrl+B` (toggle: closed/open; reopening —
 
 **Keys:** the insert phase owns neither the selection nor the action keys: `↑`/`↓` and `Enter` ("search finished", the filter is kept) move it to menu mode, placing the cursor on the first row (the next press moves from there); `Esc` in insert — the same plus a filter reset (the list is re-requested without a pattern via the same path as manually erasing the query), `Esc` in menu — closing; `i` — back to typing (cursor at the end). In menu, `Enter` — `git switch <name>` through the single `runGitCommand` funnel (CommandWindow shows the output/errors — for example, a dirty-tree refusal; its `gitCommandFinished` does all the post-switch service: fetchGitStats, panel refresh, mtime-sweep of clean tabs — switch rewrites files); the picker closes before launch, Enter on the current branch — a no-op with a message; `Ctrl+Enter` — the same + `git pull` right after (on the current branch — just pull): mainstream terminals send Ctrl+Enter as LF (byte 10) — a byte twin of Ctrl+J, without any keyboard protocol negotiations; the byte is intercepted only in the menu phase, insert silently ignores it. `a` in menu — branch creation: the input row becomes a name prompt (` New branch: `), the name starts as the current filter (typed a name, found no branch — `a` keeps what was typed), name edits do not re-request git; `Enter` — `git switch -c <name>` through the same runGitCommand funnel (creation + switching in one move; output/errors visible, the post-finish service is free), `Esc` — back to the list, the filter untouched: the name lives in a separate buffer, not in the filter. `m` in menu — merge into the current branch: the input row becomes ` Merge branch: ` taking `<name> [arguments…]` — the first token is the ref, the rest pass through (`side --no-ff` works verbatim); the invocation is rebuilt as `git merge <args> -- <name>`, so user flags stay flags and a leading-dash name stays an operand, validity is git's problem (visible errors). A conflicted finish is not an error but a state: CommandWindow detects unmerged entries (`ls-files -u`) and holds a modal one-key choice — `k` keep for manual resolution (then commit from the git panel), `o`/`t` abort and merge again with `-X ours/theirs` (the user's arguments are preserved in the retry), `Esc` — `git merge --abort` (see the key table below). `d`/`D` in menu — branch deletion (see the key table below): through the same runGitCommand funnel, the picker does not close — the finished command refreshes the list itself. The chain is executed by CommandWindow (`runCommand(then:)`): the follow-up starts only after the first command completes SUCCESSFULLY (after its `gitCommandFinished` — the world is already refreshed), on failure or an Esc-cancel it is quietly dropped — the first command's output stays on screen with an explanation. Selection policy: the insert phase does not own the selection — the index sits on the first row, and every fetch of the input phase (filter edits, Esc-reset, a fresh open) lands there too; the branch name via reload is kept only by menu-phase fetches (page growth, external refreshes — `gitCommandFinished`). The intent is captured at request time and travels with the result (`BranchFetch.keepsSelection`), like the pattern and the limit — the mode may change while the request is in flight, the result does not obey it.
 
-**Integration:** its own slot in the bottom stack (git → branches → command window → terminal; the same `min(25, h/2)` and waterfall trimming, `Ctrl+S` — half the height); the spinner ticks in the shared `tickSpinners` — its anyDirty block also consumes landed background results (`pollWindows`) and renders them while idle, without waiting for a key; a completed git command refreshes the list while the picker is open; entry — only the global `Ctrl+B` (intercepted from any window, including the terminal, consistent with the other toggles): all branch operations live here, the git panel does not duplicate them.
+**Integration:** its own slot in the bottom stack (git → branches → log → command window → terminal; the same `min(25, h/2)` and waterfall trimming, `Ctrl+S` — half the height); the spinner ticks in the shared `tickSpinners` — its anyDirty block also consumes landed background results (`pollWindows`) and renders them while idle, without waiting for a key; a completed git command refreshes the list while the picker is open; entry — only the global `Ctrl+B` (intercepted from any window, including the terminal, consistent with the other toggles): all branch operations live here, the git panel does not duplicate them.
 
 ---
 
+### Window/GitLogWindow.swift — Git Log
+
+The branch's commit history as a navigable window (`Ctrl+N` toggle, `:log` command — open-only like `:terminal`): the git panel's former "Recent commits" section grown into its own domain. The shape mirrors the branch picker — `.menu` navigates a paginated git listing, `.insert` types a query into the window's own input row (the shared `InputLine`/`applyLineEdit`/terminal-caret stack), `.visualLine` serves the diff's line-wise yank, `.command` is the standard `:q`. Rows render exactly the panel's old row format — ` <hash> <subject>`, cyan — parsed by the pure `CommitLog` (SwimCore, tested); the hash stays verbatim (`%h` — git scales its width with repository size; a hard `prefix(7)` could show two rows alike and copy an ambiguous token, so `y` copies what the row shows). The plate names the branch the listing answers to — `Log @ branch`, `Found by … @ branch` under a query (the panel's naming idiom; no `@` until the first fetch lands and none on an unborn branch — git refuses the probe there — while detached HEAD honestly says `@ HEAD`; the branch rides the same background fetch as the query, one `rev-parse --abbrev-ref HEAD` per refresh).
+
+**Listing (paged, git does everything — ordering, matching, and the limit):** `git log -n <limit> --format=%h|%s` of the CURRENT branch (HEAD — exactly the working set, no `--all`). A page is 20; the cursor within 5 rows of the loaded page's end (its 16th row) grows `-n` by a page and refetches — one wider slice of the same query. A short page (raw line count below the request-time limit) means git exhausted the matches. The tail note under the list — "…more" / "… loading" / the hash-phase hint — mirrors the picker's (it enters the window only when geometry allows: a page at or beyond the window height pushes it below the fold until scrolled — picker-identical by construction).
+
+**Two query phases over one list, each with its own buffer:** `i` — messages, `f` — hashes; a phase switch keeps both buffers for the session AND re-queries for the new phase (their EMPTY queries mean different lists — message-empty is the plain branch log, hash-empty is nothing-yet — so the old phase's result must not stand as if it answered the new one; the start supersedes anything still in flight). Every text edit re-queries git (the first page of a longer query is NOT a subset of the page on screen — cache filtering would lie; newest-wins `BackgroundTask` coalesces the typing burst):
+- **Messages**: `git log -n <limit> -i --fixed-strings --grep=<query>` — case-insensitive LITERAL substring over the full message (`--grep` matches subject AND body while rows show subjects); `--fixed-strings` is a robustness decision as much as UX: a query with regex metacharacters (an unbalanced `[`) would fail git's regex compile and land in the failure branch, poisoning the verdicts. An empty query omits `--grep` entirely — the plain branch log, not `--grep=""`'s coincidental match-everything.
+- **Hashes**: the normalized query (trimmed, lowercased — object hex is lowercase) shorter than 4 characters resolves nothing anywhere: no fetch runs, the page on screen stays, and the tail/body says to keep typing. At ≥4, `git rev-parse --verify --quiet <q>^{commit}` resolves the prefix (git is the only authority on what a prefix names — a branch or tag resolves too, `^{commit}` peels it; a query with a leading `-` reads as an option and fails honestly — args are an array, there is no shell), and the page runs from the resolved commit: its row 0 is the commit itself, pagination walks its ancestors.
+
+**Failure verdicts are four, all honest:** a resolved page; `noCommitsYet` (a fresh repository — git refuses `log`; distinguished from an error by the stderr line "does not have any commits yet", safe because `Shell` pins children to English via `AppLocale`); `loadFailed` (not a repository — in the hash phase too, where a failing `rev-parse` is classified by its stderr rather than flattened into a misleading "no matching commit"); `hashNotFound` (the prefix resolves to nothing — renders as the empty "No matching commits" state). And one freshness rule over them all: the fetch payload carries its request-time (phase, query), and a landing that no longer matches the current state is dropped WHOLE (branch included) — newest-wins orders STARTS, but the UI can move without one: a backspace to a too-short hash (the early return starts nothing to supersede the in-flight query) or a phase switch. The last applied state stays instead of flashing a plate/list mismatch (the search window's epoch class; there the two tasks hold independent slots — here the epoch rides the one payload).
+
+**Keys:** menu — `j/k/↑/↓` (the prefetch rides the moves), `Enter` the commit's diff, `y` copies the row's hash (OSC52), `Y` the commit's full message (`git show -s --format=%B`, synchronous — the panel's `C` prefill precedent; a failure — the commit gc'ed between the list and the press — is reported, never a silent empty copy), `i`/`f` the phases, `Esc` closes. Insert — `↑/↓` and `Enter` return to the list on the first row; `Esc` returns KEEPING the query (a log search is a session, not a view tweak — the picker clears its filter on Esc; erasing the query to empty restores the plain log through the same re-query path). In insert the phase owns no selection (the picker's rule), and a landing refresh resets the parked row rather than drift it mid-typing (`keepsSelection && !inputMode`).
+
+**The commit diff (Enter) is READ-ONLY** — `j/k/↑/↓`, `yy` copies lines, `V` line-wise visual yank, `Esc` returns to the list (from visual — exit visual first). A commit is immutable history: nothing to stage, no hunk actions, and hash-addressed immutability means a list refresh never re-requests it — no ordering clock exists here (the panel needs one because its file diffs mutate under refreshes). Rendering is the shared `DiffPaint` (`Window/DiffPaint.swift`: the line style map + the row loop — the same paint the panel's file diffs use; the panel kept its own copy until the second consumer arrived). A failed `git show` (a gc between the list and the show, an abbreviation made ambiguous by a later fetch) renders an honest "Failed to load commit" — stderr is never diff content.
+
+**Integration:** its own slot in the bottom stack (git → branches → **log** → command window → terminal; `min(25, h/2)`, waterfall trimming, `Ctrl+S` half-height via `HalfScreenWindow.log`); spinner via the shared `SpinnerWindow` loop; `prepare()` on every open resets the whole session — queries, page, cursor, AND any diff left open at close time (Ctrl+X/the toggle/`:q` skip the Esc exit; a stale diff of a dead session must not return); a finished git command or terminal command refreshes the list while it is open (history is the window's whole subject — a `git commit` typed in the embedded terminal rewrites it), the selection following its commit by hash where the commit still exists (an amend rewrites HEAD's hash — the resolve falls back to row 0).
+
 ### Core/InteractiveShell.swift — Interactive subprocess (pull/push credentials)
+
 
 `InteractiveShell` — a subprocess with a live reader thread: the form that `git pull`/`push` require when the remote asks for credentials. Replaces `BackgroundTask` in CommandWindow (but not in the other windows — they do not need prompts).
 
@@ -706,7 +732,8 @@ render initial frame
 while running:
     poll LSP tokens
     poll git stats
-    tick spinners (git tasks, search, terminal)
+    tick spinners (one SpinnerWindow loop: command window, search,
+    git panel, branches, git log, terminal)
     if resize event:
         if too small (Terminal.isTooSmall): paint the too-small
         overlay (every resize event while small, so the message
@@ -724,7 +751,7 @@ while running:
         render
 ```
 
-**Spaces (`Spaces`):** two spaces — `editor` (explorer + tab bar + editor + git panel + branch picker + command window + commit window — it shares the command window's slot — + terminal + status bar) and `search` (search results + preview + status bar, invoked with Ctrl+F). The search windows are not part of the editor-space stack: leaving the search (Escape/Ctrl+X/Ctrl+F) returns focus to the previous top of the stack; opening a file from a result (Enter) first switches to the editor space and only then focuses the editor — focus is always set within the current space, otherwise the editor space would keep a stale focused window (for example, the explorer).
+**Spaces (`Spaces`):** two spaces — `editor` (explorer + tab bar + editor + git panel + branch picker + git log + command window + commit window — it shares the command window's slot — + terminal + status bar) and `search` (search results + preview + status bar, invoked with Ctrl+F). The search windows are not part of the editor-space stack: leaving the search (Escape/Ctrl+X/Ctrl+F) returns focus to the previous top of the stack; opening a file from a result (Enter) first switches to the editor space and only then focuses the editor — focus is always set within the current space, otherwise the editor space would keep a stale focused window (for example, the explorer).
 
 **Window stack (`windowStack`) — z-order in MRU order:**
 - Invariant: the focused window is always the top of the stack. Any focusing (`focus(_:)`) raises the window to the top — including the Tab cycle, opening a panel, running a git command
@@ -744,6 +771,7 @@ while running:
 - `Ctrl+E` — file explorer
 - `Ctrl+G` — git panel
 - `Ctrl+B` — branch picker
+- `Ctrl+N` — git log
 - `Ctrl+F` — search
 - `Ctrl+T` — built-in terminal
 - `Ctrl+O` — `git pull` (from any window; output/credentials — CommandWindow)
@@ -760,7 +788,7 @@ while running:
 - Single invariant: everything lives strictly above the status bar; its line is untouchable at any number of windows. The bottom stack (git → branches → command window → terminal) holds its desired heights while they fit; on overflow (already `h/2 + h/2` on any even-height terminal ≤ 50 lines — an odd 49 fits, `min(25, h/2)` floors) it compresses waterfall-style — each window gets an honest share of the remainder, a minimum of one line. The upper zone (explorer/tab bar/editor) gets the remainder and may legitimately be squeezed to 0 lines — the panels then start at the very top row, without dead padding (a squeezed window draws nothing: `Window.resize` allows 0, all bounds are guarded, the caret is clamped)
 - File explorer: w/3.4 of the width (exact integer `w*5/17`), floored at 22 columns (the crossover sits at 75 columns; a narrower tree is decoration, not navigation), yielded only when the terminal cannot keep the editor's own 10-column minimum — on the left (`Ctrl+S` — half the width, same 22-column floor)
 - Editor: the remaining space on the right
-- Git panel / branches / command window / terminal: up to 25 lines or 1/2 of the height, at the bottom (`Ctrl+S` — exactly half the height)
+- Git panel / branches / git log / command window / terminal: up to 25 lines or 1/2 of the height, at the bottom (`Ctrl+S` — exactly half the height); the bottom stack keeps the git family together (git → branches → log), then the command window, then the terminal
 - Search: results up to 1/3 of the width, preview — the rest (`Ctrl+S` — half the width for either panel)
 - Status line: 1 line, at the very bottom — always visible
 - Expanded window (`Ctrl+W`): the whole screen except the status line; the visibility of the other windows is preserved and restored by pressing again
@@ -813,6 +841,7 @@ This is diff-based rendering — only changed cells are redrawn, minimizing term
 | `Ctrl+E` | File explorer |
 | `Ctrl+G` | Git panel |
 | `Ctrl+B` | Branch picker (list in menu mode: `Enter` — `git switch`, `Ctrl+Enter` — switch+pull, `a` — create, `d`/`D` — delete locally / +remote, `i` — filter) |
+| `Ctrl+N` | Git log (list in menu mode: `Enter` — commit diff, `y`/`Y` — copy hash / full message, `i` — search messages, `f` — find by hash; `:log` opens too) |
 | `Ctrl+F` | Project search |
 | `Ctrl+T` | Built-in terminal |
 | `Ctrl+O` | `git pull` from any window (output and credentials — CommandWindow) |
@@ -840,13 +869,14 @@ This is diff-based rendering — only changed cells are redrawn, minimizing term
 | `:e!` <path> | Open a file overriding the current tab's unsaved changes (`:e` refuses when modified) |
 | `:e <path>` | Open a file (reveals a hidden editor) |
 | `:terminal` / `:term` / `:sh` | Open the built-in terminal |
+| `:log` | Open the git log window (open-only, like `:terminal`; `Ctrl+N` is the toggle) |
 | `:s/pat/rep/[gic]` | Substitute; the scope is the whole buffer by default (vim-magic regex, `\0`–`\9`/`&` in the replacement; `g` — every occurrence in a line, `i` — ignore case, `c` — confirm each: `y/n/a/q/l`; the whole command is one undo step, the cursor lands on the last substitution). `'<,'>s/…` — over the selection's lines: `s` in any visual mode prefills it (a blockwise selection restricts matches to the rectangle); the marks scope lives exactly one command session. `:N[,M]s/…`, `:.,$s`, `:5,+2s`, `:+3s` — an explicit line range (a bare second offset is relative to the resolved first; backwards → "Backwards range") |
 | `/<query>` | Search forward |
 
 ### Git panel (menu mode)
 | Key | Action |
 |---------|----------|
-| `j`/`k` | Navigation; `Enter` — diff of a file/commit |
+| `j`/`k` | Navigation; `Enter` — diff of a file |
 | `a` | Add: stage a file (`C` row — mark resolved; in a diff — stage the active hunk / add an untracked file) |
 | `d` | Unstage (staged section/staged-diff) / discard (unstaged/untracked; in a diff — discard the active hunk) — the contextual "remove the change" |
 | `D` | Discard outright — including staged content (index AND worktree back to HEAD; staged additions / the new side of a rename — `rm -f`); the one-press exception to `d`'s staged protection |
@@ -854,6 +884,15 @@ This is diff-based rendering — only changed cells are redrawn, minimizing term
 | `C` | Commit window prefilled with the last commit's message (`git log -1 --format=%B` — subject + body) |
 | `A` | Amend HEAD: the commit window with the last message (`Amend @ <hash> branch` plate), `:w` — `git commit --amend` |
 | `yy` / `V`+`y` | Copy (OSC52) / visual selection |
+
+### Git log (GitLogWindow, `Ctrl+N` / `:log`)
+| Key | Action |
+|---------|----------|
+| `j`/`k`, `Enter` in menu | Navigation (page prefetch near the loaded end); `Enter` — the commit's read-only diff (`git show`); `Esc` — back to the list, from the list — close |
+| `y` / `Y` | Copy the row's short hash (OSC52) / the commit's full message |
+| `i` + typing | Live case-insensitive LITERAL search over commit messages (`-i --fixed-strings --grep` — subject and body); `↑`/`↓`/`Enter` — exit to menu on the first row, `Esc` — the same, the query kept (erase to empty for the plain log) |
+| `f` + typing | Find by hash: ≥4 characters resolve the prefix (`rev-parse <q>^{commit}` — a branch/tag name resolves too), the list runs from that commit; shorter queries show a keep-typing hint without asking git |
+| `yy` / `V`+`y` in diff | Copy diff lines / visual selection |
 
 ### Branch picker (GitBranchesWindow)
 | Key | Action |

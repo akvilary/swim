@@ -779,3 +779,14 @@ class SearchResultsWindow: Window {
         scrollOffset = Window.clampedScroll(selectedIndex: selectedIndex, scrollOffset: scrollOffset, visibleCount: max(0, height - plateRowCount))
     }
 }
+
+extension SearchResultsWindow: SpinnerWindow {
+    // No spinner to animate — the search plate says "scanning..."
+    // plainly. The tick is the idle-loop keep-alive: it keeps the
+    // anyDirty block consuming landed scan results while the user
+    // types nothing.
+    var spinnerActive: Bool { visible && isSearching }
+    func tickSpinner() {
+        dirty = true
+    }
+}

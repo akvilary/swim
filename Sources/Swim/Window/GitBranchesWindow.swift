@@ -717,3 +717,11 @@ class GitBranchesWindow: Window {
         delegate?.requestRender()
     }
 }
+
+extension GitBranchesWindow: SpinnerWindow {
+    var spinnerActive: Bool { visible && isRefreshing }
+    func tickSpinner() {
+        spinnerFrame &+= 1
+        dirty = true
+    }
+}
