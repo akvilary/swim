@@ -575,7 +575,7 @@ The single form of writing to children's stdin/FIFO (`LSPClient` frames, `Shell.
 
 A pair of windows in the `search` space: on the left — the results as a FULL TREE from the working-directory root (the pure SwimCore `SearchTree.build`): one expand/collapse level per path component, root → … → directory → file → match lines — the whole path of a nested file is visible, shared ancestors merge into one node (the old single-level "immediate parent → file" grouping hid the chain and made same-named directories at different depths indistinguishable); on the right — a preview of the selected file with the active line highlighted.
 
-**Query input:** the input phase is the window's insert mode (`inputMode` — derived from `mode == .insert`); on entering the space (Ctrl+F) the panel takes text immediately, and `:` is typed literally then. Navigating the results is menu mode. Escape from navigation returns to entering a new query.
+**Query input:** the input phase is the window's insert mode (`inputMode` — derived from `mode == .insert`); on entering the space (Ctrl+F) the panel takes text immediately, and `:` is typed literally then. Navigating the results is menu mode; `i` returns to the query input — a NEW query from an empty line (the branch picker's `i` keeps its filter; a search query is a fresh search, not a view tweak — the deliberate difference). `Escape` closes the space from EITHER mode — one key, one meaning.
 
 **Search (`search(query:in:)`):**
 - Recursively walks all files in the directory
@@ -601,8 +601,9 @@ A pair of windows in the `search` space: on the left — the results as a FULL T
 - `Enter` — the explorer's activateCurrent: on a match line opens the file; on a directory/file row toggles it — expanding descends to the first child, collapsing keeps the row
 - `l/Ctrl+Right (Ctrl+L)` — the explorer's selectCurrent: never collapses — a collapsed row expands and descends, an expanded one just descends; on a match line opens the file. The descend itself is the shared `TreeListNavigation.firstChild` policy — the same rule the explorer's `descendToFirstChild` runs on
 - `h/Ctrl+Left (Ctrl+H)` — collapse like the file explorer (the shared `TreeListNavigation.collapseTarget` policy): the key acts on the selected row's PARENT branch — the nearest row above one depth shallower — selecting it and collapsing it; on a match line this folds its file's lines, on a file — its directory, on the root — the whole tree (a second press is a no-op). Expanding is `l`/Enter's job; `h` never expands
+- `i` — to the query input, a new query from an empty line (the vim insert idiom)
+- `Escape` — close the search space, from either mode (menu or input) — one key, one meaning
 - `left/right` — horizontal shift of result lines (step of 4, for viewing long lines)
-- `Escape` — to query input / exit the space
 
 ---
 

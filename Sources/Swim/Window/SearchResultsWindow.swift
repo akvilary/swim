@@ -296,7 +296,11 @@ class SearchResultsWindow: Window {
         case .enter: handleActivate()
         case .char("l"), .ctrlRight, .ctrl("l"): handleSelect()
         case .char("h"), .ctrlLeft, .ctrl("h"): handleCollapse()
-        case .escape:
+        case .char("i"):
+            // `i` — back to the query input, a NEW query from an empty
+            // line (the vim insert idiom). The branch picker's `i`
+            // keeps its filter; a search query is a fresh search, not
+            // a view tweak — the deliberate difference.
             mode = .insert
             inputBuffer = ""
             inputCursorPos = 0
