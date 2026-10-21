@@ -57,7 +57,7 @@ class FileExplorerWindow: Window {
     override func update() {
         clear()
 
-        drawHeader(" EXPLORER ", fg: Theme.fgDark)
+        drawHeader(" File explorer ", fg: Theme.fgDark)
 
         let visibleCount = max(0, height - 1)
         for row in 0..<visibleCount {
@@ -250,7 +250,26 @@ class FileExplorerWindow: Window {
             mutable.isLoaded = true
         }
         mutable.isExpanded = !entry.isExpanded
+        if !mutable.isExpanded {
+            // Collapsing discards the subtree's expansion memory: re-
+            // expanding opens this node fresh — its children collapsed —
+            // instead of restoring the previous depth. The loaded-
+            // children cache stays (re-expansion needs no disk), only
+            // the expansion flags reset.
+            collapseSubtree(&mutable.children)
+        }
         return mutable
+    }
+
+    /// Recursively clears expansion flags — the collapse-time memory
+    /// wipe (see loadChildren).
+    private func collapseSubtree(_ entries: inout [FileEntry]) {
+        for i in entries.indices {
+            entries[i].isExpanded = false
+            if !entries[i].children.isEmpty {
+                collapseSubtree(&entries[i].children)
+            }
+        }
     }
 
     private func flattenEntries() {

@@ -614,7 +614,12 @@ class SearchResultsWindow: Window {
         guard selectedIndex < flatItems.count else { return }
         switch flatItems[selectedIndex] {
         case .directory(let node, _):
-            if expandedDirs.contains(node.path) { expandedDirs.remove(node.path) } else { expandedDirs.insert(node.path) }
+            if expandedDirs.contains(node.path) {
+                expandedDirs.remove(node.path)
+                purgeExpansionBelow(node.path)
+            } else {
+                expandedDirs.insert(node.path)
+            }
             flatItemsDirty = true
             ensureFlatItems()
             descendToFirstChild()
@@ -655,6 +660,19 @@ class SearchResultsWindow: Window {
         dirty = true
     }
 
+    /// Collapsing discards the subtree's expansion MEMORY: every key
+    /// below the collapsed node leaves the sets, so re-expanding opens
+    /// the node fresh — its children collapsed — instead of restoring
+    /// the previous depth. Keys of untouched nodes survive rebuilds
+    /// and re-queries as before; only collapse wipes.
+    private func purgeExpansionBelow(_ path: String) {
+        let prefix = path + "/"
+        // Set has no removeAll(where:) — filter reassignment is the
+        // idiomatic wipe.
+        expandedDirs = expandedDirs.filter { !$0.hasPrefix(prefix) }
+        expandedFiles = expandedFiles.filter { !$0.hasPrefix(prefix) }
+    }
+
     /// The descend after an expand — the explorer's mechanic, on the
     /// shared pure policy (`TreeListNavigation.firstChild`): the
     /// selection moves onto the branch's first child, the row right
@@ -692,6 +710,7 @@ class SearchResultsWindow: Window {
         switch flatItems[target] {
         case .directory(let node, _):
             expandedDirs.remove(node.path)
+            purgeExpansionBelow(node.path)
             flatItemsDirty = true
         case .file(let node, _):
             expandedFiles.remove(node.path)
