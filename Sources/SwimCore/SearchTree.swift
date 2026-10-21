@@ -4,7 +4,7 @@ import Foundation
 /// number, the full line text, and the match span (Character offsets
 /// within the line). Pure data shared by the background scanner
 /// (Swim's SearchResultsWindow) and the tree model below.
-public struct SearchResult: Equatable {
+public struct SearchResult: Equatable, Sendable {
     public let filePath: String
     public let lineNumber: Int
     public let lineContent: String

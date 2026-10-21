@@ -12,6 +12,11 @@ class PreviewWindow: Window {
     private var filePath: String?
     private var highlightLine: Int = -1
     private var scrollY: Int = 0
+    /// The snapshot's freshness fingerprint (size+mtime at read
+    /// time): a same-looking stat keeps the session (cursor movement
+    /// never re-reads), a change re-reads, an unstattable file drops
+    /// the session — the preview shows current disk, per file.
+    private var sessionStat: (size: Int, mtime: Date)?
 
     /// The preview's color policy — a DIM overview with the lexical
     /// types colored: keywords, strings, numbers, comments (markdown's
@@ -30,13 +35,13 @@ class PreviewWindow: Window {
         if path != filePath {
             filePath = path
             scrollY = 0
-            if let path = path,
-               let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe),
-               let content = String(data: data, encoding: .utf8) {
-                session = Highlight.Session(text: content, fileExt: (path as NSString).pathExtension)
-            } else {
-                session = nil
-            }
+            loadSession()
+        } else if let path, session != nil, sessionChanged(path) {
+            // Same file, changed on disk (a save, an external edit) —
+            // the once-per-path read would otherwise show staleness
+            // forever; re-read, re-fingerprint, restart the view.
+            scrollY = 0
+            loadSession()
         }
         self.highlightLine = highlightLine
         if highlightLine > 0 {
@@ -46,6 +51,32 @@ class PreviewWindow: Window {
             }
         }
         dirty = true
+    }
+
+    /// Reads the file (nil session on failure) and records its
+    /// fingerprint.
+    private func loadSession() {
+        sessionStat = nil
+        guard let path = filePath,
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe),
+              let content = String(data: data, encoding: .utf8) else {
+            session = nil
+            return
+        }
+        session = Highlight.Session(text: content, fileExt: (path as NSString).pathExtension)
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        sessionStat = ((attrs?[.size] as? NSNumber)?.intValue ?? data.count,
+                       (attrs?[.modificationDate] as? Date) ?? Date())
+    }
+
+    /// Size+mtime vs the recorded fingerprint; unstattable = changed
+    /// (a deleted file's ghost must not linger).
+    private func sessionChanged(_ path: String) -> Bool {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        guard let size = (attrs?[.size] as? NSNumber)?.intValue,
+              let mtime = attrs?[.modificationDate] as? Date,
+              let stat = sessionStat else { return true }
+        return size != stat.size || mtime != stat.mtime
     }
 
     func resetPreview() {

@@ -1022,11 +1022,8 @@ class Application: WindowDelegate {
             let cwd = gitPanel.workingDirectory.isEmpty
                 ? FileManager.default.currentDirectoryPath
                 : gitPanel.workingDirectory
-            searchResults.prepareInput(workingDirectory: cwd)
-            let searchQuery = editor.searchQuery
-            if !searchQuery.isEmpty {
-                searchResults.search(query: searchQuery, in: cwd)
-            }
+            searchResults.reopen(workingDirectory: cwd,
+                                 prefillQuery: editor.searchQuery.isEmpty ? nil : editor.searchQuery)
             focus(searchResults)
         }
     }
@@ -1399,6 +1396,11 @@ class Application: WindowDelegate {
     }
 
     func fileSaved() {
+        // The search session's per-file freshness: the saved file may
+        // be a leaf of the current results (an O(1) check in the
+        // window — nothing runs unless the space is open and the file
+        // is in the tree).
+        if let path = editor.filePath { searchResults.refreshFileIfInSession(path) }
         fetchGitStats()
     }
 
@@ -1481,6 +1483,10 @@ class Application: WindowDelegate {
     /// editor tab for it (modified buffers keep the user's unsaved
     /// edits), then resync stats and LSP with the new content.
     func fileChangedOnDisk(_ path: String) {
+        // Before the tab guard: the file changed on disk regardless of
+        // whether a tab holds it — the search session's freshness
+        // check is independent of editor tabs.
+        searchResults.refreshFileIfInSession(path)
         guard let fresh = editor.tabs.reloadIfClean(path: path) else { return }
         applyBufferReload(fresh)
     }

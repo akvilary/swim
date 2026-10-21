@@ -102,6 +102,28 @@ struct SearchTreeTests {
         #expect(SearchTree.build(results: [match("/repo", 1)], root: "/repo") == nil)
     }
 
+    /// An emptied branch collapses on rebuild: directories exist only
+    /// on paths to matched files, so a file whose last match went away
+    /// takes its whole ancestor chain with it — no empty directories
+    /// can exist in a built tree, by construction. This is what the
+    /// per-file freshness rebuild relies on: dropping one file's
+    /// results shrinks the branch, no pruning pass needed.
+    @Test func emptiedBranchCollapsesOnRebuild() {
+        let full = SearchTree.build(results: [
+            match("/repo/A/x.swift", 1),
+            match("/repo/B/y.swift", 1),
+            match("/repo/B/z.swift", 1),
+        ], root: "/repo")!
+        #expect(full.dirs.map(\.name) == ["A", "B"])
+        #expect(full.dirs[0].matchCount == 1)
+
+        let bothInBGone = SearchTree.build(results: [match("/repo/A/x.swift", 1)], root: "/repo")!
+        #expect(bothInBGone.dirs.map(\.name) == ["A"])          // B collapsed entirely
+        #expect(bothInBGone.matchCount == 1)
+
+        #expect(SearchTree.build(results: [], root: "/repo") == nil) // everything emptied
+    }
+
     /// A match outside the root (impossible via the scanner, defensive
     /// for future callers) still lands in the tree — via its absolute
     /// components — instead of being silently dropped.
