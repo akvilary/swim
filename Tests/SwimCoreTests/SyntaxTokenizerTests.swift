@@ -190,4 +190,60 @@ struct SyntaxTokenizerTests {
         let merged = SyntaxTokenizer.mergeWithLSP(builtin: builtin, lsp: [])
         #expect(merged == builtin)
     }
+
+    // MARK: - the string-state ladder (extendStringStates)
+
+    /// Entry N is the state AFTER line N: an unclosed `"""` leaves the
+    /// ladder active past its line, the closing line resets it — the
+    /// two facts every consumer (the editor per tab, Highlight.Session)
+    /// threads through tokenize.
+    @Test func ladderTracksMultilineStringAcrossLines() {
+        let buffer = PieceTable(text: "let s = \"\"\"\nline inside\ncloses here\"\"\"\nlet x = 1\n")
+        var states: [SyntaxTokenizer.MultilineStringState] = []
+        SyntaxTokenizer.extendStringStates(&states, through: 3, buffer: buffer,
+                                           keywords: SyntaxTokenizer.swiftKeywords,
+                                           literals: SyntaxTokenizer.swiftLiterals,
+                                           syntax: SyntaxTokenizer.syntax(for: "swift"))
+        #expect(states.count == 4)
+        #expect(states[0] == .active(ruleIndex: 0)) // opened on line 0
+        #expect(states[1] == .active(ruleIndex: 0)) // still open
+        #expect(states[2] == .none)                 // closed on line 2
+        #expect(states[3] == .none)
+    }
+
+    /// Extension is INCREMENTAL: extending step by step lands on the
+    /// same ladder as one shot through the end (the preview scrolls
+    /// this way — the ladder must never recompute or fork).
+    @Test func ladderExtendsIncrementallyIdentically() {
+        let buffer = PieceTable(text: "x = '''a\nb\n'''\ny = 2\n")
+        var stepwise: [SyntaxTokenizer.MultilineStringState] = []
+        SyntaxTokenizer.extendStringStates(&stepwise, through: 1, buffer: buffer,
+                                           keywords: SyntaxTokenizer.pythonKeywords,
+                                           literals: SyntaxTokenizer.pythonLiterals,
+                                           syntax: SyntaxTokenizer.syntax(for: "py"))
+        SyntaxTokenizer.extendStringStates(&stepwise, through: 3, buffer: buffer,
+                                           keywords: SyntaxTokenizer.pythonKeywords,
+                                           literals: SyntaxTokenizer.pythonLiterals,
+                                           syntax: SyntaxTokenizer.syntax(for: "py"))
+        var oneshot: [SyntaxTokenizer.MultilineStringState] = []
+        SyntaxTokenizer.extendStringStates(&oneshot, through: 3, buffer: buffer,
+                                           keywords: SyntaxTokenizer.pythonKeywords,
+                                           literals: SyntaxTokenizer.pythonLiterals,
+                                           syntax: SyntaxTokenizer.syntax(for: "py"))
+        #expect(stepwise == oneshot)
+        // Python's rules sort by opener length — both are 3, so """"
+        // keeps index 0 and ''' is index 1.
+        #expect(stepwise == [.active(ruleIndex: 1), .active(ruleIndex: 1), .none, .none])
+    }
+
+    /// `through` beyond the last line stops at the buffer's end — the
+    /// walk never asks for a line that does not exist.
+    @Test func ladderStopsAtBufferEnd() {
+        let buffer = PieceTable(text: "a\nb\n")
+        var states: [SyntaxTokenizer.MultilineStringState] = []
+        SyntaxTokenizer.extendStringStates(&states, through: 100, buffer: buffer,
+                                           keywords: [], literals: [],
+                                           syntax: .default)
+        #expect(states.count == 3) // lines 0, 1, 2 (the trailing empty)
+    }
 }

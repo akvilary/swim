@@ -313,8 +313,43 @@ public struct SyntaxTokenizer {
             || c == "(" || c == "[" || c == "{" || c == "\"" || c == "'"
     }
 
-    public static func tokenize(chars: [Character], lineNum: Int, keywords: Set<String>,
-                          syntax: LanguageSyntax = .default,
+    /// Extends the multi-line-string state ladder to cover line
+    /// `through` (entry N — the state AFTER line N; line N is
+    /// tokenized starting from states[N - 1]). The pure extend-only
+    /// half of the ladder: the editor owns invalidation on edits
+    /// (truncating from the edit line down), the preview's content is
+    /// immutable so its ladder never invalidates. States come from
+    /// tokenize's string scanning — keywords and literals do not
+    /// affect them, but tokenize needs them, so they pass through
+    /// (token arrays are built and discarded; that is the editor's
+    /// own cost profile too, kept for parity). `line` may exceed the
+    /// buffer — the walk stops at the last line (callers of the
+    /// editor clamp; the preview's Session does not need to).
+    /// PERFORMANCE: callers pass the ladder as inout of a STORED
+    /// property of a class instance — a direct address, in-place
+    /// appends. Routing it through a computed accessor would make
+    /// every call copy-in-copy-out the whole array (a regression the
+    /// editor has already lived through once).
+    public static func extendStringStates(
+        _ states: inout [MultilineStringState],
+        through line: Int,
+        buffer: PieceTable,
+        keywords: Set<String>,
+        literals: Set<String>,
+        syntax: LanguageSyntax
+    ) {
+        while states.count <= line {
+            let idx = states.count
+            if idx >= buffer.lineCount { break }
+            let initial: MultilineStringState = idx == 0 ? .none : states[idx - 1]
+            let endState = tokenize(chars: buffer.getLineChars(idx), lineNum: idx,
+                                    keywords: keywords, syntax: syntax,
+                                    initialState: initial, literals: literals).endState
+            states.append(endState)
+        }
+    }
+
+    public static func tokenize(chars: [Character], lineNum: Int, keywords: Set<String>,                          syntax: LanguageSyntax = .default,
                           initialState: MultilineStringState = .none,
                           literals: Set<String> = []) -> (tokens: [SemanticToken], endState: MultilineStringState) {
         var tokens = [SemanticToken]()

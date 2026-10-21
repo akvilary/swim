@@ -36,4 +36,30 @@ enum Theme {
     static let unstagedColor = orange
     static let deleteColor = red
     static let visualBg = Color.rgb(r: 0x36, g: 0x4a, b: 0x82)
+
+    /// Token type → color — the single mapping of the semantic-token
+    /// vocabulary (the builtin SyntaxTokenizer/MarkdownTokenizer types
+    /// and the LSP names) onto the palette, shared by every coloring
+    /// surface (the editor's tokens, the preview's lexical subset).
+    /// Change colors here, not at the use sites — the same doctrine as
+    /// the git palette above.
+    static func color(forToken type: String) -> Color {
+        switch type {
+        case "keyword", "controlKeyword": return magenta
+        case "string": return green
+        case "number": return orange
+        case "comment": return comment
+        case "type", "class", "struct", "enum", "interface": return blue1
+        case "function", "method": return blue
+        case "variable", "property": return fg
+        case "parameter", "selfParameter", "clsParameter": return yellow
+        case "operator": return blue5
+        case "punctuation": return fg
+        case "namespace", "module": return module
+        case "decorator", "attribute": return yellow
+        case "regexp": return red
+        case "macro": return red1
+        default: return fg
+        }
+    }
 }

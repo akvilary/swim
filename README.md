@@ -38,7 +38,7 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
 
 ![Branch picker](docs/screenshots/branches.png)
 
-**Project search** — results as a full tree from the working-directory root, with a preview pane:
+**Project search** — results as a full tree from the working-directory root, with a syntax-highlighted preview pane:
 
 ![Project search](docs/screenshots/search.png)
 

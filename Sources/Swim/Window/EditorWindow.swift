@@ -1261,22 +1261,18 @@ class EditorWindow: Window {
 
     /// Extends mlStringStates up to `line`. Entry N holds the state AFTER
     /// line N; consumers tokenize line N starting from mlStringStates[N - 1].
-    /// Appends go directly into the tab's stored property — through-accessor
-    /// or local-copy patterns COW-copy the whole array per call, which made
-    /// scrolling a large file copy the array every frame.
+    /// The pure walk lives in SwimCore (SyntaxTokenizer.extendStringStates —
+    /// shared with Highlight.Session); the inout goes at the ladder as a
+    /// STORED property of the tab class via the local reference — a direct
+    /// address, in-place appends. Through the window-level computed
+    /// accessor it would be copy-in-copy-out, COW-copying the whole array
+    /// per call — the scrolling regression this shape once fixed.
     private func ensureMLStringStates(through line: Int, buffer: PieceTable,
                                       keywords: Set<String>, literals: Set<String>,
                                       syntax: SyntaxTokenizer.LanguageSyntax) {
         let tab = tabs.active
-        while tab.mlStringStates.count <= line {
-            let idx = tab.mlStringStates.count
-            let initial: SyntaxTokenizer.MultilineStringState = idx == 0 ? .none : tab.mlStringStates[idx - 1]
-            let chars = buffer.getLineChars(idx)
-            let endState = SyntaxTokenizer.tokenize(chars: chars, lineNum: idx, keywords: keywords,
-                                                    syntax: syntax, initialState: initial,
-                                                    literals: literals).endState
-            tab.mlStringStates.append(endState)
-        }
+        SyntaxTokenizer.extendStringStates(&tab.mlStringStates, through: line, buffer: buffer,
+                                           keywords: keywords, literals: literals, syntax: syntax)
     }
 
     private func trackLSPChange(offset: Int, replaced: String, inserted: String) {
@@ -1780,7 +1776,7 @@ class EditorWindow: Window {
                     // greyed-out rendering, not an underline.
                     tokenColor = Theme.comment
                 } else if tokenIdx < tokens.count && absCol >= tokens[tokenIdx].startChar {
-                    tokenColor = colorForTokenType(tokens[tokenIdx].type)
+                    tokenColor = Theme.color(forToken: tokens[tokenIdx].type)
                 } else {
                     tokenColor = Theme.fg
                 }
@@ -1894,25 +1890,5 @@ class EditorWindow: Window {
 
     private func semanticTokensFor(line: Int) -> [SemanticToken] {
         tokenIndex[line] ?? []
-    }
-
-    private func colorForTokenType(_ type: String) -> Color {
-        switch type {
-        case "keyword", "controlKeyword": return Theme.magenta
-        case "string": return Theme.green
-        case "number": return Theme.orange
-        case "comment": return Theme.comment
-        case "type", "class", "struct", "enum", "interface": return Theme.blue1
-        case "function", "method": return Theme.blue
-        case "variable", "property": return Theme.fg
-        case "parameter", "selfParameter", "clsParameter": return Theme.yellow
-        case "operator": return Theme.blue5
-        case "punctuation": return Theme.fg
-        case "namespace", "module": return Theme.module
-        case "decorator", "attribute": return Theme.yellow
-        case "regexp": return Theme.red
-        case "macro": return Theme.red1
-        default: return Theme.fg
-        }
     }
 }
