@@ -376,25 +376,31 @@ class SearchResultsWindow: Window {
                 let cells = Self.textCells(text, fg: Theme.fgDark, bg: bg)
                 drawCells(cells, row: y, offset: horizontalOffset, fillFg: Theme.fg, fillBg: bg)
             case .result(let result, let depth):
+                // The whole WORD containing the match (MatchWord —
+                // SwimCore, tested): the match colored inside its word,
+                // bounded by spaces/brackets/quotes/punctuation, clipped
+                // by the window edge. This replaced the old pre-match
+                // character window — a left-trimmed fragment cut
+                // mid-word, unreadable — and with it the windowing
+                // arithmetic (the clamped prefix math of the old row).
                 let indent = String(repeating: " ", count: depth * 2)
                 let linePrefix = "\(indent)\(result.lineNumber): "
-                // availW is the room left for the before-match text so
-                // the match itself starts on screen; CLAMPED at 0 — a
-                // match longer than the window (a deep indent plus a
-                // long query in the narrow half-screen panel) must
-                // draw from its start truncated by the cell bounds, not
-                // feed prefix() a negative length (a fatal error —
-                // String.prefix traps on negative input).
-                let availW = max(0, width - linePrefix.count - result.matchLength)
-                let beforeEnd = min(result.matchStart, availW)
-                let beforeMatch = String(result.lineContent.prefix(beforeEnd).trimmingCharacters(in: .whitespaces).prefix(availW))
-                let startIndex = result.lineContent.index(result.lineContent.startIndex, offsetBy: result.matchStart)
-                let endIndex = result.lineContent.index(startIndex, offsetBy: result.matchLength)
-                let matchText = String(result.lineContent[startIndex..<endIndex])
+                let chars = Array(result.lineContent)
+                let wordSpan = MatchWord.span(
+                    chars: chars, matchStart: result.matchStart, matchLength: result.matchLength,
+                    maxCells: max(1, width))
+                let matchStart = min(result.matchStart, chars.count)
+                let matchEnd = min(matchStart + result.matchLength, chars.count)
+                let dim: Color = isSelected ? Theme.fg : Theme.fgDark
                 var cells = Self.textCells(linePrefix, fg: Theme.comment, bg: bg)
-                cells += Self.textCells(beforeMatch, fg: isSelected ? Theme.fg : Theme.fgDark, bg: bg)
-                cells += Self.textCells(matchText, fg: Theme.orange, bg: bg, bold: true)
-                drawCells(cells, row: y, offset: horizontalOffset, fillFg: Theme.fg, fillBg: bg)
+                if wordSpan.start < matchStart {
+                    cells += Self.textCells(String(chars[wordSpan.start..<matchStart]), fg: dim, bg: bg)
+                }
+                cells += Self.textCells(String(chars[matchStart..<matchEnd]), fg: Theme.orange, bg: bg, bold: true)
+                if matchEnd < wordSpan.end {
+                    cells += Self.textCells(String(chars[matchEnd..<wordSpan.end]), fg: dim, bg: bg)
+                }
+                drawCells(cells, row: y, offset: horizontalOffset, fillFg: dim, fillBg: bg)
             }
         }
     }
