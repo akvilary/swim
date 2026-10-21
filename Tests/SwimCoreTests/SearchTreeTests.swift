@@ -94,9 +94,12 @@ struct SearchTreeTests {
     }
 
     /// No matches — no tree (the window shows the empty state, not a
-    /// bare root row with a zero).
+    /// bare root row with a zero); by the same rule, input whose every
+    /// match was dropped (the root itself — see insert) collapses to
+    /// nil: a non-nil tree always carries at least one match.
     @Test func emptyResultsGiveNoTree() {
         #expect(SearchTree.build(results: [], root: "/repo") == nil)
+        #expect(SearchTree.build(results: [match("/repo", 1)], root: "/repo") == nil)
     }
 
     /// A match outside the root (impossible via the scanner, defensive

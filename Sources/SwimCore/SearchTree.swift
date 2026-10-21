@@ -72,10 +72,13 @@ public enum SearchTree {
     }
 
     /// Builds the tree of `results` under `root`; nil when there is
-    /// nothing to show (no matches — no tree, not an empty root row).
-    /// Insertion is dictionary-indexed by absolute path (paths are
-    /// unique), so the build is O(total results), like the old
-    /// dictionary grouping it replaces — no sibling-list scans.
+    /// nothing to show (no matches — no tree, not an empty root row;
+    /// input whose every match was dropped — see `insert` — collapses
+    /// to nil by the same rule: a non-nil tree always carries at
+    /// least one match). Insertion is dictionary-indexed by absolute
+    /// path (paths are unique), so the build is O(total results),
+    /// like the old dictionary grouping it replaces — no sibling-list
+    /// scans.
     public static func build(results: [SearchResult], root: String) -> DirNode? {
         guard !results.isEmpty else { return nil }
         let rootPath = normalizedRoot(root)
@@ -87,7 +90,7 @@ public enum SearchTree {
             insert(result, into: rootNode, rootPath: rootPath, dirByPath: &dirByPath, fileByPath: &fileByPath)
         }
         finalize(rootNode)
-        return rootNode
+        return rootNode.matchCount > 0 ? rootNode : nil
     }
 
     /// Lays one result into the tree: walks/creates the directory

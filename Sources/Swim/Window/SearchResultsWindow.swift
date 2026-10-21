@@ -198,7 +198,7 @@ class SearchResultsWindow: Window {
         flatItemsDirty = false
     }
 
-    /// Row depth — the TreeCollapse policy's view of the list.
+    /// Row depth — the TreeListNavigation policy's view of the list.
     private func depth(of item: SearchItem) -> Int {
         switch item {
         case .directory(_, let depth), .file(_, let depth), .result(_, let depth):
