@@ -15,7 +15,7 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
   - Fast JSON highlighting
 - **File explorer** (`Ctrl+E`) — sidebar with directory tree; file names colored by git status (new — green, fully staged — blue, unstaged changes — teal)
 - **Git panel** (`Ctrl+G`) — staged/unstaged files, diff with color highlighting
-- **Git log** (`Ctrl+N`, or `:log`) — paged commit history of the current branch; `Enter` opens the commit's read-only diff, `y`/`Y` copy the hash / the full message, `i` live-searches messages (case-insensitive, literal), `f` finds by hash prefix; more pages load as you scroll
+- **Git log** (`Ctrl+U`, or `:log`) — paged commit history of the current branch; `Enter` opens the commit's read-only diff, `y`/`Y` copy the hash / the full message, `i` live-searches messages (case-insensitive, literal), `f` finds by hash prefix; more pages load as you scroll
 - **Branch picker** (`Ctrl+B`) — opens on the branch list; `Enter` switches, `Ctrl+Enter` switches and pulls, `a` creates a new branch (`git switch -c`), `m` merges (`side --no-ff` — name plus pass-through args; conflicts offer keep / ours / theirs / abort), `d`/`D` deletes local / local+remote, `i` live-filters — the filter also finds remote branches fetched but not yet checked out (Enter creates the local tracking branch)
 - **Git gutter** — editor line numbers colored by line status (added lines/files — green, staged — blue, unstaged — teal); diagnostics show as severity-colored circles after the line number (error + warning stack in one cell)
 - **Project search** (`Ctrl+F`) — recursive file search, results as a tree from the working-directory root
@@ -119,7 +119,7 @@ swim <file>       # Open file
 | `Ctrl+E` | Any | File explorer |
 | `Ctrl+G` | Any | Git panel |
 | `Ctrl+B` | Any | Branch picker |
-| `Ctrl+N` | Any | Git log |
+| `Ctrl+U` | Any | Git log |
 | `Ctrl+F` | Any | Project search |
 | `Ctrl+T` | Any | Built-in terminal |
 | `Ctrl+X` | Any | Close focused window (last window exits) |

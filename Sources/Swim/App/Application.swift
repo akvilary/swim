@@ -765,7 +765,15 @@ class Application: WindowDelegate {
         case .ctrl("b"):
             toggleGitBranches()
             return true
-        case .ctrl("n"):
+        case .ctrl("u"):
+            // The log's global toggle — not Ctrl+N: terminal emulators
+            // commonly claim that one at their own level (VS Code's
+            // new file, GNOME's new window) and swim would never see
+            // the byte. Ctrl+U's only swim binding was the terminal's
+            // half-page scroll, removed as an inconvenient granularity
+            // between the line and the page steps — and the terminal
+            // is a command runner with swim's own line editor, so no
+            // readline loses anything either way.
             toggleGitLog()
             return true
         case .ctrl("o"):
@@ -993,7 +1001,7 @@ class Application: WindowDelegate {
         relayout()
     }
 
-    /// Ctrl+N — the git log toggle: closes when open, otherwise a
+    /// Ctrl+U — the git log toggle: closes when open, otherwise a
     /// fresh log (empty queries, first page, menu mode, cursor on
     /// HEAD). The window is the git panel's former "Recent commits"
     /// section grown into its own domain: history browsing, message
@@ -1011,7 +1019,7 @@ class Application: WindowDelegate {
         openGitLog()
     }
 
-    /// Opens the git log window (`Ctrl+N`, and `:log` — the command is
+    /// Opens the git log window (`Ctrl+U`, and `:log` — the command is
     /// open-only like `:terminal`, it never closes what it names).
     /// Fresh session every open — a commit may have landed since the
     /// last visit.

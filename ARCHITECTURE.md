@@ -494,7 +494,7 @@ Emoji icons: 🐦 Swift, ⚡ JS/TS, 🐍 Python, ⚙ Rust, 🔵 Go, 🌐 HTML, �
 
 ### Window/GitPanelWindow.swift — Git Panel
 
-Git integration panel: staged/unstaged/untracked files, diffs of files, stage/unstage of files and individual hunks, discard, commit, pull/push. (The former "Recent commits" section lives in its own window now — the git log, `Ctrl+N`/`:log`: history browsing with message/hash search is a separate domain, and the panel stays the index/worktree surface.) Modes: `.menu` (standard behavior), `.visualLine` (line-wise selection), `.command` (`:q` closes the panel).
+Git integration panel: staged/unstaged/untracked files, diffs of files, stage/unstage of files and individual hunks, discard, commit, pull/push. (The former "Recent commits" section lives in its own window now — the git log, `Ctrl+U`/`:log`: history browsing with message/hash search is a separate domain, and the panel stays the index/worktree surface.) Modes: `.menu` (standard behavior), `.visualLine` (line-wise selection), `.command` (`:q` closes the panel).
 
 **Data (`BackgroundTask` background tasks, polled in `poll()`):**
 - `gitTask` — `rev-parse --abbrev-ref HEAD` (branch) + `rev-parse --show-toplevel` (repo root) + `status --porcelain -z`
@@ -550,7 +550,7 @@ Branch picker: opened globally with `Ctrl+B` (toggle: closed/open; reopening —
 
 ### Window/GitLogWindow.swift — Git Log
 
-The branch's commit history as a navigable window (`Ctrl+N` toggle, `:log` command — open-only like `:terminal`): the git panel's former "Recent commits" section grown into its own domain. The shape mirrors the branch picker — `.menu` navigates a paginated git listing, `.insert` types a query into the window's own input row (the shared `InputLine`/`applyLineEdit`/terminal-caret stack), `.visualLine` serves the diff's line-wise yank, `.command` is the standard `:q`. Rows render exactly the panel's old row format — ` <hash> <subject>`, cyan — parsed by the pure `CommitLog` (SwimCore, tested); the hash stays verbatim (`%h` — git scales its width with repository size; a hard `prefix(7)` could show two rows alike and copy an ambiguous token, so `y` copies what the row shows). The plate names the branch the listing answers to — `Log @ branch`, `Found by … @ branch` under a query (the panel's naming idiom; no `@` until the first fetch lands and none on an unborn branch — git refuses the probe there — while detached HEAD honestly says `@ HEAD`; the branch rides the same background fetch as the query, one `rev-parse --abbrev-ref HEAD` per refresh).
+The branch's commit history as a navigable window (`Ctrl+U` toggle, `:log` command — open-only like `:terminal`): the git panel's former "Recent commits" section grown into its own domain. The binding is Ctrl+U, not the more obvious Ctrl+N — terminal emulators commonly claim Ctrl+N at their own level (VS Code's new file, GNOME's new window), and swim would never receive the byte; Ctrl+U's only swim binding was the terminal's half-page scroll (see the terminal's Output scrolling — the granularity was removed as an inconvenient step between the line and the page), so the toggle costs nothing anywhere: the embedded terminal is a command runner with swim's own line editor, no readline lives behind the key. The shape mirrors the branch picker — `.menu` navigates a paginated git listing, `.insert` types a query into the window's own input row (the shared `InputLine`/`applyLineEdit`/terminal-caret stack), `.visualLine` serves the diff's line-wise yank, `.command` is the standard `:q`. Rows render exactly the panel's old row format — ` <hash> <subject>`, cyan — parsed by the pure `CommitLog` (SwimCore, tested); the hash stays verbatim (`%h` — git scales its width with repository size; a hard `prefix(7)` could show two rows alike and copy an ambiguous token, so `y` copies what the row shows). The plate names the branch the listing answers to — `Log @ branch`, `Found by … @ branch` under a query (the panel's naming idiom; no `@` until the first fetch lands and none on an unborn branch — git refuses the probe there — while detached HEAD honestly says `@ HEAD`; the branch rides the same background fetch as the query, one `rev-parse --abbrev-ref HEAD` per refresh).
 
 **Listing (paged, git does everything — ordering, matching, and the limit):** `git log -n <limit> --format=%h|%s` of the CURRENT branch (HEAD — exactly the working set, no `--all`). A page is 20; the cursor within 5 rows of the loaded page's end (its 16th row) grows `-n` by a page and refetches — one wider slice of the same query. A short page (raw line count below the request-time limit) means git exhausted the matches. The tail note under the list — "…more" / "… loading" / the hash-phase hint — mirrors the picker's (it enters the window only when geometry allows: a page at or beyond the window height pushes it below the fold until scrolled — picker-identical by construction).
 
@@ -645,7 +645,7 @@ Terminal panel (Ctrl+T or `:terminal`/`:term`/`:sh`): type shell commands and vi
 
 **Input:** a live `>` prompt — the last line of the scrollable buffer, there is no fixed input line. Line editing (`left/right/home/end/backspace/delete`), `Ctrl+Left`/`Ctrl+Right` — command history, `Tab` — path completion (a single match is substituted in full, for directories with a `/`; several — the common prefix), `Enter` — run.
 
-**Output scrolling:** `up/down` — line by line, `Ctrl+Up/Down`, `PageUp/PageDown` — a page, `Ctrl+D/U` — half a page. After `Enter` the view is placed on the executed command — it is the top row of the window, the result reads top-down without manual scrolling; the output itself does not move the view. Typing any character, `Enter`, `Escape`, or switching history (`Ctrl+Left/Right`) returns the view to the live prompt.
+**Output scrolling:** `up/down` — line by line, `Ctrl+Up/Down`, `PageUp/PageDown` — a page. (A former half-page step on `Ctrl+D/U` was removed — an inconvenient granularity between the two, and `Ctrl+U` now opens the git log globally; `Ctrl+D` in the prompt is a quiet no-op, like any key the shared line editor does not claim.) After `Enter` the view is placed on the executed command — it is the top row of the window, the result reads top-down without manual scrolling; the output itself does not move the view. Typing any character, `Enter`, `Escape`, or switching history (`Ctrl+Left/Right`) returns the view to the live prompt.
 
 **Running (`submit`):** each command runs as its own `/bin/sh -c` (pipes, `&&`, environment variables work) in the background via `BackgroundTask`; a spinner spins in the prompt. Output: stdout — in the normal color, stderr — in red, and on a non-zero exit code a `[exit N]` line is added. The output buffer is capped at 10,000 lines (older entries are evicted). After any command completes, the window calls `terminalCommandFinished` on the delegate — Application restarts `fetchGitStats` (the branch/diff in the status bar may have changed: a file edited, renamed, branch switched) and `gitPanel.refresh()` (the same contract as git commands from CommandWindow).
 
@@ -771,7 +771,7 @@ while running:
 - `Ctrl+E` — file explorer
 - `Ctrl+G` — git panel
 - `Ctrl+B` — branch picker
-- `Ctrl+N` — git log
+- `Ctrl+U` — git log
 - `Ctrl+F` — search
 - `Ctrl+T` — built-in terminal
 - `Ctrl+O` — `git pull` (from any window; output/credentials — CommandWindow)
@@ -841,7 +841,7 @@ This is diff-based rendering — only changed cells are redrawn, minimizing term
 | `Ctrl+E` | File explorer |
 | `Ctrl+G` | Git panel |
 | `Ctrl+B` | Branch picker (list in menu mode: `Enter` — `git switch`, `Ctrl+Enter` — switch+pull, `a` — create, `d`/`D` — delete locally / +remote, `i` — filter) |
-| `Ctrl+N` | Git log (list in menu mode: `Enter` — commit diff, `y`/`Y` — copy hash / full message, `i` — search messages, `f` — find by hash; `:log` opens too) |
+| `Ctrl+U` | Git log (list in menu mode: `Enter` — commit diff, `y`/`Y` — copy hash / full message, `i` — search messages, `f` — find by hash; `:log` opens too) |
 | `Ctrl+F` | Project search |
 | `Ctrl+T` | Built-in terminal |
 | `Ctrl+O` | `git pull` from any window (output and credentials — CommandWindow) |
@@ -869,7 +869,7 @@ This is diff-based rendering — only changed cells are redrawn, minimizing term
 | `:e!` <path> | Open a file overriding the current tab's unsaved changes (`:e` refuses when modified) |
 | `:e <path>` | Open a file (reveals a hidden editor) |
 | `:terminal` / `:term` / `:sh` | Open the built-in terminal |
-| `:log` | Open the git log window (open-only, like `:terminal`; `Ctrl+N` is the toggle) |
+| `:log` | Open the git log window (open-only, like `:terminal`; `Ctrl+U` is the toggle) |
 | `:s/pat/rep/[gic]` | Substitute; the scope is the whole buffer by default (vim-magic regex, `\0`–`\9`/`&` in the replacement; `g` — every occurrence in a line, `i` — ignore case, `c` — confirm each: `y/n/a/q/l`; the whole command is one undo step, the cursor lands on the last substitution). `'<,'>s/…` — over the selection's lines: `s` in any visual mode prefills it (a blockwise selection restricts matches to the rectangle); the marks scope lives exactly one command session. `:N[,M]s/…`, `:.,$s`, `:5,+2s`, `:+3s` — an explicit line range (a bare second offset is relative to the resolved first; backwards → "Backwards range") |
 | `/<query>` | Search forward |
 
@@ -885,7 +885,7 @@ This is diff-based rendering — only changed cells are redrawn, minimizing term
 | `A` | Amend HEAD: the commit window with the last message (`Amend @ <hash> branch` plate), `:w` — `git commit --amend` |
 | `yy` / `V`+`y` | Copy (OSC52) / visual selection |
 
-### Git log (GitLogWindow, `Ctrl+N` / `:log`)
+### Git log (GitLogWindow, `Ctrl+U` / `:log`)
 | Key | Action |
 |---------|----------|
 | `j`/`k`, `Enter` in menu | Navigation (page prefetch near the loaded end); `Enter` — the commit's read-only diff (`git show`); `Esc` — back to the list, from the list — close |

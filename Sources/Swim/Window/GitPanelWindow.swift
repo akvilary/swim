@@ -41,7 +41,7 @@ private struct DiffHunk {
 
 /// Ordered sections of the status list; the raw value is the display
 /// order. (The former "Recent commits" section moved to the git log
-/// window — Ctrl+N; history browsing is its own domain, and the panel
+/// window — Ctrl+U; history browsing is its own domain, and the panel
 /// stays the index/worktree surface.)
 private enum StatusSection: Int {
     case staged, unstaged, untracked

@@ -125,10 +125,6 @@ class TerminalWindow: Window {
             scrollBy(-height)
         case .pageDown:
             scrollBy(height)
-        case .ctrl("d"):
-            scrollBy(max(1, height / 2))
-        case .ctrl("u"):
-            scrollBy(max(1, height / 2))
         case .enter:
             if !atBottom {
                 scrollToBottom()
