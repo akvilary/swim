@@ -83,9 +83,13 @@ class SearchResultsWindow: Window {
         } else {
             let headerText: String
             if isSearching {
-                headerText = " SEARCH (scanning...) "
+                headerText = " Search & scanning... "
             } else {
-                headerText = " SEARCH (\(results.count) matches) "
+                // The plate hint follows the git panel's `key: action`
+                // idiom — `i` (a new query from an empty line) is the
+                // one non-obvious key. A narrow panel truncates the
+                // tail first; the matches count stays visible.
+                headerText = " Search & \(results.count) matches (i: new search) "
             }
             drawHeader(headerText, fg: Theme.fg)
         }
