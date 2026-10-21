@@ -101,21 +101,19 @@ class SearchResultsWindow: Window {
             let bg: Color = isSelected ? Theme.bgHighlight : Theme.bgDark
             let y = row + 1
 
-            fillRegion(row: y, col: 0, width: width, height: 1, cell: Cell.colored(" ", fg: Theme.fg, bg: bg))
-
             switch flatItems[itemIdx] {
             case .directory(let node, let depth):
                 let expanded = expandedDirs.contains(node.path)
                 let icon = expanded ? "▾ " : "▸ "
-                let indent = String(repeating: " ", count: depth * 2)
-                let text = indent + icon + node.name + " (\(node.matchCount))"
-                drawShifted([(text: text, fg: Theme.blue, bold: true)], row: y, bg: bg)
+                let text = String(repeating: " ", count: depth * 2) + icon + node.name + " (\(node.matchCount))"
+                let cells = Self.textCells(text, fg: Theme.blue, bg: bg, bold: true)
+                drawCells(cells, row: y, offset: horizontalOffset, fillFg: Theme.fg, fillBg: bg)
             case .file(let node, let depth):
                 let expanded = expandedFiles.contains(node.path)
                 let icon = expanded ? "▾ " : "▸ "
-                let indent = String(repeating: " ", count: depth * 2)
-                let text = indent + icon + node.name + " (\(node.matchCount))"
-                drawShifted([(text: text, fg: Theme.fgDark, bold: false)], row: y, bg: bg)
+                let text = String(repeating: " ", count: depth * 2) + icon + node.name + " (\(node.matchCount))"
+                let cells = Self.textCells(text, fg: Theme.fgDark, bg: bg)
+                drawCells(cells, row: y, offset: horizontalOffset, fillFg: Theme.fg, fillBg: bg)
             case .result(let result, let depth):
                 let indent = String(repeating: " ", count: depth * 2)
                 let linePrefix = "\(indent)\(result.lineNumber): "
@@ -123,7 +121,7 @@ class SearchResultsWindow: Window {
                 // the match itself starts on screen; CLAMPED at 0 — a
                 // match longer than the window (a deep indent plus a
                 // long query in the narrow half-screen panel) must
-                // draw from its start truncated by drawShifted, not
+                // draw from its start truncated by the cell bounds, not
                 // feed prefix() a negative length (a fatal error —
                 // String.prefix traps on negative input).
                 let availW = max(0, width - linePrefix.count - result.matchLength)
@@ -132,27 +130,10 @@ class SearchResultsWindow: Window {
                 let startIndex = result.lineContent.index(result.lineContent.startIndex, offsetBy: result.matchStart)
                 let endIndex = result.lineContent.index(startIndex, offsetBy: result.matchLength)
                 let matchText = String(result.lineContent[startIndex..<endIndex])
-                drawShifted([
-                    (text: linePrefix, fg: Theme.comment, bold: false),
-                    (text: beforeMatch, fg: isSelected ? Theme.fg : Theme.fgDark, bold: false),
-                    (text: matchText, fg: Theme.orange, bold: true)
-                ], row: y, bg: bg)
-            }
-        }
-    }
-
-    private func drawShifted(_ parts: [(text: String, fg: Color, bold: Bool)], row: Int, bg: Color) {
-        var col = 0
-        var skip = horizontalOffset
-        outer: for part in parts {
-            for ch in part.text {
-                if skip > 0 {
-                    skip -= 1
-                    continue
-                }
-                if col >= width { break outer }
-                setCell(row, col, Cell.colored(ch, fg: part.fg, bg: bg, bold: part.bold))
-                col += 1
+                var cells = Self.textCells(linePrefix, fg: Theme.comment, bg: bg)
+                cells += Self.textCells(beforeMatch, fg: isSelected ? Theme.fg : Theme.fgDark, bg: bg)
+                cells += Self.textCells(matchText, fg: Theme.orange, bg: bg, bold: true)
+                drawCells(cells, row: y, offset: horizontalOffset, fillFg: Theme.fg, fillBg: bg)
             }
         }
     }
@@ -455,6 +436,10 @@ class SearchResultsWindow: Window {
         dirty = true
     }
 
+    /// The scroll bound in terminal CELLS, not Characters — a wide
+    /// grapheme occupies two columns (the shared `Window.cellCount`,
+    /// the accounting of the rows `textCells` builds), and a bound
+    /// counted in characters would stop short of a wide row's tail.
     private func maxVisibleContentLength() -> Int {
         var maxLen = 0
         let visibleH = max(0, height - 1)
@@ -464,11 +449,11 @@ class SearchResultsWindow: Window {
             switch flatItems[itemIdx] {
             case .directory(let node, let depth):
                 // indent + icon + name + " (" + count + ")"
-                maxLen = max(maxLen, depth * 2 + 2 + node.name.count + 3 + String(node.matchCount).count)
+                maxLen = max(maxLen, depth * 2 + 2 + Self.cellCount(node.name) + 3 + String(node.matchCount).count)
             case .file(let node, let depth):
-                maxLen = max(maxLen, depth * 2 + 2 + node.name.count + 3 + String(node.matchCount).count)
+                maxLen = max(maxLen, depth * 2 + 2 + Self.cellCount(node.name) + 3 + String(node.matchCount).count)
             case .result(let r, let depth):
-                maxLen = max(maxLen, depth * 2 + String(r.lineNumber).count + 2 + r.lineContent.count)
+                maxLen = max(maxLen, depth * 2 + String(r.lineNumber).count + 2 + Self.cellCount(r.lineContent))
             }
         }
         return maxLen

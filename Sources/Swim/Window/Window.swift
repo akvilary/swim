@@ -352,6 +352,72 @@ class Window {
         writeString(text, row: row, col: col, fg: fg, bg: bg, bold: bold)
     }
 
+    /// A text run as styled cells — the row builders' half of the
+    /// shared paint pipeline (`textCells` to assemble, `drawCells` to
+    /// paint): every grapheme takes `displayWidth` cells (CharWidth —
+    /// the single width authority, the same convention as
+    /// `writeString` and the status bar), a wide glyph claiming its
+    /// `wideContinuation` cell so the buffer matches the terminal
+    /// cursor, and a zero-width/control grapheme rendering as one
+    /// blank cell (`max(1, ·)`). CJK/emoji in file names, tab labels
+    /// and matched lines otherwise shift the rest of the row by a
+    /// cell per glyph. The consumers are the explorer's and the
+    /// search results' rows and the tab bar's labels.
+    static func textCells(_ text: String, fg: Color, bg: Color, bold: Bool = false, dim: Bool = false) -> [Cell] {
+        var cells: [Cell] = []
+        cells.reserveCapacity(text.count)
+        for ch in text {
+            let w = max(1, ch.displayWidth)
+            cells.append(Cell.colored(ch, fg: fg, bg: bg, bold: bold, dim: dim))
+            if w == 2 {
+                var cont = Cell.colored(" ", fg: fg, bg: bg, bold: bold, dim: dim)
+                cont.wideContinuation = true
+                cells.append(cont)
+            }
+        }
+        return cells
+    }
+
+    /// A string's width in terminal CELLS — `textCells`' accounting
+    /// for scroll bounds: a grapheme takes `displayWidth` columns,
+    /// never less than one. A bound counted in Characters would stop
+    /// short of a wide row's tail.
+    static func cellCount(_ text: String) -> Int {
+        text.reduce(0) { $0 + max(1, $1.displayWidth) }
+    }
+
+    /// Paints a prebuilt row of cells with the horizontal scroll: a
+    /// window `offset` cells into `cells`, clipped at the right edge,
+    /// the row tail filled to `width` — the explorer's and the search
+    /// results' shared paint step over rows assembled by
+    /// `textCells`. A slice may start mid-glyph (the offset lands on a
+    /// wide glyph's continuation cell); painting it would leave the
+    /// row's first screen cell unrenderable — the renderer skips
+    /// continuation cells, only the wide glyph itself paints both
+    /// terminal columns — so the slice skips to the next whole cell: a
+    /// scrolled view loses one cell rather than showing a stale ghost
+    /// (the explorer's wide icons have been able to hit this since
+    /// before the pipeline existed). A wide glyph landing exactly on
+    /// the last visible cell may be clipped by the edge (the
+    /// long-standing row semantics); builders that must not slice drop
+    /// the glyph before it reaches the edge (`writeString` does for
+    /// direct drawing).
+    func drawCells(_ cells: [Cell], row: Int, offset: Int, fillFg: Color, fillBg: Color) {
+        var col = 0
+        var i = max(0, offset)
+        if i < cells.count, cells[i].wideContinuation { i += 1 }
+        while i < cells.count && col < width {
+            setCell(row, col, cells[i])
+            col += 1
+            i += 1
+        }
+        let fill = Cell.colored(" ", fg: fillFg, bg: fillBg)
+        while col < width {
+            setCell(row, col, fill)
+            col += 1
+        }
+    }
+
     /// One line-number gutter row in the editor style: the number
     /// right-aligned within the first `lnWidth - 1` cells and one
     /// trailing slot — a plain space, or the caller's mark (the editor's

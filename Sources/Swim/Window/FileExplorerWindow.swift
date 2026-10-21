@@ -89,38 +89,17 @@ class FileExplorerWindow: Window {
                 icon = fileIcon(for: entry.name)
             }
 
-            var content: [Cell] = []
-            for _ in 0..<(depth * 2) {
-                content.append(Cell.colored(" ", fg: fg, bg: bg))
-            }
-            content.append(Cell.colored(" ", fg: iconFg, bg: bg))
-            for c in icon {
-                let w = c.displayWidth
-                content.append(Cell.colored(c, fg: iconFg, bg: bg, bold: entry.isDirectory))
-                if w == 2 {
-                    var cont = Cell.colored(" ", fg: iconFg, bg: bg)
-                    cont.wideContinuation = true
-                    content.append(cont)
-                }
-            }
-            content.append(Cell.colored(" ", fg: iconFg, bg: bg))
-            for c in entry.name {
-                content.append(Cell.colored(c, fg: nameFg, bg: bg, bold: entry.isDirectory))
-            }
-
-            var col = 0
-            if horizontalOffset < content.count {
-                for i in horizontalOffset..<content.count {
-                    if col < width {
-                        setCell(row + 1, col, content[i])
-                        col += 1
-                    }
-                }
-            }
-            while col < width {
-                setCell(row + 1, col, Cell.colored(" ", fg: fg, bg: bg))
-                col += 1
-            }
+            // The shared row pipeline: assemble styled cells, paint the
+            // scroll window (Window.textCells / Window.drawCells — the
+            // same pipeline the search results use). The name run used
+            // to be emitted one cell per character: a CJK/emoji file
+            // name shifted the row's tail by a cell per glyph.
+            var cells: [Cell] = Array(repeating: Cell.colored(" ", fg: fg, bg: bg), count: depth * 2)
+            cells.append(Cell.colored(" ", fg: iconFg, bg: bg))
+            cells += Self.textCells(icon, fg: iconFg, bg: bg, bold: entry.isDirectory)
+            cells.append(Cell.colored(" ", fg: iconFg, bg: bg))
+            cells += Self.textCells(entry.name, fg: nameFg, bg: bg, bold: entry.isDirectory)
+            drawCells(cells, row: row + 1, offset: horizontalOffset, fillFg: fg, fillBg: bg)
         }
     }
 
@@ -329,7 +308,10 @@ class FileExplorerWindow: Window {
             let (entry, depth) = flatEntries[idx]
             let icon = entry.isDirectory ? "📂" : fileIcon(for: entry.name)
             let iconWidth = icon.reduce(0) { $0 + $1.displayWidth }
-            let len = depth * 2 + 1 + iconWidth + 1 + entry.name.count
+            // The name in CELLS (Window.cellCount — the accounting of
+            // the rows textCells builds): a CJK/emoji name is wider
+            // than its Character count.
+            let len = depth * 2 + 1 + iconWidth + 1 + Self.cellCount(entry.name)
             maxLen = max(maxLen, len)
         }
         return maxLen

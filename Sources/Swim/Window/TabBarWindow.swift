@@ -42,9 +42,12 @@ class TabBarWindow: Window {
             // Modified but inactive: dimmed yellow, so the marker doesn't
             // compete with the active tab.
             let dim = modified && !active
-            for c in labels[idx] {
+            // Window.textCells: wide glyphs in file names claim their
+            // continuation cells — a CJK/emoji tab label used to shift
+            // the row's tail by a cell per glyph.
+            for cell in Self.textCells(labels[idx], fg: fg, bg: bg, bold: active, dim: dim) {
                 guard col < width else { break }
-                setCell(0, col, Cell.colored(c, fg: fg, bg: bg, bold: active, dim: dim))
+                setCell(0, col, cell)
                 col += 1
             }
         }
