@@ -83,12 +83,13 @@ class FileExplorerWindow: Window {
                 nameFg = fg
             }
 
-            let icon: String
-            if entry.isDirectory {
-                icon = entry.isExpanded ? "📂" : "📁"
-            } else {
-                icon = fileIcon(for: entry.name)
-            }
+            // The icon authority (SwimCore Icons, tier set once in
+            // main): per-type brand color where the tier defines one,
+            // otherwise the selection-aware fg the row already uses.
+            let iconDef = entry.isDirectory
+                ? Icons.directory(expanded: entry.isExpanded, tier: IconSet.tier)
+                : Icons.fileIcon(forName: entry.name, tier: IconSet.tier)
+            let iconColor = iconDef.color.map { Color.rgb(r: $0.r, g: $0.g, b: $0.b) } ?? iconFg
 
             // The shared row pipeline: assemble styled cells, paint the
             // scroll window (Window.textCells / Window.drawCells — the
@@ -97,33 +98,10 @@ class FileExplorerWindow: Window {
             // name shifted the row's tail by a cell per glyph.
             var cells: [Cell] = Array(repeating: Cell.colored(" ", fg: fg, bg: bg), count: depth * 2)
             cells.append(Cell.colored(" ", fg: iconFg, bg: bg))
-            cells += Self.textCells(icon, fg: iconFg, bg: bg, bold: entry.isDirectory)
+            cells += Self.textCells(String(iconDef.glyph), fg: iconColor, bg: bg, bold: entry.isDirectory)
             cells.append(Cell.colored(" ", fg: iconFg, bg: bg))
             cells += Self.textCells(entry.name, fg: nameFg, bg: bg, bold: entry.isDirectory)
             drawCells(cells, row: row + 1, offset: horizontalOffset, fillFg: fg, fillBg: bg, reverse: hl.reverse)
-        }
-    }
-
-    private func fileIcon(for name: String) -> String {
-        let ext = (name as NSString).pathExtension.lowercased()
-        switch ext {
-        case "swift": return "🐦"
-        case "js", "ts": return "⚡"
-        case "py": return "🐍"
-        case "rs": return "⚙"
-        case "go": return "🔵"
-        case "dart": return "🎯"
-        case "md": return "📝"
-        case "json": return "📋"
-        case "yaml", "yml": return "📋"
-        case "toml": return "📋"
-        case "txt": return "📄"
-        case "lock": return "🔒"
-        case "gitignore", "dockerignore": return "🙈"
-        case "sh", "bash": return "📜"
-        case "css", "scss": return "🎨"
-        case "html": return "🌐"
-        default: return "  "
         }
     }
 
@@ -326,8 +304,10 @@ class FileExplorerWindow: Window {
             let idx = scrollOffset + row
             guard idx < flatEntries.count else { break }
             let (entry, depth) = flatEntries[idx]
-            let icon = entry.isDirectory ? "📂" : fileIcon(for: entry.name)
-            let iconWidth = icon.reduce(0) { $0 + $1.displayWidth }
+            let iconDef = entry.isDirectory
+                ? Icons.directory(expanded: entry.isExpanded, tier: IconSet.tier)
+                : Icons.fileIcon(forName: entry.name, tier: IconSet.tier)
+            let iconWidth = iconDef.glyph.displayWidth
             // The name in CELLS (Window.cellCount — the accounting of
             // the rows textCells builds): a CJK/emoji name is wider
             // than its Character count.

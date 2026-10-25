@@ -53,6 +53,15 @@ Color.outputSupport = ColorSupport.detect(
     noColor: ProcessInfo.processInfo.environment["NO_COLOR"]
 )
 
+// The explorer's icon tier, resolved against that capability: nf is
+// the default (the installer ships a pinned Symbols Nerd Font Mono;
+// terminals supply the glyphs from their main font or fallback),
+// emoji degrades to plain when NO_COLOR forbids color.
+IconSet.tier = IconTier.resolve(
+    ProcessInfo.processInfo.environment["SWIM_ICONS"],
+    support: Color.outputSupport
+)
+
 let filePath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
 let app = Application(filePath: filePath)
 app.run()

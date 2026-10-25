@@ -13,7 +13,7 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
   - Semantic tokens via LSP (sourcekit-lsp)
   - Built-in tokenizer for Swift, C, C++, Python, Rust, Go, JS/TS
   - Fast JSON highlighting
-- **File explorer** (`Ctrl+E`) — sidebar with directory tree; file names colored by git status (new — green, fully staged — blue, unstaged changes — teal)
+- **File explorer** (`Ctrl+E`) — sidebar with directory tree; file names colored by git status (new — green, fully staged — blue, unstaged changes — teal); per-type icons — Nerd Font glyphs with brand colors by default, `SWIM_ICONS=emoji` or `SWIM_ICONS=plain` for emoji or font-independent geometric sets
 - **Git panel** (`Ctrl+G`) — staged/unstaged files, diff with color highlighting
 - **Git log** (`Ctrl+U`, or `:log`) — paged commit history of the current branch; `Enter` opens the commit's read-only diff, `y`/`Y` copy the hash / the full message, `i` live-searches messages (case-insensitive, literal), `f` finds by hash prefix; more pages load as you scroll
 - **Branch picker** (`Ctrl+B`) — opens on the branch list; `Enter` switches, `Ctrl+Enter` switches and pulls, `a` creates a new branch (`git switch -c`), `m` merges (`side --no-ff` — name plus pass-through args; conflicts offer keep / ours / theirs / abort), `d`/`D` deletes local / local+remote, `i` live-filters — the filter also finds remote branches fetched but not yet checked out (Enter creates the local tracking branch)
@@ -68,6 +68,8 @@ Custom install path:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/akvilary/swim/main/install.sh | DESTDIR=~/.local/bin bash
 ```
+
+The installer also drops **Symbols Nerd Font Mono** (a small icon-glyph font) into your user fonts directory — the file explorer's icons come from it when your terminal's main font lacks them (terminals pick it up through their own font fallback; no terminal settings are touched). Skip with `--no-font`; explorer icons then need `SWIM_ICONS` or a Nerd Font you already have.
 
 **Build from source** — any Swift toolchain **6.0 or newer** builds the project (the floor is `swift-tools-version` in Package.swift, which SwiftPM enforces as "this or later" — 6.2.4 and 6.4.1 are both verified). The repo pins no exact toolchain: [swiftly](https://www.swift.org/install/) simply uses your default inside the repo.
 
