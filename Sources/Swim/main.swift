@@ -4,6 +4,7 @@ import Foundation
 #else
 @preconcurrency import Darwin
 #endif
+import SwimCore
 
 let version = "0.1.18"
 
@@ -37,6 +38,16 @@ if CommandLine.arguments.contains("--help") || CommandLine.arguments.contains("-
 // fatal-errors on any write error, so raw write(2) is the only usable
 // shape.
 signal(SIGPIPE, SIG_IGN)
+
+// The terminal's color capability, process-wide: the theme is RGB,
+// and a terminal without truecolor drops or garbles `38;2;...`.
+// Degrade once, up front — truecolor → nearest xterm-256 index →
+// nearest of the 16 system colors — so the palette survives
+// screen/tmux sessions and 16-color consoles.
+Color.outputSupport = ColorSupport.detect(
+    colorterm: ProcessInfo.processInfo.environment["COLORTERM"],
+    term: ProcessInfo.processInfo.environment["TERM"]
+)
 
 let filePath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
 let app = Application(filePath: filePath)

@@ -11,6 +11,15 @@ import SwimCore
 /// scrolling; tested in Tests/SwimCoreTests.
 
 enum Color: Equatable {
+    /// The terminal's color capability for this process: how `.rgb`
+    /// colors serialize — truecolor (`38;2;...`), the nearest xterm-256
+    /// index (`38;5;n`) or the nearest of the 16 system colors.
+    /// Written once in main.swift from the environment, before any
+    /// rendering or background work exists, and immutable for the rest
+    /// of the process lifetime — the AppLocale doctrine. The default
+    /// is the historical behavior: truecolor.
+    nonisolated(unsafe) static var outputSupport: ColorSupport = .trueColor
+
     case `default`
     case black
     case red
@@ -49,7 +58,17 @@ enum Color: Equatable {
         case .brightMagenta: return "\u{1b}[\(base + 65)m"
         case .brightCyan: return "\u{1b}[\(base + 66)m"
         case .brightWhite: return "\u{1b}[\(base + 67)m"
-        case .rgb(let r, let g, let b): return "\u{1b}[\(base + 8);2;\(r);\(g);\(b)m"
+        case .rgb(let r, let g, let b):
+            switch Color.outputSupport {
+            case .trueColor: return "\u{1b}[\(base + 8);2;\(r);\(g);\(b)m"
+            case .indexed256: return "\u{1b}[\(base + 8);5;\(xterm256Index(r: r, g: g, b: b))m"
+            case .ansi16:
+                // 0-7 ride the base codes (30-37 fg / 40-47 bg),
+                // 8-15 the +60 brights (90-97 fg / 100-107 bg) — the
+                // same arithmetic the named bright cases use above.
+                let i = ansi16Index(r: r, g: g, b: b)
+                return i < 8 ? "\u{1b}[\(base + i)m" : "\u{1b}[\(base + 60 + i - 8)m"
+            }
         }
     }
 
