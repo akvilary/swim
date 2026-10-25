@@ -359,7 +359,8 @@ class SearchResultsWindow: Window {
             let itemIdx = scrollOffset + row
             guard itemIdx < flatItems.count else { break }
             let isSelected = itemIdx == selectedIndex
-            let bg: Color = isSelected ? Theme.bgHighlight : Theme.bgDark
+            let hl = Cell.highlight(isSelected, tint: Theme.bgHighlight, base: Theme.bgDark)
+            let bg: Color = hl.bg
             let y = row + plateRowCount
 
             switch flatItems[itemIdx] {
@@ -368,13 +369,13 @@ class SearchResultsWindow: Window {
                 let icon = expanded ? "▾ " : "▸ "
                 let text = String(repeating: " ", count: depth * 2) + icon + node.name + " (\(node.matchCount))"
                 let cells = Self.textCells(text, fg: Theme.blue, bg: bg, bold: true)
-                drawCells(cells, row: y, offset: horizontalOffset, fillFg: Theme.fg, fillBg: bg)
+                drawCells(cells, row: y, offset: horizontalOffset, fillFg: Theme.fg, fillBg: bg, reverse: hl.reverse)
             case .file(let node, let depth):
                 let expanded = expandedFiles.contains(node.path)
                 let icon = expanded ? "▾ " : "▸ "
                 let text = String(repeating: " ", count: depth * 2) + icon + node.name + " (\(node.matchCount))"
                 let cells = Self.textCells(text, fg: Theme.fgDark, bg: bg)
-                drawCells(cells, row: y, offset: horizontalOffset, fillFg: Theme.fg, fillBg: bg)
+                drawCells(cells, row: y, offset: horizontalOffset, fillFg: Theme.fg, fillBg: bg, reverse: hl.reverse)
             case .result(let result, let depth):
                 // The whole WORD containing the match (MatchWord —
                 // SwimCore, tested): the match colored inside its word,
@@ -400,7 +401,7 @@ class SearchResultsWindow: Window {
                 if matchEnd < wordSpan.end {
                     cells += Self.textCells(String(chars[matchEnd..<wordSpan.end]), fg: dim, bg: bg)
                 }
-                drawCells(cells, row: y, offset: horizontalOffset, fillFg: dim, fillBg: bg)
+                drawCells(cells, row: y, offset: horizontalOffset, fillFg: dim, fillBg: bg, reverse: hl.reverse)
             }
         }
     }

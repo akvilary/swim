@@ -38,14 +38,15 @@ class TabBarWindow: Window {
             let modified = infos[idx].modified
             let active = idx == activeIdx
             let fg = modified ? Theme.yellow : (active ? Theme.fg : Theme.comment)
-            let bg = active ? Theme.bgHighlight : Theme.bgDark
+            let hl = Cell.highlight(active, tint: Theme.bgHighlight, base: Theme.bgDark)
+            let bg = hl.bg
             // Modified but inactive: dimmed yellow, so the marker doesn't
             // compete with the active tab.
             let dim = modified && !active
             // Window.textCells: wide glyphs in file names claim their
             // continuation cells — a CJK/emoji tab label used to shift
             // the row's tail by a cell per glyph.
-            for cell in Self.textCells(labels[idx], fg: fg, bg: bg, bold: active, dim: dim) {
+            for cell in Self.textCells(labels[idx], fg: fg, bg: bg, bold: active, dim: dim, reverse: hl.reverse) {
                 guard col < width else { break }
                 setCell(0, col, cell)
                 col += 1

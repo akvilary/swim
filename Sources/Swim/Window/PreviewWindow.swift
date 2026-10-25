@@ -108,7 +108,8 @@ class PreviewWindow: Window {
             let y = row + 1
 
             let isHighlight = lineIdx + 1 == highlightLine
-            let bg: Color = isHighlight ? Theme.bgHighlight : Theme.bgDark
+            let hl = Cell.highlight(isHighlight, tint: Theme.bgHighlight, base: Theme.bgDark)
+            let bg: Color = hl.bg
             let baseFg: Color = Theme.fgDark
 
             // One row = one cell array through the shared pipeline
@@ -140,7 +141,7 @@ class PreviewWindow: Window {
                 cells += Self.textCells(String(chars[pos...]), fg: baseFg, bg: bg)
             }
 
-            drawCells(cells, row: y, offset: 0, fillFg: baseFg, fillBg: bg)
+            drawCells(cells, row: y, offset: 0, fillFg: baseFg, fillBg: bg, reverse: hl.reverse)
         }
     }
 

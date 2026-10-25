@@ -42,11 +42,15 @@ signal(SIGPIPE, SIG_IGN)
 // The terminal's color capability, process-wide: the theme is RGB,
 // and a terminal without truecolor drops or garbles `38;2;...`.
 // Degrade once, up front — truecolor → nearest xterm-256 index →
-// nearest of the 16 system colors — so the palette survives
-// screen/tmux sessions and 16-color consoles.
+// nearest of the 16 system colors → none at all — so the palette
+// survives screen/tmux sessions, 16-color consoles and NO_COLOR
+// (no-color.org: present and non-empty — the value is meaningless,
+// "0" and "false" included — the user's final word over any
+// capability signal).
 Color.outputSupport = ColorSupport.detect(
     colorterm: ProcessInfo.processInfo.environment["COLORTERM"],
-    term: ProcessInfo.processInfo.environment["TERM"]
+    term: ProcessInfo.processInfo.environment["TERM"],
+    noColor: ProcessInfo.processInfo.environment["NO_COLOR"]
 )
 
 let filePath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil

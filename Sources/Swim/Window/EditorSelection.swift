@@ -716,7 +716,9 @@ extension EditorWindow {
         for sc in (dispFrom - scrollX)..<(dispTo - scrollX) {
             guard sc >= 0 && sc + lnWidth < width else { continue }
             var cell = getCell(screenRow, lnWidth + sc)
-            cell.bg = Theme.visualBg
+            let hl = Cell.highlight(true, tint: Theme.visualBg, base: cell.bg)
+            cell.bg = hl.bg
+            cell.reverse = hl.reverse
             setCell(screenRow, lnWidth + sc, cell)
         }
     }
@@ -742,7 +744,9 @@ extension EditorWindow {
             guard let screenRow = selectionScreenRow(lineNum) else { continue }
             for col in 0..<width {
                 var cell = getCell(screenRow, col)
-                cell.bg = Theme.visualBg
+                let hl = Cell.highlight(true, tint: Theme.visualBg, base: cell.bg)
+                cell.bg = hl.bg
+                cell.reverse = hl.reverse
                 setCell(screenRow, col, cell)
             }
         }

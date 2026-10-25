@@ -65,7 +65,8 @@ class FileExplorerWindow: Window {
             guard idx < flatEntries.count else { break }
             let (entry, depth) = flatEntries[idx]
             let isSelected = idx == selectedIndex
-            let bg: Color = isSelected ? Theme.bgHighlight : Theme.bgDark
+            let hl = Cell.highlight(isSelected, tint: Theme.bgHighlight, base: Theme.bgDark)
+            let bg: Color = hl.bg
             let fg: Color = isSelected ? Theme.fg : Theme.fgDark
             let iconFg: Color = entry.isDirectory ? Theme.blue : fg
             // Git name coloring, files only: a new/untracked file is
@@ -99,7 +100,7 @@ class FileExplorerWindow: Window {
             cells += Self.textCells(icon, fg: iconFg, bg: bg, bold: entry.isDirectory)
             cells.append(Cell.colored(" ", fg: iconFg, bg: bg))
             cells += Self.textCells(entry.name, fg: nameFg, bg: bg, bold: entry.isDirectory)
-            drawCells(cells, row: row + 1, offset: horizontalOffset, fillFg: fg, fillBg: bg)
+            drawCells(cells, row: row + 1, offset: horizontalOffset, fillFg: fg, fillBg: bg, reverse: hl.reverse)
         }
     }
 

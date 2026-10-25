@@ -313,15 +313,18 @@ class GitPanelWindow: Window {
     }
 
     private func drawItemRow(_ item: StatusItem, row: Int, selected: Bool, section: StatusSection) {
-        let bg: Color = selected
-            ? (mode == .visualLine ? Theme.visualBg : Theme.bgHighlight)
-            : Theme.bgDark
+        // The tint depends on the mode (visualLine selection rides
+        // visualBg); the highlight policy (Cell.highlight) does the
+        // mono degradation to reverse video in one place.
+        let tint: Color = mode == .visualLine ? Theme.visualBg : Theme.bgHighlight
+        let hl = Cell.highlight(selected, tint: tint, base: Theme.bgDark)
+        let bg: Color = hl.bg
         switch item {
         case .file(let file):
             let statusText = " \(file.sectionLetter) "
-            drawLine(statusText, row: row, col: 0, fg: statusColorFor(file, in: section), bg: bg, bold: true)
+            drawLine(statusText, row: row, col: 0, fg: statusColorFor(file, in: section), bg: bg, bold: true, reverse: hl.reverse)
             let name = file.filePath.prefix(max(0, width - statusText.count))
-            drawLine(String(name), row: row, col: statusText.count, fg: selected ? Theme.fg : Theme.fgDark, bg: bg)
+            drawLine(String(name), row: row, col: statusText.count, fg: selected ? Theme.fg : Theme.fgDark, bg: bg, reverse: hl.reverse)
         }
     }
 

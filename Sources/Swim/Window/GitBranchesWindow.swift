@@ -316,8 +316,9 @@ class GitBranchesWindow: Window {
             // appears only in menu mode, revealed by the phase exits
             // (Esc, ↑/↓, Enter) on the first row.
             let selected = !inputMode && idx == selectedIndex
-            let bg: Color = selected ? Theme.bgHighlight : Theme.bgDark
-            fillRegion(row: row + 1, col: 0, width: width, height: 1, cell: Cell.colored(" ", fg: Theme.fg, bg: bg))
+            let hl = Cell.highlight(selected, tint: Theme.bgHighlight, base: Theme.bgDark)
+            let bg: Color = hl.bg
+            fillRegion(row: row + 1, col: 0, width: width, height: 1, cell: Cell.colored(" ", fg: Theme.fg, bg: bg, reverse: hl.reverse))
             let marker = entry.isCurrent ? "* " : "  "
             // Remote-tracking entries are dimmer than locals — the
             // "origin/" prefix says what they are, the color says
@@ -330,13 +331,13 @@ class GitBranchesWindow: Window {
             } else {
                 nameFg = selected ? Theme.fg : Theme.fgDark
             }
-            drawLine(marker + entry.name, row: row + 1, col: 0, fg: nameFg, bg: bg, bold: entry.isCurrent)
+            drawLine(marker + entry.name, row: row + 1, col: 0, fg: nameFg, bg: bg, bold: entry.isCurrent, reverse: hl.reverse)
             // Relative last-commit date, right-aligned, dim — never
             // drawn over a long name: the name owns the width it needs.
             let date = " \(entry.lastCommit) "
             let dateCol = width - date.count
             if dateCol > marker.count + entry.name.count {
-                drawLine(date, row: row + 1, col: dateCol, fg: Theme.comment, bg: bg)
+                drawLine(date, row: row + 1, col: dateCol, fg: Theme.comment, bg: bg, reverse: hl.reverse)
             }
         }
 

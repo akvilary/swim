@@ -10,39 +10,67 @@ import SwimCore
     // MARK: - detect
 
     @Test func colortermNamingTruecolorWins() {
-        #expect(ColorSupport.detect(colorterm: "truecolor", term: "xterm") == .trueColor)
-        #expect(ColorSupport.detect(colorterm: "Truecolor", term: "screen") == .trueColor)
-        #expect(ColorSupport.detect(colorterm: "24bit", term: nil) == .trueColor)
+        #expect(ColorSupport.detect(colorterm: "truecolor", term: "xterm", noColor: nil) == .trueColor)
+        #expect(ColorSupport.detect(colorterm: "Truecolor", term: "screen", noColor: nil) == .trueColor)
+        #expect(ColorSupport.detect(colorterm: "24bit", term: nil, noColor: nil) == .trueColor)
         // the color-specific signal beats a TERM that looks dumber
         // (tmux's default TERM=screen with COLORTERM passed through)
-        #expect(ColorSupport.detect(colorterm: "truecolor", term: "screen") == .trueColor)
-        #expect(ColorSupport.detect(colorterm: "truecolor", term: "dumb") == .trueColor)
+        #expect(ColorSupport.detect(colorterm: "truecolor", term: "screen", noColor: nil) == .trueColor)
+        #expect(ColorSupport.detect(colorterm: "truecolor", term: "dumb", noColor: nil) == .trueColor)
     }
 
     @Test func legacyColortermValuesAssertNothing() {
         // "yes"/"1" only ever meant "has colors" — TERM stays the authority
-        #expect(ColorSupport.detect(colorterm: "yes", term: "xterm") == .ansi16)
-        #expect(ColorSupport.detect(colorterm: "1", term: "xterm-256color") == .indexed256)
-        #expect(ColorSupport.detect(colorterm: "", term: "xterm-256color") == .indexed256)
+        #expect(ColorSupport.detect(colorterm: "yes", term: "xterm", noColor: nil) == .ansi16)
+        #expect(ColorSupport.detect(colorterm: "1", term: "xterm-256color", noColor: nil) == .indexed256)
+        #expect(ColorSupport.detect(colorterm: "", term: "xterm-256color", noColor: nil) == .indexed256)
     }
 
     @Test func directTermsAreTrueColor() {
-        #expect(ColorSupport.detect(colorterm: nil, term: "xterm-direct") == .trueColor)
-        #expect(ColorSupport.detect(colorterm: nil, term: "kitty-direct") == .trueColor)
+        #expect(ColorSupport.detect(colorterm: nil, term: "xterm-direct", noColor: nil) == .trueColor)
+        #expect(ColorSupport.detect(colorterm: nil, term: "kitty-direct", noColor: nil) == .trueColor)
     }
 
     @Test func term256SuffixMeans256() {
-        #expect(ColorSupport.detect(colorterm: nil, term: "xterm-256color") == .indexed256)
-        #expect(ColorSupport.detect(colorterm: nil, term: "screen-256color") == .indexed256)
-        #expect(ColorSupport.detect(colorterm: nil, term: "tmux-256color") == .indexed256)
+        #expect(ColorSupport.detect(colorterm: nil, term: "xterm-256color", noColor: nil) == .indexed256)
+        #expect(ColorSupport.detect(colorterm: nil, term: "screen-256color", noColor: nil) == .indexed256)
+        #expect(ColorSupport.detect(colorterm: nil, term: "tmux-256color", noColor: nil) == .indexed256)
     }
 
-    @Test func plainDumbAndMissingTermsFloorAt16() {
-        #expect(ColorSupport.detect(colorterm: nil, term: "xterm") == .ansi16)
-        #expect(ColorSupport.detect(colorterm: nil, term: "alacritty") == .ansi16)
-        #expect(ColorSupport.detect(colorterm: nil, term: "linux") == .ansi16)
-        #expect(ColorSupport.detect(colorterm: nil, term: "dumb") == .ansi16)
-        #expect(ColorSupport.detect(colorterm: nil, term: nil) == .ansi16)
+    @Test func plainAndMissingTermsFloorAt16() {
+        #expect(ColorSupport.detect(colorterm: nil, term: "xterm", noColor: nil) == .ansi16)
+        #expect(ColorSupport.detect(colorterm: nil, term: "alacritty", noColor: nil) == .ansi16)
+        #expect(ColorSupport.detect(colorterm: nil, term: "linux", noColor: nil) == .ansi16)
+        #expect(ColorSupport.detect(colorterm: nil, term: nil, noColor: nil) == .ansi16)
+    }
+
+    // MARK: - NO_COLOR / mono
+
+    @Test func noColorDisablesColorRegardlessOfValue() {
+        // no-color.org: present and non-empty — the value is
+        // meaningless; "0" and "false" disable exactly like "1".
+        #expect(ColorSupport.detect(colorterm: nil, term: "xterm-256color", noColor: "1") == .mono)
+        #expect(ColorSupport.detect(colorterm: nil, term: "xterm-256color", noColor: "0") == .mono)
+        #expect(ColorSupport.detect(colorterm: nil, term: "xterm", noColor: "false") == .mono)
+        #expect(ColorSupport.detect(colorterm: nil, term: nil, noColor: " ") == .mono)
+    }
+
+    @Test func emptyNoColorIsInert() {
+        // An empty string is the spec's single inert form — TERM rules.
+        #expect(ColorSupport.detect(colorterm: nil, term: "xterm-256color", noColor: "") == .indexed256)
+        #expect(ColorSupport.detect(colorterm: nil, term: "xterm", noColor: "") == .ansi16)
+    }
+
+    @Test func noColorBeatsEveryCapabilitySignal() {
+        // The user's final word: even a truecolor terminal stays mono.
+        #expect(ColorSupport.detect(colorterm: "truecolor", term: "xterm-256color", noColor: "1") == .mono)
+        #expect(ColorSupport.detect(colorterm: nil, term: "xterm-direct", noColor: "yes") == .mono)
+    }
+
+    @Test func dumbTerminalIsMono() {
+        // TERM=dumb declares no capabilities at all — color codes of
+        // any level would be noise, exactly like NO_COLOR.
+        #expect(ColorSupport.detect(colorterm: nil, term: "dumb", noColor: nil) == .mono)
     }
 
     // MARK: - xterm256Index

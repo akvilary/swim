@@ -816,12 +816,13 @@ class GitLogWindow: Window {
             // The typing phase shows no selection: the cursor row
             // appears only in menu mode.
             let selected = !inputMode && idx == selectedIndex
-            let bg: Color = selected ? Theme.bgHighlight : Theme.bgDark
-            fillRegion(row: row + 1, col: 0, width: width, height: 1, cell: Cell.colored(" ", fg: Theme.fg, bg: bg))
+            let hl = Cell.highlight(selected, tint: Theme.bgHighlight, base: Theme.bgDark)
+            let bg: Color = hl.bg
+            fillRegion(row: row + 1, col: 0, width: width, height: 1, cell: Cell.colored(" ", fg: Theme.fg, bg: bg, reverse: hl.reverse))
             // The row format the git panel's commits section used:
             // short hash + subject, the hash verbatim (%h — git
             // scales its width; rows and `y` copy the same token).
-            drawLine(" \(entry.hash) \(entry.subject)", row: row + 1, fg: Theme.cyan, bg: bg)
+            drawLine(" \(entry.hash) \(entry.subject)", row: row + 1, fg: Theme.cyan, bg: bg, reverse: hl.reverse)
         }
 
         // The pager's tail — only when it may mean something: more

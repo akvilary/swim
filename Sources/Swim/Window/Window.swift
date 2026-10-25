@@ -315,7 +315,7 @@ class Window {
         dirty = true
     }
 
-    func writeString(_ str: String, row: Int, col: Int, fg: Color = .default, bg: Color = .default, bold: Bool = false) {
+    func writeString(_ str: String, row: Int, col: Int, fg: Color = .default, bg: Color = .default, bold: Bool = false, reverse: Bool = false) {
         var c = col
         for char in str {
             guard c < width && row >= 0 && row < height else { break }
@@ -323,7 +323,7 @@ class Window {
                 let spaces = 4 - (c % 4)
                 for _ in 0..<spaces {
                     guard c < width else { break }
-                    setCell(row, c, Cell.colored(" ", fg: fg, bg: bg, bold: bold))
+                    setCell(row, c, Cell.colored(" ", fg: fg, bg: bg, bold: bold, reverse: reverse))
                     c += 1
                 }
             } else {
@@ -336,9 +336,9 @@ class Window {
                 // matching the InputLine window math (max(1, width)).
                 let w = max(1, char.displayWidth)
                 guard c + w <= width else { break }
-                setCell(row, c, Cell.colored(char, fg: fg, bg: bg, bold: bold))
+                setCell(row, c, Cell.colored(char, fg: fg, bg: bg, bold: bold, reverse: reverse))
                 if w == 2 {
-                    var cont = Cell.colored(" ", fg: fg, bg: bg, bold: bold)
+                    var cont = Cell.colored(" ", fg: fg, bg: bg, bold: bold, reverse: reverse)
                     cont.wideContinuation = true
                     setCell(row, c + 1, cont)
                 }
@@ -347,9 +347,9 @@ class Window {
         }
     }
 
-    func drawLine(_ text: String, row: Int, col: Int = 0, fg: Color = Theme.fgDark, bg: Color = Theme.bgDark, bold: Bool = false) {
+    func drawLine(_ text: String, row: Int, col: Int = 0, fg: Color = Theme.fgDark, bg: Color = Theme.bgDark, bold: Bool = false, reverse: Bool = false) {
         guard row >= 0 && row < height else { return }
-        writeString(text, row: row, col: col, fg: fg, bg: bg, bold: bold)
+        writeString(text, row: row, col: col, fg: fg, bg: bg, bold: bold, reverse: reverse)
     }
 
     /// A text run as styled cells — the row builders' half of the
@@ -363,14 +363,14 @@ class Window {
     /// and matched lines otherwise shift the rest of the row by a
     /// cell per glyph. The consumers are the explorer's and the
     /// search results' rows and the tab bar's labels.
-    static func textCells(_ text: String, fg: Color, bg: Color, bold: Bool = false, dim: Bool = false) -> [Cell] {
+    static func textCells(_ text: String, fg: Color, bg: Color, bold: Bool = false, dim: Bool = false, reverse: Bool = false) -> [Cell] {
         var cells: [Cell] = []
         cells.reserveCapacity(text.count)
         for ch in text {
             let w = max(1, ch.displayWidth)
-            cells.append(Cell.colored(ch, fg: fg, bg: bg, bold: bold, dim: dim))
+            cells.append(Cell.colored(ch, fg: fg, bg: bg, bold: bold, dim: dim, reverse: reverse))
             if w == 2 {
-                var cont = Cell.colored(" ", fg: fg, bg: bg, bold: bold, dim: dim)
+                var cont = Cell.colored(" ", fg: fg, bg: bg, bold: bold, dim: dim, reverse: reverse)
                 cont.wideContinuation = true
                 cells.append(cont)
             }
@@ -402,16 +402,18 @@ class Window {
     /// long-standing row semantics); builders that must not slice drop
     /// the glyph before it reaches the edge (`writeString` does for
     /// direct drawing).
-    func drawCells(_ cells: [Cell], row: Int, offset: Int, fillFg: Color, fillBg: Color) {
+    func drawCells(_ cells: [Cell], row: Int, offset: Int, fillFg: Color, fillBg: Color, reverse: Bool = false) {
         var col = 0
         var i = max(0, offset)
         if i < cells.count, cells[i].wideContinuation { i += 1 }
         while i < cells.count && col < width {
-            setCell(row, col, cells[i])
+            var cell = cells[i]
+            cell.reverse = reverse
+            setCell(row, col, cell)
             col += 1
             i += 1
         }
-        let fill = Cell.colored(" ", fg: fillFg, bg: fillBg)
+        let fill = Cell.colored(" ", fg: fillFg, bg: fillBg, reverse: reverse)
         while col < width {
             setCell(row, col, fill)
             col += 1
@@ -427,17 +429,17 @@ class Window {
     /// and the colors (a mark carries its own fg/bg — e.g. the stacked
     /// two-color error+warning cell paints its bottom half through bg).
     func drawLineNumberRow(_ row: Int, number: Int?, lnWidth: Int, fg: Color, bg: Color,
-                           mark: (char: Character, fg: Color, bg: Color)? = nil) {
+                           mark: (char: Character, fg: Color, bg: Color)? = nil, reverse: Bool = false) {
         guard row >= 0 && row < height else { return }
         if let number {
             let numStr = String(number)
             let padded = String(repeating: " ", count: max(0, lnWidth - numStr.count - 1)) + numStr
             for (i, c) in padded.enumerated() where i < lnWidth - 1 {
-                setCell(row, i, Cell.colored(c, fg: fg, bg: bg))
+                setCell(row, i, Cell.colored(c, fg: fg, bg: bg, reverse: reverse))
             }
         } else {
             for i in 0..<min(lnWidth - 1, width) {
-                setCell(row, i, Cell.colored(" ", fg: fg, bg: bg))
+                setCell(row, i, Cell.colored(" ", fg: fg, bg: bg, reverse: reverse))
             }
         }
         guard lnWidth >= 1, lnWidth - 1 < width else { return }

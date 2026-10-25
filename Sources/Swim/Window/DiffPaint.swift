@@ -59,11 +59,14 @@ extension Window {
 
             let style = DiffStyle.lineStyle(for: line)
 
-            let bg: Color
+            // The highlight policy in one place (Cell.highlight): the
+            // tint while color exists, reverse video in mono — the
+            // selection and the cursor row must stay visible either way.
+            let hl: (bg: Color, reverse: Bool)
             if let vr = visualRange, vr.contains(lineIdx) {
-                bg = Theme.visualBg
+                hl = Cell.highlight(true, tint: Theme.visualBg, base: .default)
             } else {
-                bg = isCursor ? Theme.bgHighlight : Theme.bgDark
+                hl = Cell.highlight(isCursor, tint: Theme.bgHighlight, base: Theme.bgDark)
             }
             // The number color never changes with the cursor — the row
             // highlight already marks the current one.
@@ -76,8 +79,8 @@ extension Window {
             } else {
                 numFg = Theme.comment
             }
-            drawLineNumberRow(row, number: entry?.num, lnWidth: lnWidth, fg: numFg, bg: bg)
-            drawLine(String(line.prefix(max(0, width - lnWidth))), row: row, col: lnWidth, fg: style.fg, bg: bg, bold: style.bold)
+            drawLineNumberRow(row, number: entry?.num, lnWidth: lnWidth, fg: numFg, bg: hl.bg, reverse: hl.reverse)
+            drawLine(String(line.prefix(max(0, width - lnWidth))), row: row, col: lnWidth, fg: style.fg, bg: hl.bg, bold: style.bold, reverse: hl.reverse)
         }
     }
 }

@@ -22,7 +22,7 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
 - **Built-in terminal** (`Ctrl+T`) — run shell commands inside the editor: the prompt is the last line of the scrollback, arrows scroll the output, `Ctrl+Left/Right` recalls commands, `Tab` completes paths; `cd` and `clear` are handled by the window itself
 - **Bracketed paste** — text from the system clipboard lands verbatim in every mode (insert at the cursor, normal like `p`, visual replaces the selection); tabs in pasted text follow the file's indent policy, and the command line / filters accept single-line paste
 - **Full UTF-8 support** — Cyrillic, CJK, emoji
-- **Tokyo Night Storm theme** — RGB everywhere; on terminals without truecolor the palette degrades to the nearest 256/16 colors instead of breaking
+- **Tokyo Night Storm theme** — RGB everywhere; on terminals without truecolor the palette degrades to the nearest 256/16 colors instead of breaking, and `NO_COLOR` is honored (highlights fall back to reverse video)
 - **Status bar** — mode, filename, file type, encoding, cursor position
 
 ## Screenshots

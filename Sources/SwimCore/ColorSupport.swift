@@ -1,11 +1,14 @@
-/// Terminal color capability — what the terminal can render, and the
-/// RGB degradation that follows from it. The theme is RGB throughout;
-/// a terminal without truecolor support either drops `38;2;...`
-/// sequences silently (tmux/screen without Tc, 16-color consoles) or
-/// garbles them, so every `.rgb` color is folded to the terminal's
-/// level before serialization: truecolor passes through, 256-color
-/// terminals get the nearest xterm palette entry, 16-color ones the
-/// nearest system color.
+/// Terminal color capability — what the terminal can render (or the
+/// user has forbidden), and the RGB degradation that follows from it.
+/// The theme is RGB throughout; a terminal without truecolor support
+/// either drops `38;2;...` sequences silently (tmux/screen without Tc,
+/// 16-color consoles) or garbles them, so every `.rgb` color is folded
+/// to the terminal's level before serialization: truecolor passes
+/// through, 256-color terminals get the nearest xterm palette entry,
+/// 16-color ones the nearest system color — and mono (NO_COLOR, or a
+/// dumb terminal) gets no color codes at all, with informational
+/// highlights (selection, cursor row) degrading to reverse video via
+/// `Cell.highlight` instead.
 ///
 /// Pure module: detection takes the environment VALUES (no
 /// ProcessInfo inside — the caller in main.swift owns the
@@ -14,23 +17,34 @@ public enum ColorSupport: Equatable, Sendable {
     case trueColor
     case indexed256
     case ansi16
+    case mono
 }
 
 public extension ColorSupport {
     /// The environment's verdict, in precedence order:
     ///
-    /// 1. `COLORTERM` naming truecolor (the values terminals actually
+    /// 1. `NO_COLOR` (no-color.org) present and non-empty — the value
+    ///    is meaningless by spec ("0" and "false" disable just as
+    ///    "1" does; only an empty string is inert), and it is the
+    ///    user's final word: no color, regardless of what the
+    ///    terminal could do.
+    /// 2. `COLORTERM` naming truecolor (the values terminals actually
     ///    set: "truecolor" and "24bit") — the color-specific signal,
     ///    it wins even over a TERM that looks dumber (COLORTERM=truecolor
     ///    under tmux's default TERM=screen is the classic combo).
     ///    Legacy filler values ("yes", "1") assert nothing beyond TERM
     ///    and are ignored.
-    /// 2. A `*-direct` TERM (xterm-direct, kitty-direct...) — the
+    /// 3. A `*-direct` TERM (xterm-direct, kitty-direct...) — the
     ///    terminfo family whose capability IS 24-bit.
-    /// 3. A `*-256color` TERM — the xterm 256-palette.
-    /// 4. Anything else, including nil and "dumb" — the 16 system
-    ///    colors: the floor every color terminal can render.
-    static func detect(colorterm: String?, term: String?) -> ColorSupport {
+    /// 4. A `*-256color` TERM — the xterm 256-palette.
+    /// 5. `dumb` — the terminal declares no capabilities at all;
+    ///    color codes of any level would be noise.
+    /// 6. Anything else, including nil — the 16 system colors: the
+    ///    floor every color terminal can render.
+    static func detect(colorterm: String?, term: String?, noColor: String?) -> ColorSupport {
+        if let noColor, !noColor.isEmpty {
+            return .mono
+        }
         if let colorterm {
             let c = colorterm.lowercased()
             if c.contains("truecolor") || c.contains("24bit") {
@@ -41,6 +55,7 @@ public extension ColorSupport {
         let t = term.lowercased()
         if t.contains("direct") { return .trueColor }
         if t.contains("256color") { return .indexed256 }
+        if t == "dumb" { return .mono }
         return .ansi16
     }
 }

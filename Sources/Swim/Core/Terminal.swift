@@ -88,6 +88,13 @@ final class Terminal {
 
         updateSize()
         writeRaw("\u{1b}[?1049h")
+        // SGR reset on entering: the alternate screen inherits the pen
+        // the shell left behind (a prompt color the shell never reset
+        // is the common case). Color modes overwrite it with the first
+        // frame anyway; mono (NO_COLOR) emits no colors at all, so
+        // without this reset an inherited color would own the whole
+        // session.
+        writeRaw("\u{1b}[0m")
         // Bracketed paste: the terminal wraps pasted text in ESC[200~ …
         // ESC[201~ so it arrives as one chunk instead of a keystroke
         // stream (which auto-indent would mangle line by line).
@@ -118,7 +125,11 @@ final class Terminal {
             var copy = orig
             tcsetattr(STDIN_FILENO, TCSANOW, &copy)
         }
-        writeRaw("\u{1b}[?2004l\u{1b}[?1049l\u{1b}[?25h")
+        // SGR reset on leaving: the alt screen's pen must not leak
+        // into the shell — SGR is screen-global in the xterm family,
+        // so exiting over a reverse-video selection (routine in mono)
+        // or a bold run would restyle the prompt.
+        writeRaw("\u{1b}[0m\u{1b}[?2004l\u{1b}[?1049l\u{1b}[?25h")
         if resizePipeReadFd >= 0 { close(resizePipeReadFd); resizePipeReadFd = -1 }
         if resizePipeWriteFd >= 0 { close(resizePipeWriteFd); resizePipeWriteFd = -1 }
     }
