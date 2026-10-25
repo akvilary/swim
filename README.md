@@ -31,17 +31,33 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
 
 ![Editor](docs/screenshots/editor.png)
 
+**File explorer** — directory tree with per-type icons and git status coloring:
+
+![File explorer](docs/screenshots/fileexplorer.png)
+
 **Git panel** — staged / unstaged / untracked sections, recent commits, branch in the header:
 
 ![Git panel](docs/screenshots/gitpanel.png)
+
+**Git diff** — the panel's actionable file diff with hunk staging:
+
+![Git diff](docs/screenshots/gitpaneldiff.png)
 
 **Branch picker** — the branch list with the current branch marked, merge / create / delete at a keypress:
 
 ![Branch picker](docs/screenshots/branches.png)
 
+**Git log** — paged commit history with the read-only commit diff:
+
+![Git log](docs/screenshots/log.png)
+
 **Project search** — results as a full tree from the working-directory root, with a syntax-highlighted preview pane:
 
 ![Project search](docs/screenshots/search.png)
+
+**Built-in terminal** — shell commands without leaving the editor:
+
+![Built-in terminal](docs/screenshots/terminal.png)
 
 ## Install
 
