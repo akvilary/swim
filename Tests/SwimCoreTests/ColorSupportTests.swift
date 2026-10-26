@@ -104,6 +104,10 @@ import SwimCore
         #expect(xterm256Index(r: 0xc0, g: 0xca, b: 0xf5) == 153)
         // red 0xf7768e — a soft red → cube (255, 135, 135) = 210
         #expect(xterm256Index(r: 0xf7, g: 0x76, b: 0x8e) == 210)
+        // fgWhite — variables' white must survive degradation EXACTLY:
+        // 256 → cube slot 231 (255,255,255), 16 → bright white 15
+        #expect(xterm256Index(r: 0xff, g: 0xff, b: 0xff) == 231)
+        #expect(ansi16Index(r: 0xff, g: 0xff, b: 0xff) == 15)
     }
 
     // MARK: - ansi16Index
