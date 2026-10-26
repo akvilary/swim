@@ -5,13 +5,6 @@ enum Theme {
     static let bgDark = Color.rgb(r: 0x1f, g: 0x23, b: 0x35)
     static let bgHighlight = Color.rgb(r: 0x29, g: 0x2e, b: 0x42)
     static let fg = Color.rgb(r: 0xc0, g: 0xca, b: 0xf5)
-    /// Variables and properties — deliberately NOT the Tokyo Night fg
-    /// (#c0caf5, a lavender): they read as white, and white survives
-    /// every degradation mode exactly (256: cube slot 231 is a pure
-    /// 255,255,255; 16: bright white), while #c0caf5 folds into cube
-    /// 153 (175,215,255) — visibly blue — and the lavender itself
-    /// never looked white to begin with. The single deviation point.
-    static let fgWhite = Color.rgb(r: 0xff, g: 0xff, b: 0xff)
     static let fgDark = Color.rgb(r: 0xa9, g: 0xb1, b: 0xd6)
     static let fgGutter = Color.rgb(r: 0x3b, g: 0x42, b: 0x61)
     static let comment = Color.rgb(r: 0x56, g: 0x5f, b: 0x89)
@@ -58,7 +51,7 @@ enum Theme {
         case "comment": return comment
         case "type", "class", "struct", "enum", "interface": return blue1
         case "function", "method": return blue
-        case "variable", "property": return fgWhite
+        case "variable", "property": return fg
         case "parameter", "selfParameter", "clsParameter": return yellow
         case "operator": return blue5
         case "punctuation": return fg
