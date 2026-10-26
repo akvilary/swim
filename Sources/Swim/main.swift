@@ -6,7 +6,7 @@ import Foundation
 #endif
 import SwimCore
 
-let version = "0.1.19"
+let version = "0.1.20"
 
 if CommandLine.arguments.contains("--version") || CommandLine.arguments.contains("-v") {
     print("swim \(version)")
