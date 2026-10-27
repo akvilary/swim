@@ -721,9 +721,19 @@ extension EditorWindow {
         let rows: ClosedRange<Int>
         let anchor: CommentToggle.Anchor
         switch sel {
-        case .charwise(let startLine, _, let endLine, _):
-            rows = startLine...endLine          // whole lines — the '<,'> semantic
-            anchor = .indent
+        case .charwise(let startLine, let startCol, let endLine, _):
+            rows = startLine...endLine
+            // v — "only the selected": a selection starting mid-line
+            // on a content line (startCol > 0) anchors its FIRST line
+            // at the selection's start column (the part from there to
+            // the line's end becomes the comment); fully covered lines
+            // are whole (the planner's indent machinery handles them).
+            // startCol == 0 → the line is covered from its start →
+            // pure line semantics.
+            anchor = startCol > 0
+                ? .partial(displayColForChar(line: startLine, charCol: startCol),
+                           tabWidth: tabWidth)
+                : .indent
         case .linewise(let range):
             rows = range
             anchor = .indent

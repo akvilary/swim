@@ -65,6 +65,15 @@ public enum CommentToggle {
         /// (terminal cells, tab layout per line), with the tab width
         /// for the display math.
         case column(_ column: Int, tabWidth: Int)
+        /// v (a selection starting mid-line on a content line): the
+        /// FIRST line is column-anchored at the selection's start
+        /// column — only the selected part (from there to the line's
+        /// end) becomes the comment; every other covered line is whole
+        /// and rides the indent machinery. Behaves as `column` in the
+        /// primitives; `plan` decides per line which anchor applies. A
+        /// selection starting on a blank line degrades to `indent`
+        /// inside the planner (its start column lives in whitespace).
+        case partial(_ column: Int, tabWidth: Int)
     }
 
     /// What the first line decided for the whole selection.
@@ -115,7 +124,7 @@ public enum CommentToggle {
         switch anchor {
         case .indent:
             return firstNonBlank(chars)
-        case .column(let column, let tabWidth):
+        case .column(let column, let tabWidth), .partial(let column, let tabWidth):
             return VisualBlock.charIndex(atDisplayCol: column, chars: chars, tabWidth: tabWidth)
         }
     }
@@ -125,10 +134,14 @@ public enum CommentToggle {
     /// primitive: the direction decision and the REMOVE pass read the
     /// same predicate, so they cannot drift apart. `starts(with:)` —
     /// lazy, allocation-free (a tail shorter than the token is simply
-    /// not a prefix).
+    /// not a prefix). The column-family add may have inserted ONE
+    /// leading space (the marker glued to code) — the pair is detected
+    /// together; at the indent anchor this never fires (the anchor
+    /// position is non-blank by definition).
     static func isMarked(_ chars: [Character], token: [Character], anchor: Anchor) -> Bool {
         let i = anchorIndex(chars, anchor)
-        return chars[i...].starts(with: token)
+        if chars[i...].starts(with: token) { return true }
+        return i < chars.count && chars[i] == " " && chars[(i + 1)...].starts(with: token)
     }
 
     /// The whole-selection plan. The direction comes from the FIRST
@@ -173,28 +186,51 @@ public enum CommentToggle {
                                      LinePlan(text: $0, editAt: 0, changed: false)
                                  })
         }
+        // The v-selection's partial anchor: when the selection STARTS
+        // on a content line (start == 0 — no leading blanks), that one
+        // line is column-anchored at the selection's start column
+        // (only the selected part — from there to the line's end —
+        // becomes the comment); every other covered line is whole and
+        // rides the indent machinery. A selection starting on a blank
+        // line degrades to pure indent — its start column lives in
+        // whitespace and means nothing.
+        let partialActive: Bool
+        if case .partial = anchor, start == 0 { partialActive = true } else { partialActive = false }
+        func effective(_ i: Int) -> Anchor {
+            if partialActive && i == 0 { return anchor }
+            if case .partial = anchor { return .indent }
+            return anchor
+        }
+
         let direction: Direction =
-            isMarked(lineChars[start], token: tokenChars, anchor: anchor) ? .remove : .add
+            isMarked(lineChars[start], token: tokenChars, anchor: effective(start)) ? .remove : .add
 
         // The indent anchor's shared marker column — the LEFTMOST
-        // non-blank position among the selection's lines, counted in
-        // whitespace graphemes (uniform space or tab indentation
-        // aligns visually). Blank lines contribute nothing; already
-        // marked lines count (their marker position IS their first
-        // non-blank) — so a nested marker never lands right of the
-        // standing one and the column is never left of any content:
+        // non-blank position among the selection's WHOLE lines, counted
+        // in whitespace graphemes (uniform space or tab indentation
+        // aligns visually). Blank lines contribute nothing; the partial
+        // line is excluded (it is not whole — its marker column is the
+        // selection's start, its indent does not constrain the rest);
+        // already marked lines count (their marker position IS their
+        // first non-blank) — so a nested marker never lands right of
+        // the standing one and the column is never left of any content:
         // the marker never splits code, deeper lines keep their indent
         // riding AFTER the marker.
         var indentMarkerCol = Int.max
-        for i in start..<lineChars.count where !isBlank(lineChars[i]) {
+        for i in start..<lineChars.count
+        where !isBlank(lineChars[i]) && !(partialActive && i == 0) {
             indentMarkerCol = min(indentMarkerCol, firstNonBlank(lineChars[i]))
         }
-        if indentMarkerCol == Int.max { indentMarkerCol = 0 } // unreachable post-guard; inert
+        if indentMarkerCol == Int.max {
+            indentMarkerCol = 0 // no whole lines — unused by a partial-only plan
+        }
 
         var plans: [LinePlan] = []
         plans.reserveCapacity(lines.count)
         for (i, chars) in lineChars.enumerated() {
-            let unchanged = LinePlan(text: lines[i], editAt: anchorIndex(chars, anchor), changed: false)
+            let lineAnchor = effective(i)
+            let unchanged = LinePlan(text: lines[i],
+                                     editAt: anchorIndex(chars, lineAnchor), changed: false)
             // The leading blank run is inert in both directions.
             guard i >= start else { plans.append(unchanged); continue }
             switch direction {
@@ -207,22 +243,24 @@ public enum CommentToggle {
                 // first non-blank — the untoggle restores the line
                 // byte-for-byte (indent anchor; a padded short line at
                 // a column anchor keeps its padding).
-                guard !isBlank(chars) || anchorIsColumn(anchor)
+                guard !isBlank(chars) || anchorIsColumn(lineAnchor)
                 else { plans.append(unchanged); continue }
                 plans.append(add(chars, token: token,
-                                 anchor: anchor, markerCol: indentMarkerCol))
+                                 anchor: lineAnchor, markerCol: indentMarkerCol))
             case .remove:
-                guard isMarked(chars, token: tokenChars, anchor: anchor)
+                guard isMarked(chars, token: tokenChars, anchor: lineAnchor)
                 else { plans.append(unchanged); continue }
-                plans.append(remove(chars, tokenChars: tokenChars, anchor: anchor))
+                plans.append(remove(chars, tokenChars: tokenChars, anchor: lineAnchor))
             }
         }
         return SelectionPlan(direction: direction, plans: plans)
     }
 
     static func anchorIsColumn(_ anchor: Anchor) -> Bool {
-        if case .column = anchor { return true }
-        return false
+        switch anchor {
+        case .column, .partial: return true
+        case .indent: return false
+        }
     }
 
     /// ADD one line: insert the token (plus one space) at the anchor.
@@ -249,13 +287,24 @@ public enum CommentToggle {
             let head = String(chars[..<markerCol])
             let text = head + token + " " + String(chars[markerCol...])
             return LinePlan(text: text, editAt: head.count, changed: true)
-        case .column(let column, let tabWidth):
+        case .column(let column, let tabWidth), .partial(let column, let tabWidth):
             let i = anchorIndex(chars, anchor)
-            // The space after the token only when real content follows
-            // at the insertion point — a whitespace neighbor or the
-            // line's end takes the bare token (no trailing space).
-            let nextDemandsSpace = i < chars.count && chars[i] != " " && chars[i] != "\t"
-            let replacement = nextDemandsSpace ? token + " " : token
+            // Spaces around the marker, PAIRED with what remove strips
+            // (the fuzz campaign pins the pairing): ONE leading space
+            // when the marker would glue to code on its left (never
+            // two — an existing separator stays; never at the line's
+            // end or over padding — there is no left neighbor); the
+            // trailing space UNCONDITIONALLY mid-line (the indent
+            // anchor's doctrine: an unconditional insert pairs with an
+            // unconditional strip — a conditional one is ambiguous
+            // against the original text and loses bytes on the round
+            // trip), absent at the line's end. The one honest wart: a
+            // tail starting with whitespace takes a double space.
+            let trailingSpace = i < chars.count
+            let leadingSpace = i > 0 && i < chars.count
+                && chars[i - 1] != " " && chars[i - 1] != "\t"
+            var replacement = leadingSpace ? " " + token : token
+            if trailingSpace { replacement += " " }
             let rowPlan = VisualBlock.rowPlan(chars: chars, span: .point(column),
                                               range: nil, replacement: replacement,
                                               tabWidth: tabWidth)
@@ -268,11 +317,27 @@ public enum CommentToggle {
     /// following space when present. Nothing before the anchor and
     /// nothing beyond the marker is touched — conservative by design
     /// (hand-written alignment and a previous add's padding survive).
+    /// REMOVE the token from one marked line: strip the token, the ONE
+    /// leading space of the column-family pair when it sits at the
+    /// anchor (the add inserted it against code; at the indent anchor
+    /// the anchor position is non-blank — the branch never fires), and
+    /// ONE trailing space when it is not the line's last character —
+    /// the exact mirror of the add's unconditional-mid-line rule. Hand-
+    /// written forms normalize into the pair (documented class, stable
+    /// from the second cycle); nothing before the anchor and nothing
+    /// beyond the pair is touched.
     static func remove(_ chars: [Character], tokenChars: [Character], anchor: Anchor) -> LinePlan {
-        let i = anchorIndex(chars, anchor)
+        let b = anchorIndex(chars, anchor)
+        var lead = 0
+        if b < chars.count, chars[b] == " ", chars[(b + 1)...].starts(with: tokenChars) {
+            lead = 1
+        }
+        let t = b + lead
         var drop = tokenChars.count
-        if i + drop < chars.count, chars[i + drop] == " " { drop += 1 }
-        let text = String(chars[..<i]) + String(chars[(i + drop)...])
-        return LinePlan(text: text, editAt: i, changed: true)
+        if t + drop < chars.count, chars[t + drop] == " ", t + drop + 1 < chars.count {
+            drop += 1
+        }
+        let text = String(chars[..<b]) + String(chars[(t + drop)...])
+        return LinePlan(text: text, editAt: b, changed: true)
     }
 }

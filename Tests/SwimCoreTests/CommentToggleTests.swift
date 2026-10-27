@@ -204,6 +204,129 @@ import SwimCore
         #expect(p.plans[0].editAt == 4)
     }
 
+    // MARK: - Column anchor: ONE space between code and marker
+
+    @Test func columnAddSeparatesFromCodeWithOneSpace() {
+        // Tight against code on the left (the product complaint): the
+        // leading space keeps the marker off it — single spaces when
+        // the tail starts with code.
+        let tight = CommentToggle.plan(lines: ["let a = 1"], token: "//",
+                                       anchor: .column(4, tabWidth: 4))
+        #expect(tight.plans[0].text == "let // a = 1")
+        let backTight = CommentToggle.plan(lines: [tight.plans[0].text], token: "//",
+                                           anchor: .column(4, tabWidth: 4))
+        #expect(backTight.direction == .remove)
+        #expect(backTight.plans[0].text == "let a = 1")
+    }
+
+    @Test func columnTailStartingWithSpaceTakesTheExactPair() {
+        // The trailing space is unconditional mid-line (the indent
+        // doctrine: an unconditional insert pairs with an
+        // unconditional strip — the round trip stays byte-exact); a
+        // tail already starting with whitespace shows the one honest
+        // wart — a double space — and STILL restores exactly.
+        let lines = ["let value = 1"]
+        let p = CommentToggle.plan(lines: lines, token: "//",
+                                   anchor: .column(9, tabWidth: 4))
+        #expect(p.direction == .add)
+        #expect(p.plans[0].text == "let value //  = 1")
+        let back = CommentToggle.plan(lines: [p.plans[0].text], token: "//",
+                                      anchor: .column(9, tabWidth: 4))
+        #expect(back.plans[0].text == lines[0])
+    }
+
+    // MARK: - Partial anchor (v): only the selected part of the first line
+
+    @Test func partialSingleLineCommentsFromTheSelectionColumn() {
+        // v selecting [col 10 .. EOL] on one line: the marker lands at
+        // the selection's start column; only the tail becomes a
+        // comment.
+        let lines = ["let value = alpha + beta"]
+        let p = CommentToggle.plan(lines: lines, token: "//",
+                                   anchor: .partial(10, tabWidth: 4))
+        #expect(p.direction == .add)
+        #expect(p.plans[0].text == "let value // = alpha + beta")
+        let back = CommentToggle.plan(lines: [p.plans[0].text], token: "//",
+                                      anchor: .partial(10, tabWidth: 4))
+        #expect(back.plans[0].text == lines[0])
+    }
+
+    @Test func partialFirstLinePlusWholeCoveredLines() {
+        // The product rule: the first (non-blank) line comments ONLY
+        // its selected part; the fully covered lines are whole and
+        // align among themselves (the partial line does not constrain
+        // their column).
+        let lines = ["let a = alpha +", "    b = 2", "c = 3"]
+        let p = CommentToggle.plan(lines: lines, token: "//",
+                                   anchor: .partial(8, tabWidth: 4))
+        #expect(p.direction == .add)
+        #expect(p.plans.map { $0.text } == ["let a = // alpha +", "//     b = 2", "// c = 3"])
+        // The untoggle strips exactly what add laid (partial pair at
+        // the column, indent pairs at first-non-blanks) — byte-exact.
+        let back = CommentToggle.plan(lines: p.plans.map { $0.text }, token: "//",
+                                      anchor: .partial(8, tabWidth: 4))
+        #expect(back.plans.map { $0.text } == lines)
+    }
+
+    @Test func partialDegradesWhenSelectionStartsBlank() {
+        // A selection starting on a blank line carries no meaningful
+        // start column — pure line semantics for everything.
+        let p = CommentToggle.plan(lines: ["", "x = 1", "y = 2"], token: "#",
+                                   anchor: .partial(5, tabWidth: 4))
+        #expect(p.direction == .add)
+        #expect(p.plans.map { $0.text } == ["", "# x = 1", "# y = 2"])
+    }
+
+    @Test func partialLineIsTheDeciderAtItsColumn() {
+        // The partial line IS the decider, checked at the selection's
+        // column: a marker standing there means REMOVE — the pair
+        // strips and the whole lines uncomment with it. (Structural
+        // consequence: the partial line never nests through the
+        // planner — being the decider, it either gets its first marker
+        // or loses the standing one; that is what keeps the partial
+        // involution exact.)
+        let lines = ["let value // = 1", "// x = 2"]
+        let p = CommentToggle.plan(lines: lines, token: "//",
+                                   anchor: .partial(10, tabWidth: 4))
+        #expect(p.direction == .remove)
+        #expect(p.plans.map { $0.text } == ["let value = 1", "x = 2"])
+    }
+
+    @Test func partialEdgeCases() {
+        // A tab before the selection column: the marker lands after
+        // the whole tab (grapheme boundary), no leading space (the
+        // tab is whitespace), untoggle exact.
+        let tab = CommentToggle.plan(lines: ["\tlet x = 1"], token: "//",
+                                     anchor: .partial(4, tabWidth: 4))
+        #expect(tab.plans[0].text == "\t// let x = 1")
+        #expect(CommentToggle.plan(lines: [tab.plans[0].text], token: "//",
+                                   anchor: .partial(4, tabWidth: 4)).plans[0].text
+                == "\tlet x = 1")
+        // A wide glyph before the column: it is CODE — the leading
+        // space separates the marker from it; display col lands one
+        // cell right of the glyph pair, untoggle exact.
+        let wide = CommentToggle.plan(lines: ["中x"], token: "//",
+                                      anchor: .partial(2, tabWidth: 4))
+        #expect(wide.plans[0].text == "中 // x")
+        #expect(CommentToggle.plan(lines: [wide.plans[0].text], token: "//",
+                                   anchor: .partial(2, tabWidth: 4)).plans[0].text == "中x")
+        // The empty tail (selection from one-past-end): the bare token
+        // at the line's end, no spaces, untoggle exact.
+        let eol = CommentToggle.plan(lines: ["ab"], token: "//",
+                                     anchor: .partial(2, tabWidth: 4))
+        #expect(eol.plans[0].text == "ab//")
+        #expect(CommentToggle.plan(lines: [eol.plans[0].text], token: "//",
+                                   anchor: .partial(2, tabWidth: 4)).plans[0].text == "ab")
+        // The selection column inside the leading whitespace: the
+        // marker at that column, the remaining indent after it.
+        let inIndent = CommentToggle.plan(lines: ["    code"], token: "//",
+                                          anchor: .partial(2, tabWidth: 4))
+        #expect(inIndent.plans[0].text == "  //   code")
+        #expect(CommentToggle.plan(lines: [inIndent.plans[0].text], token: "//",
+                                   anchor: .partial(2, tabWidth: 4)).plans[0].text
+                == "    code")
+    }
+
     @Test func columnAddPadsShortLines() {
         let p = CommentToggle.plan(lines: ["ab"], token: "//",
                                    anchor: .column(5, tabWidth: 4))
@@ -261,7 +384,9 @@ import SwimCore
                                    anchor: .column(8, tabWidth: 4))
         #expect(p.direction == .add)
         #expect(p.plans[0].text == "ab      //")
-        #expect(p.plans[1].text == "code her// e")
+        // The long line's insertion sits right after code — the
+        // leading space separates the marker from it.
+        #expect(p.plans[1].text == "code her // e")
     }
 
     @Test func columnRoundTripForContentAtTheColumn() {
@@ -303,9 +428,12 @@ import SwimCore
                 lines.append(line)
             }
             let token = next() % 2 == 0 ? "//" : "#"
-            let anchor: CommentToggle.Anchor = next() % 2 == 0
-                ? .indent
-                : .column(Int(next() % 9), tabWidth: 4)
+            let anchor: CommentToggle.Anchor
+            switch next() % 3 {
+            case 0: anchor = .indent
+            case 1: anchor = .column(Int(next() % 9), tabWidth: 4)
+            default: anchor = .partial(Int(next() % 9), tabWidth: 4)
+            }
 
             let p1 = CommentToggle.plan(lines: lines, token: token, anchor: anchor)
             // Structural: index-aligned, terminator-free, honest flags.
