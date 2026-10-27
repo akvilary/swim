@@ -140,7 +140,11 @@ class EditorWindow: Window {
     /// on tab activation and on token application, dropped by bufferReloaded
     /// when a disk reload swaps the active buffer in place (a reload brings
     /// empty semanticTokens; without the drop, files at/above the 50000-line
-    /// cap would render stale converted tokens against the new content).
+    /// cap would render stale converted tokens against the new content), and
+    /// kept honest by trackLSPChange on every edit: the rewritten lines' keys
+    /// go immediately (stale positions until the server re-publishes — the
+    /// builtin layer paints them in the meantime), a line-count change drops
+    /// the whole index.
     private var tokenIndex: [Int: [SemanticToken]] = [:]
 
     /// One diagnostic clipped to a single line, in grapheme indices.
@@ -156,7 +160,12 @@ class EditorWindow: Window {
 
     /// Converted diagnostic spans of the ACTIVE tab, by line. Same
     /// invariant as tokenIndex: rebuilt together with it by
-    /// rebuildLSPIndexes, never read for any other tab's content.
+    /// rebuildLSPIndexes, never read for any other tab's content — and
+    /// kept honest by trackLSPChange on every edit: spans intersecting
+    /// the rewritten lines go immediately (stale positions until the
+    /// re-publish; both supported servers re-publish after every
+    /// didChange — verified by protocol probes), a line-count change
+    /// drops the whole index.
     private var diagnosticsIndex: [Int: [DiagnosticSpan]] = [:]
 
     var lastError: String?
@@ -168,9 +177,19 @@ class EditorWindow: Window {
         mode == .visualBlock ? visualBlockCol : cursorCol
     }
 
+    /// Rebuilds both converted indexes of the active tab — the
+    /// composition point for events that replace a whole layer (token
+    /// or diagnostics publishes, tab activation, reloads).
+    /// Single-layer events use the split halves directly.
     private func rebuildLSPIndexes() {
+        rebuildTokenIndex()
+        rebuildDiagnosticsIndex()
+    }
+
+    /// The token half: the active tab's `semanticTokens` (raw UTF-16)
+    /// → grapheme-indexed `tokenIndex`, by line.
+    private func rebuildTokenIndex() {
         tokenIndex.removeAll(keepingCapacity: true)
-        diagnosticsIndex.removeAll(keepingCapacity: true)
         guard let buf = buffer else { return }
 
         // LSP servers classify boolean/null literals as keywords; they are
@@ -254,11 +273,14 @@ class EditorWindow: Window {
             }
             tokenIndex[line] = converted
         }
+    }
 
-        // Diagnostics: raw UTF-16 server ranges → per-line grapheme spans.
-        // A range crossing lines contributes a span to every line it
-        // touches (start/end clipped to that line); zero-length spans
-        // stay gutter-only (startChar == endChar never underlines).
+    /// The diagnostics half: the active tab's `diagnostics` (raw
+    /// UTF-16 ranges) → per-line clipped grapheme spans in
+    /// `diagnosticsIndex`.
+    private func rebuildDiagnosticsIndex() {
+        diagnosticsIndex.removeAll(keepingCapacity: true)
+        guard let buf = buffer else { return }
         for diag in lspDiagnostics {
             let firstLine = max(0, min(diag.startLine, diag.endLine))
             let lastLine = max(diag.startLine, diag.endLine)
@@ -396,12 +418,13 @@ class EditorWindow: Window {
     }
 
     /// Routes LSP tokens to the owning tab. Returns true when the active tab
-    /// was updated (caller must re-render).
+    /// was updated (caller must re-render). A token publish replaces
+    /// exactly one layer — its half of the split, not both.
     @discardableResult
     func applySemanticTokens(_ tokens: [SemanticToken], to target: EditorBuffer) -> Bool {
         target.semanticTokens = tokens
         guard target === tabs.active else { return false }
-        rebuildLSPIndexes()
+        rebuildTokenIndex()
         dirty = true
         return true
     }
@@ -422,12 +445,13 @@ class EditorWindow: Window {
 
     /// Routes a diagnostics batch to the owning tab — the exact shape of
     /// applySemanticTokens (a publish is all-or-nothing per file, so the
-    /// array REPLACES the previous batch; an empty array clears).
+    /// array REPLACES the previous batch; an empty array clears). A
+    /// diagnostics publish replaces exactly one layer — its half.
     @discardableResult
     func applyDiagnostics(_ diagnostics: [LSPDiagnostic], to target: EditorBuffer) -> Bool {
         target.diagnostics = diagnostics
         guard target === tabs.active else { return false }
-        rebuildLSPIndexes()
+        rebuildDiagnosticsIndex()
         dirty = true
         return true
     }
@@ -1294,11 +1318,25 @@ class EditorWindow: Window {
             }
         }
         let startChar = buf.utf16Col(line: line, byteCol: byteCol)
+        // Line breaks are counted by SCALARS: in Swift CRLF is ONE
+        // grapheme, so a Character comparison ("\r\n" != "\n")
+        // silently undercounts CRLF breaks to zero and the multi-line
+        // branch never fires — the didChange range collapses into a
+        // wrong single-line span. The same trap, and the same scalar
+        // doctrine, as MultilineInsert.
+        let replacedScalars = replaced.unicodeScalars
+        let replacedBreaks = replacedScalars.filter { $0 == "\n" }.count
         var endLine = line
         var endChar: Int
-        if let lastNL = replaced.lastIndex(of: "\n") {
-            endLine = line + replaced.filter { $0 == "\n" }.count
-            endChar = replaced[replaced.index(after: lastNL)...].utf16.count
+        if let lastNL = replacedScalars.lastIndex(where: { $0 == "\n" }) {
+            endLine = line + replacedBreaks
+            var tail16 = 0
+            var i = replacedScalars.index(after: lastNL)
+            while i < replacedScalars.endIndex {
+                tail16 += UTF16.width(replacedScalars[i])
+                i = replacedScalars.index(after: i)
+            }
+            endChar = tail16
         } else {
             endChar = startChar + replaced.utf16.count
         }
@@ -1309,6 +1347,52 @@ class EditorWindow: Window {
             endChar: endChar,
             text: inserted
         ))
+
+        // LOCAL INVALIDATION of the semantic layer. Until the server
+        // re-publishes (sourcekit-lsp re-tokenizes for ~1s), the stored
+        // tokens describe positions that no longer exist — and
+        // mergeWithLSP gives LSP priority on overlaps, so freshly
+        // commented lines rendered in stale colors for the whole
+        // round-trip and flipped gray only when the publish landed.
+        // The edit's own range is known right here: lines whose bytes
+        // were rewritten drop their tokens NOW, so the synchronous
+        // builtin layer paints them in the edit's own frame (the
+        // comment gray lands immediately; the publish later restores
+        // the semantic layer without a visible flip). Same line count
+        // ⇒ every other line's positions are untouched by construction
+        // ⇒ the targeted drop is exact; a line-count change shifts
+        // everything ⇒ the whole set goes — the bufferReloaded
+        // precedent for the same staleness class. Direct stored-property
+        // access, same as mlStringStates above: through the computed
+        // accessor every keystroke would COW-copy the whole array.
+        //
+        // Diagnostics join the same doctrine (their spans are position
+        // ranges — same staleness). The drop is safe because BOTH
+        // supported servers re-publish after every didChange, including
+        // unchanged sets — verified by protocol probes (4/4 events for
+        // sourcekit-lsp and basedpyright); a future server must honor
+        // that contract or a dropped span returns only at the next
+        // change. Diagnostics carry RANGES (a multi-line one spreads
+        // clipped spans onto lines OUTSIDE the edit), so the exact
+        // mirror of the array filter is an index REBUILD, not key
+        // removal — the split rebuildDiagnosticsIndex half.
+        let insertedBreaks = inserted.unicodeScalars.filter { $0 == "\n" }.count
+        if replacedBreaks == insertedBreaks {
+            activeTab.semanticTokens.removeAll { $0.line >= line && $0.line <= endLine }
+            for l in line...endLine { tokenIndex.removeValue(forKey: l) }
+            // min/max, same defensiveness as the rebuild: a (misbehaving
+            // server's) reversed range must intersect by its real span,
+            // not by (startLine, endLine) order.
+            activeTab.diagnostics.removeAll {
+                min($0.startLine, $0.endLine) <= endLine && max($0.startLine, $0.endLine) >= line
+            }
+            rebuildDiagnosticsIndex()
+        } else {
+            activeTab.semanticTokens = []
+            tokenIndex.removeAll(keepingCapacity: true)
+            activeTab.diagnostics = []
+            diagnosticsIndex.removeAll(keepingCapacity: true)
+        }
     }
 
     /// The text the Tab key inserts: the file's indent policy — one
