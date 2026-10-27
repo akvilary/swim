@@ -190,9 +190,17 @@ public struct SyntaxTokenizer {
     /// single-line comment syntax and soft keywords, resolved in one
     /// place per file extension. Languages without soft keywords keep
     /// the empty default — the tokenizer skips the check entirely.
+    ///
+    /// `lineComment` is the SINGLE AUTHORITY for the line-comment token:
+    /// both the tokenizer's comment branch and the editor's visual `/`
+    /// (CommentToggle) read it. Explicit nil — the language has no line
+    /// comment, or the extension is not a language this editor knows
+    /// (json, markdown, plain text, no extension): the honest "none"
+    /// beats a guessed "//" that unknown files used to inherit from
+    /// `.default`.
     public struct LanguageSyntax: Sendable {
         public let mlRules: [MultilineStringRule]
-        public let lineComment: String
+        public let lineComment: String?
         /// POSIX shell: "#" comments only where a word begins — `${#arr}`,
         /// `$#`, `x=1#c` are not comments. Python hashes comment anywhere.
         public let lineCommentAtWordStartOnly: Bool
@@ -201,7 +209,7 @@ public struct SyntaxTokenizer {
         /// the string token, not an identifier.
         public var stringPrefixes: Bool = false
 
-        public static let `default` = LanguageSyntax(mlRules: [], lineComment: "//", lineCommentAtWordStartOnly: false)
+        public static let `default` = LanguageSyntax(mlRules: [], lineComment: nil, lineCommentAtWordStartOnly: false)
     }
 
     /// Letters valid in Python string prefixes (f/r/b/u, any case, any
@@ -274,6 +282,13 @@ public struct SyntaxTokenizer {
             syntax = LanguageSyntax(mlRules: [], lineComment: "#", lineCommentAtWordStartOnly: true)
         case "yaml", "yml", "toml", "rb":
             syntax = LanguageSyntax(mlRules: [], lineComment: "#", lineCommentAtWordStartOnly: false)
+        // The C/JS/Dart family shares the profile shape (no ml rules of
+        // their own, "//" comments) — explicit so that "known language"
+        // and ".default's unknown file" stay distinguishable: only a
+        // listed extension carries a comment token.
+        case "c", "h", "cpp", "cc", "cxx", "hpp", "hxx",
+             "js", "ts", "jsx", "tsx", "dart":
+            syntax = LanguageSyntax(mlRules: [], lineComment: "//", lineCommentAtWordStartOnly: false)
         default:
             syntax = .default
         }
@@ -392,8 +407,11 @@ public struct SyntaxTokenizer {
         while i < len {
             // Line comment (per language: "//" or "#") wins over everything,
             // including multi-line string openers inside the comment text.
-            if !syntax.lineComment.isEmpty, chars[i] == syntax.lineComment.first!,
-               matches(syntax.lineComment, at: i),
+            // `first` binds instead of `!` — an (internal-only) profile with
+            // an empty lineComment must degrade to "no comments", not trap.
+            if let lineComment = syntax.lineComment, let first = lineComment.first,
+               chars[i] == first,
+               matches(lineComment, at: i),
                !syntax.lineCommentAtWordStartOnly || i == 0 || chars[i - 1] == " " || chars[i - 1] == "\t" {
                 tokens.append(SemanticToken(line: lineNum, startChar: i, length: len - i, type: "comment", modifiers: 0))
                 return (tokens, .none)
