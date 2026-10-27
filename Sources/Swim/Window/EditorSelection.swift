@@ -276,6 +276,7 @@ extension EditorWindow {
         case .char("d"), .char("x"): deleteSelection()
         case .char("s"): prefillSubstituteFromSelection()
         case .char("a"): selectAllContent()
+        case .char("/"): toggleCommentInSelection()
         case .char("V"): switchVisualMode(to: .visualLine)
         case .ctrl("v"): switchVisualMode(to: .visualBlock)
         default: return false
@@ -296,6 +297,7 @@ extension EditorWindow {
         case .char("d"), .char("x"): deleteSelection()
         case .char("s"): prefillSubstituteFromSelection()
         case .char("a"): selectAllContent()
+        case .char("/"): toggleCommentInSelection()
         case .char("H"), .shiftLeft: shiftVisualLines(by: -indentSize())
         case .char("L"), .shiftRight: shiftVisualLines(by: indentSize())
         case .char("v"): switchVisualMode(to: .visual)
@@ -327,6 +329,7 @@ extension EditorWindow {
         case .char("d"), .char("x"): deleteSelection()
         case .char("s"): prefillSubstituteFromSelection()
         case .char("a"): selectAllContent()
+        case .char("/"): toggleCommentInSelection()
         case .char("v"): switchVisualMode(to: .visual)
         case .char("V"): switchVisualMode(to: .visualLine)
         default: return false
@@ -682,6 +685,102 @@ extension EditorWindow {
         recordAction(offset: start, deleted: deletedText, inserted: insertedText)
         cursorCol = min(max(0, cursorCol + cursorDelta), buf.lineCharLength(line: cursorLine))
         syncDesiredCol()
+        ensureCursorVisible()
+    }
+
+    // MARK: - Comment toggle (`/` in any visual mode)
+
+    /// `/` in any visual mode — toggle line comments over the
+    /// selection, as one undo step. The semantics live in
+    /// SwimCore/CommentToggle (tested): the FIRST line decides the
+    /// direction for the whole selection (blank ⇒ add); leading blanks
+    /// are ignored; ADD never double-marks; REMOVE drops the token plus
+    /// one following space, conservatively. The anchor follows the
+    /// mode's geometry: v/V — ONE aligned marker column, the leftmost
+    /// non-blank indent of the selection (deeper lines keep their
+    /// indent riding after the marker); Ctrl+V — at the rectangle's
+    /// left edge in display cells (short lines padded, the marker
+    /// column continuous — vim-commentary style). A finishing
+    /// operator: always returns to normal, like y/d/x — even on
+    /// refusal (a file type without a line comment reports through the
+    /// shared error channel and the buffer is not touched). The edit
+    /// itself is the shiftVisualLines shape: one contiguous replace
+    /// over the changed span, every line reassembled with its own
+    /// terminator (CRLF files survive), one recordAction (one undo
+    /// step, one LSP didChange).
+    func toggleCommentInSelection() {
+        guard let buf = buffer else { mode = .normal; return }
+        let fileExt = (filePath as NSString?)?.pathExtension ?? ""
+        guard let token = SyntaxTokenizer.syntax(for: fileExt).lineComment else {
+            delegate?.reportError("Comment is not allowed for this file type")
+            mode = .normal
+            return
+        }
+        guard let sel = visualSelection() else { mode = .normal; return }
+
+        let rows: ClosedRange<Int>
+        let anchor: CommentToggle.Anchor
+        switch sel {
+        case .charwise(let startLine, _, let endLine, _):
+            rows = startLine...endLine          // whole lines — the '<,'> semantic
+            anchor = .indent
+        case .linewise(let range):
+            rows = range
+            anchor = .indent
+        case .blockwise(let blockRows, let span):
+            rows = blockRows
+            anchor = .column(span.left, tabWidth: tabWidth)
+        }
+        // The phantom empty line after a trailing newline (its start
+        // sits at totalLength) is a buffer artifact, not content — trim
+        // it like shiftVisualLines; a selection of the phantom alone
+        // changes nothing (still a finishing operator press).
+        var lastLine = rows.upperBound
+        if buf.lineStart(line: lastLine) == buf.totalLength {
+            if lastLine == rows.lowerBound { mode = .normal; return }
+            lastLine -= 1
+        }
+        let firstLine = rows.lowerBound
+
+        let plan = CommentToggle.plan(lines: (firstLine...lastLine).map { buf.getLine($0) },
+                                      token: token, anchor: anchor)
+        var firstChanged = -1
+        var lastChanged = -1
+        for (i, p) in plan.plans.enumerated() where p.changed {
+            if firstChanged < 0 { firstChanged = i }
+            lastChanged = i
+        }
+        // Nothing applicable (only blank lines / everything already in
+        // the target state) — no edit, no undo record, but the mode
+        // still finishes, like an empty deleteSelection.
+        guard firstChanged >= 0 else { mode = .normal; return }
+
+        let editStartLine = firstLine + firstChanged
+        let editEndLine = firstLine + lastChanged
+        let startOffset = buf.lineStart(line: editStartLine)
+        let endOffset = min(buf.lineEnd(line: editEndLine), buf.totalLength)
+        let deletedText = endOffset > startOffset
+            ? buf.getText(range: startOffset..<endOffset) : ""
+        // Reassemble the whole span (unchanged middle lines verbatim),
+        // each line with its OWN terminator — read before mutation.
+        var insertedText = ""
+        for i in firstChanged...lastChanged {
+            let line = firstLine + i
+            insertedText += (plan.plans[i].changed ? plan.plans[i].text : buf.getLine(line))
+                + lineTerminator(after: line)
+        }
+        if endOffset > startOffset {
+            buf.delete(at: startOffset, length: endOffset - startOffset)
+        }
+        if !insertedText.isEmpty {
+            buf.insert(insertedText, at: startOffset)
+        }
+        recordAction(offset: startOffset, deleted: deletedText, inserted: insertedText)
+
+        cursorLine = editStartLine
+        cursorCol = min(plan.plans[firstChanged].editAt,
+                        buf.lineCharLength(line: editStartLine))
+        mode = .normal
         ensureCursorVisible()
     }
 

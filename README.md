@@ -120,11 +120,11 @@ swim <file>       # Open file
 |---|---|---|
 | `i` | Normal | Enter Insert mode |
 | `Esc` | Any | Return to Normal mode / close focused panel |
-| `v` | Normal | Enter Visual mode (in any visual mode `s` prefills `'<,'>s/` — substitution over the selection; `a` selects all of the buffer) |
-| `V` | Normal | Enter Visual-line mode |
-| `Ctrl+V` | Normal | Enter Visual-block mode (rectangular selection in terminal cells; survives short/empty lines; `y` yanks a blockwise register, `d`/`x` delete the block, `p` pastes it as a rectangle; `s` substitutes only inside the rectangle) |
+| `v` | Normal | Enter Visual mode (in any visual mode `s` prefills `'<,'>s/` — substitution over the selection; `a` selects all of the buffer; `/` toggles line comments over the selected lines) |
+| `V` | Normal | Enter Visual-line mode (`/` — comment toggle, like `v`) |
+| `Ctrl+V` | Normal | Enter Visual-block mode (rectangular selection in terminal cells; survives short/empty lines; `y` yanks a blockwise register, `d`/`x` delete the block, `p` pastes it as a rectangle; `s` substitutes only inside the rectangle; `/` comments from the rectangle's left edge — short lines padded) |
 | `:` | Any (not Insert) | Command line (via status bar) |
-| `/` | Normal | Search |
+| `/` | Normal | Search; in any visual mode — toggle line comments over the selection (the first line decides: already commented → uncomment all, else → comment all; the markers form one column — the leftmost non-blank indent of the selection — for `v`/`V`, and the rectangle's left edge for `Ctrl+V`) |
 | `n` / `N` | Normal | Next / previous search match |
 | `h/j/k/l` | Normal | Navigation (with `[count]`) |
 | `Ctrl+J` / `Ctrl+K`, `PageUp` / `PageDown` | Normal, Insert, Visual | Page down / up (a screenful minus two context lines; in visual modes extends the selection) |
