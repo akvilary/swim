@@ -25,6 +25,13 @@ enum Key: Equatable {
     case f(Int)
     case shiftTab
     case insert
+    /// Terminal focus events (xterm focus reporting, mode 1004): CSI I /
+    /// CSI O arrive asynchronously whenever the OS window's focus changes.
+    /// Not keys in the vim-grammar sense — Application intercepts them
+    /// before window routing, so pending sequences and status messages
+    /// stay untouched.
+    case focusGained
+    case focusLost
     /// Text delivered as one chunk by bracketed paste mode — the
     /// payload between ESC[200~ and ESC[201~. Newlines are already
     /// normalized to "\n".
@@ -152,6 +159,8 @@ enum Key: Equatable {
         case 72: return .home
         case 70: return .end
         case 90: return .shiftTab
+        case 73: return params.isEmpty ? .focusGained : nil // 'I' — focus in (mode 1004)
+        case 79: return params.isEmpty ? .focusLost : nil   // 'O' — focus out
         case 117: // 'u' — CSI u
             if params == "13" { return .enter }
             return nil

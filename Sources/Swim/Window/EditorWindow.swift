@@ -441,6 +441,15 @@ class EditorWindow: Window {
     func bufferReloaded(_ buffer: EditorBuffer) {
         guard buffer === tabs.active else { return }
         rebuildLSPIndexes()
+        // An external-change reload may swap the buffer under an OPEN
+        // command line (a focus event arrives mid-`'<,'>s`-typing —
+        // ADR 0001): the armed substitution scope holds line numbers and
+        // byte windows of the OLD instance, and the executor would clamp
+        // them silently onto the new text. Kill it — the typed
+        // `'<,'>s` then reports "Selection range expired", the designed
+        // degradation (the same doctrine as enterCommandMode: the scope
+        // belongs to exactly one command session).
+        pendingSubstituteScope = nil
     }
 
     /// Routes a diagnostics batch to the owning tab — the exact shape of
@@ -1066,8 +1075,9 @@ class EditorWindow: Window {
     }
 
     /// `:w` with vim's W12 guard: if the file was rewritten externally
-    /// since it was read (mtime differs), refuse to clobber it silently —
-    /// arm the confirm prompt and let the next key decide. The prompt is
+    /// since it was read (the mtime+size fingerprint differs — ADR 0001),
+    /// refuse to clobber it silently — arm the confirm prompt and let the
+    /// next key decide. The prompt is
     /// modal through command-mode ownership (the established "window
     /// owns the input line" mechanism): every key routes here, `:` and
     /// the global toggles included, and Escape cleans the state by
@@ -1084,8 +1094,8 @@ class EditorWindow: Window {
             return true
         }
         if !pendingWriteConfirm,
-           let diskMtime = BufferManager.mtime(of: path),
-           diskMtime != tabs.active.fileMtime {
+           let diskStamp = BufferManager.fileStamp(of: path),
+           diskStamp != tabs.active.fileStamp {
             pendingWriteConfirm = true
             enterCommandMode()
             lastError = Self.writeConfirmPrompt
@@ -1154,6 +1164,17 @@ class EditorWindow: Window {
     /// The changed-on-disk confirm prompt is armed (see `saveOrConfirm`)
     /// while the user answers it.
     private var pendingWriteConfirm = false
+
+    /// True while an interactive session owns the editor's command line —
+    /// the `:s///c` confirm walk or the changed-on-disk write confirm.
+    /// Both hold pending state against the EXACT active instance (byte
+    /// offsets over the original text; w/r/q/a semantics), so the
+    /// external-change sweep (Application.checkTimestamps) must not swap
+    /// that buffer underneath — it skips the active tab while this is
+    /// true. Read-only view for Application; the state stays private.
+    var hasInteractiveSession: Bool {
+        pendingWriteConfirm || pendingSubConfirm != nil
+    }
 
     /// Interactive `:s///c` session state. The plan is precomputed on
     /// the original text; each applied edit updates `delta`, so the

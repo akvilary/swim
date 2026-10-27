@@ -99,6 +99,14 @@ final class Terminal {
         // ESC[201~ so it arrives as one chunk instead of a keystroke
         // stream (which auto-indent would mangle line by line).
         writeRaw("\u{1b}[?2004h")
+        // Focus reporting: the terminal sends CSI I / CSI O whenever the
+        // OS window gains/loses focus — the arrival event drives the
+        // external-change sweep (Application.checkTimestamps): the moment
+        // the user comes back to swim, buffers resync with whatever an
+        // agent or command did meanwhile (vim's FocusGained → checktime).
+        // Terminals and tmux sessions without support simply never send
+        // the events; the other trigger lanes cover that case.
+        writeRaw("\u{1b}[?1004h")
         writeRaw("\u{1b}[2J")
         writeRaw("\u{1b}[H")
 
@@ -129,7 +137,7 @@ final class Terminal {
         // into the shell — SGR is screen-global in the xterm family,
         // so exiting over a reverse-video selection (routine in mono)
         // or a bold run would restyle the prompt.
-        writeRaw("\u{1b}[0m\u{1b}[?2004l\u{1b}[?1049l\u{1b}[?25h")
+        writeRaw("\u{1b}[0m\u{1b}[?1004l\u{1b}[?2004l\u{1b}[?1049l\u{1b}[?25h")
         if resizePipeReadFd >= 0 { close(resizePipeReadFd); resizePipeReadFd = -1 }
         if resizePipeWriteFd >= 0 { close(resizePipeWriteFd); resizePipeWriteFd = -1 }
     }

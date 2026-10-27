@@ -21,6 +21,7 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
 - **Project search** (`Ctrl+F`) — recursive file search, results as a tree from the working-directory root
 - **Built-in terminal** (`Ctrl+T`) — run shell commands inside the editor: the prompt is the last line of the scrollback, arrows scroll the output, `Ctrl+Left/Right` recalls commands, `Tab` completes paths; `cd` and `clear` are handled by the window itself
 - **Bracketed paste** — text from the system clipboard lands verbatim in every mode (insert at the cursor, normal like `p`, visual replaces the selection); tabs in pasted text follow the file's indent policy, and the command line / filters accept single-line paste
+- **External file changes** — open buffers follow the disk: on returning to swim (terminal focus reporting) or after any command, clean buffers silently reload what an agent, formatter or `sed -i` wrote; unsaved edits always outrank the disk, and `:w` on a file that changed under you asks first (vim's W12). In tmux enable `set -g focus-events on`; macOS Terminal.app sends no focus events — the remaining triggers still cover it
 - **Full UTF-8 support** — Cyrillic, CJK, emoji
 - **Tokyo Night Storm theme** — RGB everywhere; on terminals without truecolor the palette degrades to the nearest 256/16 colors instead of breaking, and `NO_COLOR` is honored (highlights fall back to reverse video)
 - **Status bar** — mode, filename, file type, encoding, cursor position

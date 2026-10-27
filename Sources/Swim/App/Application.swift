@@ -13,6 +13,16 @@ class Application: WindowDelegate {
     private var running = true
     private var lspClients: [String: LSPClient] = [:]
     private var pendingTokenRefresh: (path: String, earliest: TimeInterval)?
+    /// A "the user just arrived" signal is pending: focus events (OS
+    /// focus reporting, internal focus landing on the editor window)
+    /// only REQUEST the external-change sweep; the run loop runs it at
+    /// the top of the next iteration — between keys, never inside key
+    /// handling. `EditorBuffer` is a class: a sweep executed inside
+    /// `focus()` would swap `buffers` slots under code holding
+    /// references to the old instances. This is vim's doctrine —
+    /// `checktime` from an autocmd is postponed to a harmless moment
+    /// (ADR 0001).
+    private var worldCheckPending = false
     private lazy var renderer = Renderer(terminal: terminal)
 
     /// Git info for the status bar: branch + added/deleted lines of the
@@ -161,6 +171,20 @@ class Application: WindowDelegate {
             pollLSP()
             pollGitStats()
             tickSpinners()
+            // The arrival-requested external-change sweep runs HERE — at
+            // the top of an iteration, between keys (the flag may have
+            // been set mid-key-handling by the focus funnels). Same
+            // doctrine as pollLSP/pollGitStats: consume state, then let
+            // input processing act on the freshest world. This caller is
+            // the only one that paints after the sweep: no key, no
+            // render tail behind it.
+            if worldCheckPending {
+                worldCheckPending = false
+                if !checkTimestamps().isEmpty {
+                    spaces.current.update()
+                    render()
+                }
+            }
             if terminal.hasResizeEvent {
                 terminal.consumeResizeEvent()
                 if terminal.isTooSmall {
@@ -186,7 +210,19 @@ class Application: WindowDelegate {
                     // otherwise key/result interleaving is nondeterministic
                     // (a navigation move could land on a stale list).
                     spaces.current.pollWindows()
-                    handleGlobalKey(key)
+                    // Focus events are not keys in the vim-grammar
+                    // sense: they are intercepted before any routing, so
+                    // pending normal-mode sequences survive a window
+                    // switch mid-sequence, status-bar messages are not
+                    // cleared, and no window ever sees them (the built-in
+                    // terminal would otherwise forward garbage to its
+                    // child). FocusLost is parsed to keep it out of
+                    // `.unknown`; nothing in swim reacts to it yet.
+                    switch key {
+                    case .focusGained: worldCheckPending = true
+                    case .focusLost: break
+                    default: handleGlobalKey(key)
+                    }
                     // The status bar mirrors the focused window (mode,
                     // cursor) — resync after every key so focus moves from
                     // toggles, Tab cycling and space switches are reflected
@@ -910,6 +946,12 @@ class Application: WindowDelegate {
     private func focusStackTop() -> Bool {
         guard let top = windowStack.last else { return false }
         spaces.current.focused = top
+        // Arrival at the editor = the user is about to look at buffers:
+        // request the external-change sweep (executed at the loop top,
+        // never here — see worldCheckPending). Closing a window pops
+        // through this funnel, which is exactly the agent-in-the-built-
+        // in-terminal case: Esc the terminal, land on the editor, sync.
+        if top === editor { worldCheckPending = true }
         return true
     }
 
@@ -919,6 +961,7 @@ class Application: WindowDelegate {
         pushWindow(window)
         spaces.current.focused = window
         spaces.current.updateFocusStates()
+        if window === editor { worldCheckPending = true }
     }
 
     /// Ctrl+Y — the current branch name to the clipboard (OSC52), from
@@ -1494,9 +1537,9 @@ class Application: WindowDelegate {
         // push/switch changed it. The selection follows its commit by
         // hash where the commit still exists.
         if gitLog.visible { gitLog.refresh() }
-        for fresh in editor.tabs.reloadChangedOnDisk() {
-            applyBufferReload(fresh)
-        }
+        // Shell-return lane of the external-change doctrine (ADR 0001):
+        // a merge during pull may have rewritten open files.
+        checkTimestamps()
     }
 
     /// Any finished terminal command may have changed the open file,
@@ -1512,9 +1555,12 @@ class Application: WindowDelegate {
         // history — the log window refreshes with the same contract
         // as git commands run through the command window.
         if gitLog.visible { gitLog.refresh() }
-        for fresh in editor.tabs.reloadChangedOnDisk() {
-            applyBufferReload(fresh)
-        }
+        // Every finished command is vim's `:!cmd` moment: the external
+        // world may have rewritten files (a formatter, sed, a checkout)
+        // — commands complete asynchronously, possibly while the user
+        // already sits in the editor, so this lane cannot be dropped in
+        // favor of the focus triggers (ADR 0001).
+        checkTimestamps()
     }
 
     /// A git-panel discard rewrote a working-tree file: reload any clean
@@ -1556,6 +1602,36 @@ class Application: WindowDelegate {
               let client = lspClients[key], client.isReady else { return }
         client.reloadDocument(uri: "file://\(path)",
                               text: fresh.buffer.getAllText())
+    }
+
+    /// The one external-change sweep — vim's `check_timestamps` (ADR
+    /// 0001). Reload every clean tab whose file changed on disk
+    /// (mtime+size fingerprint; the content comparison in reload
+    /// arbitrates false positives) and resync what feeds off the fresh
+    /// content (dirty flags, status bar, git stats, LSP). Triggers: OS
+    /// focus gained (terminal focus reporting), internal focus arriving
+    /// at the editor window, and command completion
+    /// (gitCommandFinished / terminalCommandFinished — vim's `:!cmd`
+    /// moment). The ACTIVE tab is skipped while the editor holds an
+    /// interactive session (`:s//c` confirm, changed-on-disk write
+    /// confirm): their pending byte offsets and w/r/q/a semantics live
+    /// against the exact instance — a swap underneath would corrupt
+    /// them. Non-active tabs reload freely; the skipped tab is caught by
+    /// the next trigger once the session ends.
+    ///
+    /// Deliberately does NOT paint: the command lanes reach this from
+    /// `Window.poll()`, which also runs inside `Space.update()` — an
+    /// update()/render() call here would reenter that loop mid-iteration
+    /// (the iteration tail paints anyway). Only the arrival lane's
+    /// caller paints — it has no tail behind it (no key is coming).
+    @discardableResult
+    private func checkTimestamps() -> [EditorBuffer] {
+        let reloaded = editor.tabs.reloadChangedOnDisk(
+            skipping: editor.hasInteractiveSession ? editor.tabs.active : nil)
+        for fresh in reloaded {
+            applyBufferReload(fresh)
+        }
+        return reloaded
     }
 
     /// The commit editor's plate — an amend session names its target
