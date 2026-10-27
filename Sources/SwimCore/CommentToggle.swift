@@ -5,18 +5,27 @@
 ///
 /// SEMANTICS (fixed with the project, pinned by tests):
 ///
-/// - DIRECTION — the FIRST line of the selection always decides: it
-///   carries the comment token at the anchor → `.remove` for all,
-///   otherwise → `.add` for all. A blank first line can never carry a
-///   token, so it means `.add` — no scanning for "the first line that
-///   could decide"; the literal first line is the decider.
+/// - DIRECTION — the FIRST NON-BLANK line of the selection decides:
+///   it carries the comment token at the anchor → `.remove` for all,
+///   otherwise → `.add` for all. A blank line carries no marker and
+///   must not decide (under nesting a blank decider would stack a new
+///   layer on every press and the untoggle would never fire); an
+///   all-blank selection has no decider — the honest no-op.
 /// - LEADING BLANKS (empty or whitespace-only) are ignored in both
 ///   directions: the operation starts at the first non-blank line.
 ///   A SHORT but non-blank line is NOT blank — at a column anchor it
 ///   participates and gets the padded marker, and it can be the
 ///   decider (it has no content at the column, hence no token → add).
-/// - ADD touches only lines that do not already carry the token at the
-///   anchor (never a double marker); REMOVE strips the token plus one
+/// - ADD — NO EXCEPTIONS: every non-blank line of the selection ends
+///   up with the token at the ONE shared column. A line already
+///   commented elsewhere is not skipped and its marker is not moved —
+///   it NESTS (one more token inserted at the shared column on top,
+///   the line's own marker and indent untouched below). The inserted
+///   token+space pair is exactly what REMOVE strips at the line's
+///   first non-blank — the outer marker — so an untoggle restores the
+///   former state byte-for-byte at the indent anchor (the column
+///   anchor keeps the short-line padding caveat), a previously
+///   commented line included. REMOVE strips the token plus one
 ///   following space when present. Removal is deliberately
 ///   conservative: alignment spaces the writer may have placed before
 ///   the marker, and the padding a previous blockwise add introduced,
@@ -122,10 +131,18 @@ public enum CommentToggle {
         return chars[i...].starts(with: token)
     }
 
-    /// The whole-selection plan. The direction comes from `lines[0]`
-    /// (blank ⇒ add — a blank line never carries a token), then every
-    /// line is processed with that one direction; lines already in the
-    /// target state are left alone.
+    /// The whole-selection plan. The direction comes from the FIRST
+    /// NON-BLANK line (a blank line carries no marker — under nesting a
+    /// blank decider would stack a layer on every press and the
+    /// untoggle would never fire; the first non-blank line keeps the
+    /// toggle a universal involution). ADD leaves no exceptions: every
+    /// non-blank line receives the token at the shared column, an
+    /// already-commented one NESTED (a second marker on top — its own
+    /// marker and indent untouched); REMOVE strips the token plus one
+    /// following space at each line's anchor — exactly the outer
+    /// marker, so an untoggle restores the former state byte-for-byte
+    /// at the indent anchor (the column anchor keeps the short-line
+    /// padding caveat).
     public static func plan(lines: [String], token: String, anchor: Anchor) -> SelectionPlan {
         // Degenerate inputs never crash a public entry point (the
         // editor cannot produce them — a ClosedRange yields at least
@@ -135,36 +152,44 @@ public enum CommentToggle {
         // nothing (an always-matching empty prefix would otherwise
         // strip a space).
         let tokenChars = Array(token)
-        guard let firstChars = lines.first.map({ Array($0) }), !tokenChars.isEmpty else {
+        guard !lines.isEmpty, !tokenChars.isEmpty else {
             return SelectionPlan(direction: .add,
                                  plans: lines.map {
                                      LinePlan(text: $0, editAt: 0, changed: false)
                                  })
         }
         let lineChars = lines.map { Array($0) }
-        let direction: Direction =
-            isMarked(firstChars, token: tokenChars, anchor: anchor) ? .remove : .add
 
-        // The ignored leading blank run — the operation starts at the
-        // first non-blank line (both anchors; blank first lines decided
-        // "add" but receive nothing themselves).
+        // The ignored leading blank run — blank lines neither receive
+        // a marker nor decide the direction; the operation starts at
+        // the first non-blank line.
         var start = 0
         while start < lineChars.count, isBlank(lineChars[start]) { start += 1 }
+        // No decider (all blank) — nothing applicable in either
+        // direction; the honest no-op.
+        guard start < lineChars.count else {
+            return SelectionPlan(direction: .add,
+                                 plans: lines.map {
+                                     LinePlan(text: $0, editAt: 0, changed: false)
+                                 })
+        }
+        let direction: Direction =
+            isMarked(lineChars[start], token: tokenChars, anchor: anchor) ? .remove : .add
 
         // The indent anchor's shared marker column — the LEFTMOST
         // non-blank position among the selection's lines, counted in
         // whitespace graphemes (uniform space or tab indentation
         // aligns visually). Blank lines contribute nothing; already
-        // marked lines count — so new markers align with the ones
-        // already standing. No line's content starts left of the
-        // column by construction (it IS the leftmost), so the marker
-        // never splits code, and deeper lines keep their indent riding
-        // AFTER the marker (the round trip stays byte-exact).
+        // marked lines count (their marker position IS their first
+        // non-blank) — so a nested marker never lands right of the
+        // standing one and the column is never left of any content:
+        // the marker never splits code, deeper lines keep their indent
+        // riding AFTER the marker.
         var indentMarkerCol = Int.max
         for i in start..<lineChars.count where !isBlank(lineChars[i]) {
             indentMarkerCol = min(indentMarkerCol, firstNonBlank(lineChars[i]))
         }
-        if indentMarkerCol == Int.max { indentMarkerCol = 0 } // all blank — unused
+        if indentMarkerCol == Int.max { indentMarkerCol = 0 } // unreachable post-guard; inert
 
         var plans: [LinePlan] = []
         plans.reserveCapacity(lines.count)
@@ -174,8 +199,15 @@ public enum CommentToggle {
             guard i >= start else { plans.append(unchanged); continue }
             switch direction {
             case .add:
-                guard !isBlank(chars) || anchorIsColumn(anchor),
-                      !isMarked(chars, token: tokenChars, anchor: anchor)
+                // NO EXCEPTIONS: a line already carrying the token is
+                // not skipped — it NESTS (the token inserted at the
+                // shared column on top; its own marker and indent
+                // stay). The marker/token+space pair inserted here is
+                // exactly what the remove pass strips at the line's
+                // first non-blank — the untoggle restores the line
+                // byte-for-byte (indent anchor; a padded short line at
+                // a column anchor keeps its padding).
+                guard !isBlank(chars) || anchorIsColumn(anchor)
                 else { plans.append(unchanged); continue }
                 plans.append(add(chars, token: token,
                                  anchor: anchor, markerCol: indentMarkerCol))

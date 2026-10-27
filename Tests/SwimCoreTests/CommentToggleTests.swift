@@ -2,10 +2,13 @@ import Testing
 import SwimCore
 
 /// CommentToggle — the pure half of the visual `/`. The fixed product
-/// semantics: the FIRST line always decides the direction for the whole
-/// selection (blank ⇒ add — a blank line never carries a token);
-/// leading blanks are ignored; ADD never double-marks (lines already
-/// carrying the token at the anchor stay); REMOVE drops the token plus
+/// semantics: the FIRST NON-BLANK line decides the direction for the whole
+/// selection — a blank line carries no marker and must not decide
+/// (under nesting it would stack a layer per press); leading blanks
+/// are ignored; ADD leaves no exceptions — an already-commented line
+/// NESTS (one more token at the shared column, its own marker and
+/// indent untouched), the untoggle stripping exactly the outer one
+/// (byte-exact restore); REMOVE drops the token plus
 /// one following space, conservatively (alignment and a previous add's
 /// padding survive); at the indent anchor all markers form ONE column —
 /// the leftmost non-blank indent of the selection, deeper lines keeping
@@ -14,7 +17,7 @@ import SwimCore
 /// anchor (the rectangle's marker column stays continuous).
 @Suite struct CommentToggleTests {
 
-    // MARK: - Direction: the literal first line decides
+    // MARK: - Direction: the first non-blank line decides
 
     @Test func firstLineUnmarkedMeansAdd() {
         let p = CommentToggle.plan(lines: ["let a = 1", "let b = 2"],
@@ -32,23 +35,25 @@ import SwimCore
         #expect(p.plans.map(\.text) == ["let a = 1", "let b = 2"])
     }
 
-    @Test func blankFirstLineDecidesAdd() {
-        // The documented no-op edge: the blank first line means ADD,
-        // the marked lines below are already in the target state —
-        // nothing changes (uncommenting needs a selection that starts
-        // on a marked line).
+    @Test func blankFirstLineIsNotTheDecider() {
+        // The FIRST NON-BLANK line decides: a blank line carries no
+        // marker and must not force add (under nesting it would stack
+        // a layer per press, the untoggle never firing).
         let p = CommentToggle.plan(lines: ["", "// a", "// b"],
                                    token: "//", anchor: .indent)
-        #expect(p.direction == .add)
-        #expect(p.plans.allSatisfy { !$0.changed })
+        #expect(p.direction == .remove)
+        #expect(p.plans.map { $0.text } == ["", "a", "b"])
     }
 
-    @Test func partialApplicationUnderAdd() {
+    @Test func addNestsOntoMarkedLines() {
+        // ADD leaves no exceptions: the unmarked line gets its marker,
+        // the already-marked one NESTS (a second token at the shared
+        // column, its own marker untouched below).
         let p = CommentToggle.plan(lines: ["", "x", "// y"],
                                    token: "//", anchor: .indent)
         #expect(p.direction == .add)
-        #expect(p.plans.map(\.text) == ["", "// x", "// y"])
-        #expect(p.plans.map(\.changed) == [false, true, false])
+        #expect(p.plans.map { $0.text } == ["", "// x", "// // y"])
+        #expect(p.plans.map { $0.changed } == [false, true, true])
     }
 
     @Test func whitespaceOnlyIsBlank() {
@@ -88,14 +93,47 @@ import SwimCore
     }
 
     @Test func indentColumnCountsMarkedLines() {
-        // ADD direction (first line unmarked); the standing marker at
-        // column 0 participates in the minimum — the new marker aligns
-        // with it instead of landing beside it.
+        // The standing marker at column 0 participates in the minimum,
+        // and ADD nests onto it — everything lands under one column.
         let p = CommentToggle.plan(lines: ["    x", "// b"],
                                    token: "//", anchor: .indent)
         #expect(p.direction == .add)
-        #expect(p.plans.map { $0.text } == ["//     x", "// b"])
-        #expect(p.plans.map { $0.changed } == [true, false])
+        #expect(p.plans.map { $0.text } == ["//     x", "// // b"])
+        #expect(p.plans.map { $0.changed } == [true, true])
+    }
+
+    @Test func nestingScenarioRoundTripsByteExact() {
+        // The product scenario: line 1 uncommented, lines 2-3 commented
+        // with their own indent. ADD nests one more marker at the shared
+        // column (nothing moved); the untoggle strips exactly the outer
+        // one — the former state returns byte-for-byte.
+        let lines = ["x", "    // b", "    // c"]
+        let added = CommentToggle.plan(lines: lines, token: "//", anchor: .indent)
+        #expect(added.direction == .add)
+        #expect(added.plans.map { $0.text } == ["// x", "//     // b", "//     // c"])
+        let removed = CommentToggle.plan(lines: added.plans.map { $0.text },
+                                         token: "//", anchor: .indent)
+        #expect(removed.direction == .remove)
+        #expect(removed.plans.map { $0.text } == lines)
+    }
+
+    @Test func allBlankSelectionHasNoDecider() {
+        let p = CommentToggle.plan(lines: ["", "   ", "\t"],
+                                   token: "//", anchor: .indent)
+        #expect(p.plans.allSatisfy { !$0.changed })
+    }
+
+    @Test func columnAnchorNestsAtTheBlockColumn() {
+        // Blockwise ADD nests the same way: a row already marked AT the
+        // column gets one more token there; the untoggle strips it.
+        let lines = ["y = 2", "let // a = 1"]
+        let added = CommentToggle.plan(lines: lines, token: "//",
+                                        anchor: .column(4, tabWidth: 4))
+        #expect(added.direction == .add)
+        #expect(added.plans.map { $0.text } == ["y = // 2", "let // // a = 1"])
+        let removed = CommentToggle.plan(lines: added.plans.map { $0.text }, token: "//",
+                                         anchor: .column(4, tabWidth: 4))
+        #expect(removed.plans.map { $0.text } == lines)
     }
 
     @Test func indentAlignedRoundTripIsExact() {
@@ -281,6 +319,13 @@ import SwimCore
             let out1 = p1.plans.map { $0.text }
             let p2 = CommentToggle.plan(lines: out1, token: token, anchor: anchor)
             let out2 = p2.plans.map { $0.text }
+            // Involution (indent anchor): an add is undone EXACTLY —
+            // remove strips precisely the token+space pair add laid at
+            // the shared column, a previously commented line's own
+            // marker surviving below.
+            if case .indent = anchor, p1.direction == .add {
+                #expect(out2 == lines)
+            }
             let p3 = CommentToggle.plan(lines: out2, token: token, anchor: anchor)
             let out3 = p3.plans.map { $0.text }
             let p4 = CommentToggle.plan(lines: out3, token: token, anchor: anchor)
