@@ -110,23 +110,9 @@ public struct SyntaxTokenizer {
         "file", "allows", "scoped",
     ]
 
-    public static func languageId(for ext: String) -> String {
-        switch ext {
-        case "swift": return "swift"
-        case "c": return "c"
-        case "cpp", "cc", "cxx": return "cpp"
-        case "h": return "objective-c"
-        case "cs", "csx": return "csharp"
-        case "py": return "python"
-        case "rs": return "rust"
-        case "go": return "go"
-        case "ts": return "typescript"
-        case "js": return "javascript"
-        case "dart": return "dart"
-        case "sh", "bash": return "shellscript"
-        default: return "plaintext"
-        }
-    }
+    // languageId(for:) moved to LSPServers — the single LSP wiring
+    // table (extensions + server key + didOpen languageId); the syntax
+    // vocabulary below stays the tokenizer's own concern.
 
     public static func keywords(for ext: String) -> Set<String> {
         switch ext {

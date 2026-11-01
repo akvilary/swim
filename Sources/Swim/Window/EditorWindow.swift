@@ -163,9 +163,9 @@ class EditorWindow: Window {
     /// rebuildLSPIndexes, never read for any other tab's content — and
     /// kept honest by trackLSPChange on every edit: spans intersecting
     /// the rewritten lines go immediately (stale positions until the
-    /// re-publish; both supported servers re-publish after every
-    /// didChange — verified by protocol probes), a line-count change
-    /// drops the whole index.
+    /// re-publish; every supported server — sourcekit-lsp, basedpyright,
+    /// clangd — re-publishes after every didChange — verified by
+    /// protocol probes), a line-count change drops the whole index.
     private var diagnosticsIndex: [Int: [DiagnosticSpan]] = [:]
 
     var lastError: String?

@@ -10,7 +10,7 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
 - **Window stack** — focusing a window raises it to the top of the stack; `:q` / `Ctrl+X` / `Esc` close the focused window (an editor tab or a panel), falling back to the window beneath; closing the last window exits
 - **Piece Table** — efficient text data structure (same as VS Code)
 - **Syntax highlighting** — three levels:
-  - Semantic tokens via LSP (sourcekit-lsp)
+  - Semantic tokens via LSP (sourcekit-lsp, clangd, basedpyright, gopls, rust-analyzer, OmniSharp, bash-language-server)
   - Built-in tokenizer for Swift, C, C++, Python, Rust, Go, JS/TS
   - Fast JSON highlighting
 - **File explorer** (`Ctrl+E`) — sidebar with directory tree; file names colored by git status (new — green, fully staged — blue, unstaged changes — teal); per-type icons — Nerd Font glyphs with brand colors by default, `SWIM_ICONS=emoji` or `SWIM_ICONS=plain` for emoji or font-independent geometric sets
@@ -127,6 +127,8 @@ swim <file>       # Open file
 | `:` | Any (not Insert) | Command line (via status bar) |
 | `/` | Normal | Search; in any visual mode — toggle line comments over the selection (the first non-blank line decides: already commented → uncomment all, else → comment all; `V` (and `v` covering full lines) puts the markers in one column — the leftmost non-blank indent; a `v` selection starting mid-line comments only the selected part of the first line (the marker at the selection's start column); `Ctrl+V` comments from the rectangle's left edge) |
 | `n` / `N` | Normal | Next / previous search match |
+| `gd` | Normal | Go to definition under the cursor (LSP; clangd, sourcekit-lsp, basedpyright, …); jumps open the target in a tab |
+| `gb` | Normal | Jump back to the position before the last `gd` (up to 50 hops) |
 | `h/j/k/l` | Normal | Navigation (with `[count]`) |
 | `Ctrl+J` / `Ctrl+K`, `PageUp` / `PageDown` | Normal, Insert, Visual | Page down / up (a screenful minus two context lines; in visual modes extends the selection) |
 | `w` / `b` / `e` | Normal | Word motions (with `[count]`) |
@@ -193,7 +195,8 @@ Sources/Swim/
 │   ├── TerminalWindow.swift     # Built-in terminal
 │   └── StatusBarWindow.swift    # Status bar
 └── LSP/
-    ├── LSPClient.swift      # sourcekit-lsp client
+    ├── LSPClient.swift      # Multi-server LSP client (see ARCHITECTURE.md for the server list)
+    ├── LSPServerSetup.swift # Per-server post-start behavior beyond launch data
     └── LSPProtocol.swift    # LSP data types
 ```
 

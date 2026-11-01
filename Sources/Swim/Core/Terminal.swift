@@ -6,6 +6,7 @@
 import Foundation
 
 private nonisolated(unsafe) var resizePipeWriteFd: Int32 = -1
+private nonisolated(unsafe) var termPipeWriteFd: Int32 = -1
 
 private func sigwinchHandler(_: Int32) {
     // errno is thread-local state shared with the interrupted code: a
@@ -18,6 +19,19 @@ private func sigwinchHandler(_: Int32) {
     errno = savedErrno
 }
 
+/// SIGHUP/SIGTERM/SIGINT → one byte into the termination pipe; the run
+/// loop's next iteration performs the graceful exit (the same path as
+/// `:qa` — LSP servers stopped, terminal restored). Dying by the
+/// default disposition instead would leave the user's shell in raw
+/// mode (the alt screen still up) and orphan the language servers —
+/// sourcekit-lsp demonstrably survives its parent's hard death.
+private func terminationHandler(_: Int32) {
+    let savedErrno = errno
+    var byte: UInt8 = 1
+    _ = write(termPipeWriteFd, &byte, 1)
+    errno = savedErrno
+}
+
 final class Terminal {
     private var originalTermios: termios?
     private(set) var width: Int = 80
@@ -25,6 +39,7 @@ final class Terminal {
     private var outputBuffer = [UInt8]()
 
     private var resizePipeReadFd: Int32 = -1
+    private var termPipeReadFd: Int32 = -1
 
     nonisolated(unsafe) static let shared = Terminal()
     private init() {}
@@ -41,18 +56,55 @@ final class Terminal {
         width < Self.minimumWidth || height < Self.minimumHeight
     }
 
-    var hasResizeEvent: Bool {
-        guard resizePipeReadFd >= 0 else { return false }
-        var pfd = pollfd(fd: resizePipeReadFd, events: Int16(POLLIN), revents: 0)
+    /// The shared self-pipe read side: a byte is pending. The discipline
+    /// both signal pipes share (resize, termination).
+    private func pipeHasData(_ fd: Int32) -> Bool {
+        guard fd >= 0 else { return false }
+        var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         let ready = poll(&pfd, 1, 0)
         return ready > 0 && (pfd.revents & Int16(POLLIN)) != 0
     }
 
-    func consumeResizeEvent() {
-        guard resizePipeReadFd >= 0 else { return }
+    /// Drain a self-pipe dry (non-blocking read loop; safe on the empty
+    /// pipe — a full pipe coalesces a signal storm into one reaction).
+    private func drainPipe(_ fd: Int32) {
+        guard fd >= 0 else { return }
         var buf: UInt8 = 0
-        while read(resizePipeReadFd, &buf, 1) == 1 {}
+        while read(fd, &buf, 1) == 1 {}
+    }
+
+    var hasResizeEvent: Bool {
+        pipeHasData(resizePipeReadFd)
+    }
+
+    func consumeResizeEvent() {
+        drainPipe(resizePipeReadFd)
         updateSize()
+    }
+
+    /// A termination signal (SIGHUP/SIGTERM/SIGINT) is pending — the
+    /// run loop reacts by leaving its `while running` loop through the
+    /// graceful tail (same as `:qa`).
+    var hasTerminationEvent: Bool {
+        pipeHasData(termPipeReadFd)
+    }
+
+    func consumeTerminationEvent() {
+        drainPipe(termPipeReadFd)
+    }
+
+    /// The discipline both signal pipes share: non-blocking (a blocking
+    /// self-pipe freezes the editor — the drain loop parks forever on
+    /// the empty pipe because the write end lives in this process, and
+    /// a blocking write inside a handler could deadlock it) and
+    /// CLOEXEC (the pipes stay out of every child — git, LSP, the
+    /// embedded shell — which neither needs them nor keeps them alive).
+    private func configureSelfPipe(_ fds: [Int32]) {
+        for fd in fds {
+            let flags = fcntl(fd, F_GETFL, 0)
+            if flags >= 0 { _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK) }
+            _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+        }
     }
 
     func setup() {
@@ -72,19 +124,13 @@ final class Terminal {
         _ = pipe(&fds)
         resizePipeReadFd = fds[0]
         resizePipeWriteFd = fds[1]
-        // Both pipe ends must be non-blocking — a blocking self-pipe
-        // freezes the editor on the first resize: the drain loop in
-        // consumeResizeEvent parks forever on the empty pipe (the write
-        // end lives in this process, so no EOF ever arrives), and a
-        // blocking write inside the SIGWINCH handler could deadlock the
-        // process outright when resizes outpace the drained bytes.
-        // CLOEXEC keeps the signal pipe out of every child (git, LSP,
-        // the embedded shell) — they neither need it nor keep it alive.
-        for fd in fds {
-            let flags = fcntl(fd, F_GETFL, 0)
-            if flags >= 0 { _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK) }
-            _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
-        }
+        configureSelfPipe(fds)
+
+        var termFds: [Int32] = [-1, -1]
+        _ = pipe(&termFds)
+        termPipeReadFd = termFds[0]
+        termPipeWriteFd = termFds[1]
+        configureSelfPipe(termFds)
 
         updateSize()
         writeRaw("\u{1b}[?1049h")
@@ -119,15 +165,36 @@ final class Terminal {
         sigemptyset(&sa.sa_mask)
         sa.sa_flags = 0
         sigaction(SIGWINCH, &sa, nil)
+
+        // The termination trio rides the same shape (no SA_RESTART —
+        // the EINTR wakes the poll/wait so the loop sees the pipe in
+        // its next iteration).
+        var termSa = sigaction()
+        #if canImport(Glibc)
+        termSa.__sigaction_handler = .init(sa_handler: terminationHandler)
+        #elseif canImport(Darwin)
+        termSa.__sigaction_u.__sa_handler = terminationHandler
+        #endif
+        sigemptyset(&termSa.sa_mask)
+        termSa.sa_flags = 0
+        for sig in [SIGTERM, SIGHUP, SIGINT] {
+            sigaction(sig, &termSa, nil)
+        }
     }
 
     func restore() {
-        // The resize handler comes off before anything else: with it
-        // gone, a late SIGWINCH cannot interrupt restore's own writes
-        // (an EINTR truncation would leave the terminal stuck in the
-        // alt screen) nor touch the pipe descriptors torn down below.
-        // Default SIGWINCH disposition is to ignore — same state the
-        // process was born with.
+        // The handlers come off before anything else: with them gone, a
+        // late SIGWINCH cannot interrupt restore's own writes (an EINTR
+        // truncation would leave the terminal stuck in the alt screen)
+        // nor touch the pipe descriptors torn down below, and a second
+        // termination signal cannot hard-kill the process mid-restore
+        // (the default dispositions return; by then the graceful tail
+        // is finishing anyway). SIGWINCH's default is to ignore; the
+        // termination trio's is to die — the state the process was
+        // born with.
+        signal(SIGTERM, SIG_DFL)
+        signal(SIGHUP, SIG_DFL)
+        signal(SIGINT, SIG_DFL)
         signal(SIGWINCH, SIG_DFL)
         if let orig = originalTermios {
             var copy = orig
@@ -140,6 +207,8 @@ final class Terminal {
         writeRaw("\u{1b}[0m\u{1b}[?1004l\u{1b}[?2004l\u{1b}[?1049l\u{1b}[?25h")
         if resizePipeReadFd >= 0 { close(resizePipeReadFd); resizePipeReadFd = -1 }
         if resizePipeWriteFd >= 0 { close(resizePipeWriteFd); resizePipeWriteFd = -1 }
+        if termPipeReadFd >= 0 { close(termPipeReadFd); termPipeReadFd = -1 }
+        if termPipeWriteFd >= 0 { close(termPipeWriteFd); termPipeWriteFd = -1 }
     }
 
     private func updateSize() {
@@ -154,9 +223,12 @@ final class Terminal {
         while true {
             let n = read(STDIN_FILENO, &byte, 1)
             if n == 1 { return byte }
-            // SIGWINCH (no SA_RESTART) interrupts read() with EINTR —
-            // a resize during a keystroke or a long bracketed-paste
-            // read must not truncate the input; retry.
+            // Signals with handlers (SIGWINCH, the termination trio —
+            // none use SA_RESTART) interrupt read() with EINTR — a
+            // resize or a termination signal arriving during a
+            // keystroke or a long bracketed-paste read must not
+            // truncate the input; the termination pipe is checked by
+            // the run loop between reads. Retry.
             if n == -1 && errno == EINTR { continue }
             return nil
         }
@@ -178,10 +250,10 @@ final class Terminal {
             while written < data.count {
                 let n = write(STDOUT_FILENO, ptr.baseAddress! + written, data.count - written)
                 if n > 0 { written += n }
-                // SIGWINCH is the only signal with a handler in this
-                // process, so every EINTR here is a resize arriving
-                // mid-write; retry instead of dropping the tail of the
-                // frame (readByte does the same for the read side).
+                // Every signal with a handler here (SIGWINCH and the
+                // termination trio) interrupts write() with EINTR —
+                // retry instead of dropping the tail of the frame
+                // (readByte does the same for the read side).
                 else if n == -1 && errno == EINTR { continue }
                 else { break }
             }

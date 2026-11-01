@@ -100,7 +100,8 @@ final class LSPClient: @unchecked Sendable {
     var isReady: Bool { initialized && alive }
     var isAlive: Bool { alive }
 
-    func start(executable: String, arguments: [String] = [], rootUri: String?) {
+    func start(executable: String, arguments: [String] = [], rootUri: String?,
+               initializationOptions: [String: Any]? = nil) {
         guard FileManager.default.fileExists(atPath: executable) else { return }
         guard FileManager.default.isExecutableFile(atPath: executable) else { return }
 
@@ -140,7 +141,7 @@ final class LSPClient: @unchecked Sendable {
             try process.run()
             self.process = process
             self.alive = true
-            sendInitialize(rootUri: rootUri)
+            sendInitialize(rootUri: rootUri, initializationOptions: initializationOptions)
         } catch {
             self.process = nil
         }
@@ -154,7 +155,7 @@ final class LSPClient: @unchecked Sendable {
         }
     }
 
-    private func sendInitialize(rootUri: String?) {
+    private func sendInitialize(rootUri: String?, initializationOptions: [String: Any]?) {
         // LSP 3.16: client semanticTokens capabilities require the
         // `requests` object; `full`/`delta` live inside it. Putting them at
         // the top level (server-provider shape) makes sourcekit-lsp 6.2+
@@ -202,6 +203,11 @@ final class LSPClient: @unchecked Sendable {
             // them it assumes "/" as the workspace root and analyzes nothing.
             let name = (uri as NSString).lastPathComponent
             params["workspaceFolders"] = [["uri": uri, "name": name.isEmpty ? "workspace" : name]]
+        }
+        // Server-specific options (clangd: fallbackFlags) — servers that
+        // do not know the field ignore it; passed per server at start().
+        if let options = initializationOptions {
+            params["initializationOptions"] = options
         }
 
         sendRequest(method: "initialize", params: params) { [weak self] data in
@@ -446,9 +452,29 @@ final class LSPClient: @unchecked Sendable {
     private static func frame(id: Int? = nil, method: String, params: [String: Any]) -> Data? {
         var message: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": params]
         if let id { message["id"] = id }
-        guard let data = try? JSONSerialization.data(withJSONObject: message) else { return nil }
-        var frame = "Content-Length: \(data.count)\r\n\r\n".data(using: .ascii)!
-        frame.append(data)
+        return wire(message)
+    }
+
+    /// A JSON-RPC error RESPONSE frame — no `method`, which is exactly
+    /// what makes it a response rather than a request. Static and pure
+    /// like `frame`, so it is safe to build and write from `queue`
+    /// (handleMessage's server-request replies).
+    private static func errorResponseFrame(id: Int, code: Int, message: String) -> Data? {
+        wire([
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": ["code": code, "message": message] as [String: Any],
+        ])
+    }
+
+    /// The single point a message dictionary becomes a wire frame:
+    /// serialize, then the `Content-Length` wrap — the serialization
+    /// rules and the header format each exist exactly once (requests
+    /// and error responses share them).
+    private static func wire(_ message: [String: Any]) -> Data? {
+        guard let body = try? JSONSerialization.data(withJSONObject: message) else { return nil }
+        var frame = "Content-Length: \(body.count)\r\n\r\n".data(using: .ascii)!
+        frame.append(body)
         return frame
     }
 
@@ -541,13 +567,32 @@ final class LSPClient: @unchecked Sendable {
     private func handleMessage(_ data: Data) {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
 
+        // JSON-RPC: a frame with `id` is a RESPONSE to our request only
+        // when it carries no `method`. `id` + `method` is a REQUEST from
+        // the server (client/registerCapability, workspace/configuration,
+        // window/workDoneProgress/create) whose id comes from the
+        // server's own counter: consuming a pending callback on it would
+        // probabilistically drop the colliding request's parse (an
+        // initialize lost this way leaves the client forever
+        // uninitialized). Spec-compliant servers send such requests only
+        // when the matching client capability is declared — swim declares
+        // none today, so this branch is spec correctness plus armor for
+        // the day one is (or a sloppy server appears). Reply
+        // MethodNotFound — servers must tolerate it (LSP 3.17), while an
+        // unanswered request can block the server feature waiting on it.
+        // Requests with string ids are ignored like notifications.
+        let method = json["method"] as? String
         if let id = json["id"] as? Int {
-            if let callback = pendingRequests.removeValue(forKey: id) {
-                callback(data)
+            if method == nil {
+                if let callback = pendingRequests.removeValue(forKey: id) {
+                    callback(data)
+                }
+            } else if let reply = Self.errorResponseFrame(id: id, code: -32601, message: "method not found") {
+                write(reply)
             }
         }
 
-        if let method = json["method"] as? String, let params = json["params"] as? [String: Any],
+        if let method, let params = json["params"] as? [String: Any],
            method == "textDocument/publishDiagnostics",
            let uri = params["uri"] as? String {
             let version = params["version"] as? Int

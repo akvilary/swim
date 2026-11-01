@@ -12,6 +12,11 @@ class Application: WindowDelegate {
     private let spaces = Spaces()
     private var running = true
     private var lspClients: [String: LSPClient] = [:]
+    /// Executables discovered at launch, per server key — the lazy
+    /// start's input (lspClient(for:) spawns on first use).
+    private var lspExecutables: [String: String] = [:]
+    /// The workspace root given to every lazily started server.
+    private var lspRootPath = ""
     private var pendingTokenRefresh: (path: String, earliest: TimeInterval)?
     /// A "the user just arrived" signal is pending: focus events (OS
     /// focus reporting, internal focus landing on the editor window)
@@ -184,6 +189,16 @@ class Application: WindowDelegate {
                     spaces.current.update()
                     render()
                 }
+            }
+            if terminal.hasTerminationEvent {
+                // Graceful exit on SIGHUP/SIGTERM/SIGINT (terminal
+                // closed, kill, external) — through the SAME tail as
+                // `:qa`: LSP clients stop()'d, terminal restored.
+                // Dying by the default disposition instead would leave
+                // the user's shell in raw mode on the alt screen and
+                // orphan the language servers.
+                terminal.consumeTerminationEvent()
+                running = false
             }
             if terminal.hasResizeEvent {
                 terminal.consumeResizeEvent()
@@ -410,7 +425,7 @@ class Application: WindowDelegate {
             pendingTokenRefresh = nil
             if let key = lspClientKey(for: refresh.path),
                let client = lspClients[key], client.isReady {
-                client.requestSemanticTokens(uri: "file://\(refresh.path)")
+                client.requestSemanticTokens(uri: fileURI(refresh.path))
             }
         }
 
@@ -502,6 +517,12 @@ class Application: WindowDelegate {
             editor.lastError = "Unnamed buffer — save the file first"
             return
         }
+        // Deliberately the EXISTING session only (no lspClient(for:)
+        // restart here): starting servers belongs to the activation
+        // funnel alone — a restart from `gd` would create a half-alive
+        // session (no didOpen for the document) and a third policy.
+        // After a crash+reap this reports "No LSP server…"; the file's
+        // next activation restarts and re-didOpens cleanly.
         guard let key = lspClientKey(for: path), let client = lspClients[key] else {
             editor.lastError = "No LSP server for this file type"
             return
@@ -510,7 +531,19 @@ class Application: WindowDelegate {
             editor.lastError = "LSP server is not ready"
             return
         }
-        client.requestDefinition(uri: "file://\(path)", line: line, character: charUtf16)
+        client.requestDefinition(uri: fileURI(path), line: line, character: charUtf16)
+    }
+
+    /// The one construction point of LSP document URIs — the mirror of
+    /// pathFromUri. Normalizes like the buffer layer: stored buffer
+    /// paths are already normalized (BufferManager.openFile), so this is
+    /// idempotent for them — and defensive for a future caller passing
+    /// a raw path, keeping didOpen/didChange/didClose/gd addressed to
+    /// ONE document URI per file (a mismatch would silently drop the
+    /// incremental sync). Not percent-encoded — the symmetric decode in
+    /// pathFromUri tolerates it; exotic paths are a known shared edge.
+    private func fileURI(_ path: String) -> String {
+        "file://" + BufferManager.normalize(path)
     }
 
     private func pathFromUri(_ uri: String) -> String {
@@ -553,96 +586,19 @@ class Application: WindowDelegate {
         }
     }
 
+    /// Discovers every configured server's executable at launch (the
+    /// table's fixed paths, then `which`) but starts NOTHING — servers
+    /// start lazily, at the first open of their language's file
+    /// (lspClient(for:) — the VSCode/nvim model): RAM only for
+    /// languages actually in use. This file knows the PROCEDURE, not
+    /// the languages: everything per-language lives in the single
+    /// SwimCore table (LSPServers, tested).
     private func setupLSP(rootPath: String) {
-        let swiftPaths = [
-            "/usr/bin/sourcekit-lsp",
-            "/usr/local/bin/sourcekit-lsp",
-            "/home/linuxbrew/.linuxbrew/bin/sourcekit-lsp",
-            "\(NSHomeDirectory())/.swiftenv/shims/sourcekit-lsp",
-        ]
-
-        if let path = findExecutable(paths: swiftPaths, command: "sourcekit-lsp") {
-            let client = LSPClient()
-            client.start(executable: path, rootUri: "file://\(rootPath)")
-            lspClients["swift"] = client
-        }
-
-        let csharpPaths = [
-            "/usr/bin/omnisharp",
-            "/usr/local/bin/omnisharp",
-            "\(NSHomeDirectory())/.dotnet/tools/omnisharp",
-        ]
-
-        if let path = findExecutable(paths: csharpPaths, command: "omnisharp") {
-            let client = LSPClient()
-            client.start(executable: path, arguments: ["-lsp"], rootUri: "file://\(rootPath)")
-            lspClients["csharp"] = client
-        }
-
-        let goPaths = [
-            "/usr/bin/gopls",
-            "/usr/local/bin/gopls",
-            "/home/linuxbrew/.linuxbrew/bin/gopls",
-            "/opt/homebrew/bin/gopls",
-            "\(NSHomeDirectory())/go/bin/gopls",
-        ]
-
-        if let path = findExecutable(paths: goPaths, command: "gopls") {
-            let client = LSPClient()
-            client.start(executable: path, rootUri: "file://\(rootPath)")
-            lspClients["go"] = client
-        }
-
-        let rustPaths = [
-            "/usr/bin/rust-analyzer",
-            "/usr/local/bin/rust-analyzer",
-            "/home/linuxbrew/.linuxbrew/bin/rust-analyzer",
-            "/opt/homebrew/bin/rust-analyzer",
-            "\(NSHomeDirectory())/.cargo/bin/rust-analyzer",
-        ]
-
-        if let path = findExecutable(paths: rustPaths, command: "rust-analyzer") {
-            let client = LSPClient()
-            client.start(executable: path, rootUri: "file://\(rootPath)")
-            lspClients["rust"] = client
-        }
-
-        let bashPaths = [
-            "/usr/bin/bash-language-server",
-            "/usr/local/bin/bash-language-server",
-            "/home/linuxbrew/.linuxbrew/bin/bash-language-server",
-            "/opt/homebrew/bin/bash-language-server",
-            "\(NSHomeDirectory())/.npm-global/bin/bash-language-server",
-            "\(NSHomeDirectory())/.local/bin/bash-language-server",
-        ]
-
-        if let path = findExecutable(paths: bashPaths, command: "bash-language-server") {
-            let client = LSPClient()
-            client.start(executable: path, arguments: ["start"], rootUri: "file://\(rootPath)")
-            lspClients["bash"] = client
-        }
-
-        // Python: basedpyright only — it is the pyright fork that implements
-        // semantic tokens (pyright lacks them entirely). pip/uv install.
-        // [tool.basedpyright]/[tool.pyright] extraPaths and pyrightconfig.json
-        // are read by the server itself; as a fallback we forward pytest's
-        // [tool.pytest.ini_options].pythonpath via initializationOptions —
-        // but never when an explicit server config exists (it would override).
-        let basedPyrightPaths = [
-            "/usr/local/bin/basedpyright-langserver",
-            "/usr/bin/basedpyright-langserver",
-            "/home/linuxbrew/.linuxbrew/bin/basedpyright-langserver",
-            "/opt/homebrew/bin/basedpyright-langserver",
-            "\(NSHomeDirectory())/.local/bin/basedpyright-langserver",
-        ]
-
-        if let path = findExecutable(paths: basedPyrightPaths, command: "basedpyright-langserver") {
-            let client = LSPClient()
-            client.start(executable: path, arguments: ["--stdio"], rootUri: "file://\(rootPath)")
-            if let settings = pythonWorkspaceSettings(rootPath: rootPath) {
-                client.applyWorkspaceSettings(settings)
+        lspRootPath = rootPath
+        for spec in LSPServers.all {
+            if let path = findExecutable(paths: spec.paths, command: spec.command) {
+                lspExecutables[spec.key] = path
             }
-            lspClients["python"] = client
         }
 
         if let filePath = editor.filePath {
@@ -650,42 +606,36 @@ class Application: WindowDelegate {
         }
     }
 
+    /// The client for a server key, starting it on first use: the
+    /// didOpen that triggered the start rides LSPClient's own
+    /// pre-initialize queue (pendingDidOpens), so the call site needs
+    /// no readiness dance. nil — no executable was found at launch, so
+    /// "No LSP server for this file type" stays accurate. A server
+    /// stays up once started (its reaping path is unchanged).
+    private func lspClient(for key: String) -> LSPClient? {
+        if let client = lspClients[key] { return client }
+        guard let path = lspExecutables[key],
+              let spec = LSPServers.spec(forKey: key) else { return nil }
+        let client = LSPClient()
+        client.start(
+            executable: path,
+            arguments: spec.arguments,
+            rootUri: fileURI(lspRootPath),
+            initializationOptions: spec.initializationOptions
+        )
+        LSPServerSetup.postStart(serverKey: key, client: client, rootPath: lspRootPath)
+        lspClients[key] = client
+        return client
+    }
+
     private func isDirectory(_ path: String) -> Bool {
         var isDir: ObjCBool = false
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
     }
 
-    /// Builds basedpyright workspace settings, pushed via
-    /// workspace/didChangeConfiguration (the only settings channel
-    /// basedpyright reads — its initializationOptions carries nothing but
-    /// disablePullDiagnostics). The baseline matches pyright's defaults:
-    /// basedpyright alone defaults typeCheckingMode to "all", whose
-    /// reportUnknown*/annotation rules flood the diagnostics swim now
-    /// renders; openFilesOnly keeps large monorepos from burning a CPU
-    /// core analyzing files the user never opened. Returns nil when the
-    /// server has its own config ([tool.basedpyright], [tool.pyright] or
-    /// pyrightconfig.json) — that config must win. extraPaths is NOT
-    /// forwarded: basedpyright accepts it only from the config file, so
-    /// projects needing search paths write them into pyproject.toml.
-    private func pythonWorkspaceSettings(rootPath: String) -> [String: Any]? {
-        if let text = try? String(contentsOfFile: rootPath + "/pyproject.toml", encoding: .utf8) {
-            guard !Self.tomlHasSection(text, "tool.basedpyright"),
-                  !Self.tomlHasSection(text, "tool.pyright"),
-                  !FileManager.default.fileExists(atPath: rootPath + "/pyrightconfig.json") else { return nil }
-        }
-        return ["pyright": ["typeCheckingMode": "standard", "diagnosticMode": "openFilesOnly"]]
-    }
-
-    /// True when the TOML text contains the `[section]` header.
-    private static func tomlHasSection(_ text: String, _ section: String) -> Bool {
-        text.split(separator: "\n").contains { line in
-            let t = line.trimmingCharacters(in: .whitespaces)
-            guard t.hasPrefix("["), t.hasSuffix("]") else { return false }
-            return t.dropFirst().dropLast().trimmingCharacters(in: .whitespaces) == section
-        }
-    }
-
-
+    /// Discovery shared by every server row: candidate absolute paths
+    /// first, then the `which` fallback (its result can be a symlink or
+    /// live outside the fixed list — start() re-checks executability).
     private func findExecutable(paths: [String], command: String) -> String? {
         for path in paths {
             if FileManager.default.fileExists(atPath: path) {
@@ -697,27 +647,23 @@ class Application: WindowDelegate {
         return result.isEmpty ? nil : result
     }
 
+    /// Which language server owns this file — the executable-target
+    /// seam over the single SwimCore wiring table (LSPServers).
     private func lspClientKey(for filePath: String) -> String? {
-        let ext = (filePath as NSString).pathExtension
-        switch ext {
-        case "swift": return "swift"
-        case "cs", "csx": return "csharp"
-        case "go": return "go"
-        case "rs": return "rust"
-        case "sh", "bash": return "bash"
-        case "py", "pyw", "pyi": return "python"
-        default: return nil
-        }
+        LSPServers.serverKey(forPath: filePath)
     }
 
     private func notifyLSPFileOpen(_ path: String) {
         guard let key = lspClientKey(for: path),
-              let client = lspClients[key] else { return }
-        guard let buf = editor.buffer, buf.totalLength < 5_000_000 else { return }
+              let client = lspClient(for: key),
+              !editor.tabs.active.lspOpened,
+              let text = editor.buffer,
+              text.totalLength < 5_000_000 else { return }
+        editor.tabs.active.lspOpened = true
         let normalized = BufferManager.normalize(path)
-        let uri = "file://\(normalized)"
-        let langId = SyntaxTokenizer.languageId(for: (normalized as NSString).pathExtension)
-        client.openDocument(uri: uri, languageId: langId, text: buf.getAllText())
+        let uri = fileURI(normalized)
+        let langId = LSPServers.languageId(forPath: normalized)
+        client.openDocument(uri: uri, languageId: langId, text: text.getAllText())
     }
 
     private func handleGlobalKey(_ key: Key) {
@@ -1430,7 +1376,7 @@ class Application: WindowDelegate {
         guard let path = filePath,
               let key = lspClientKey(for: path),
               let client = lspClients[key] else { return }
-        client.closeDocument(uri: "file://\(path)")
+        client.closeDocument(uri: fileURI(path))
     }
 
     func openFile(_ path: String) {
@@ -1460,10 +1406,11 @@ class Application: WindowDelegate {
 
     private func openFileInEditor(_ path: String) {
         ensureEditorVisible()
-        let isNew = editor.openFile(path)
+        // The LSP didOpen rides activateCurrentTab's activeFileChanged
+        // funnel (idempotent per buffer) — no isNew special case here.
+        _ = editor.openFile(path)
         editor.dirty = true
         updateStatusBar()
-        if isNew { notifyLSPFileOpen(path) }
         // Opening a file raises the editor to the top of the stack.
         focus(editor)
     }
@@ -1478,6 +1425,13 @@ class Application: WindowDelegate {
     }
 
     func activeFileChanged() {
+        // Every path that makes a file active funnels here (openFile,
+        // `:e`'s replaceCurrent, tab switches) — the LSP didOpen rides
+        // the same funnel, idempotent per buffer (EditorBuffer.lspOpened).
+        // With the lazy start this is what brings a server up for a
+        // `:e`-opened file; it also closes the older gap where `:e`
+        // files never received didOpen at all (no semantic tokens).
+        if let path = editor.filePath { notifyLSPFileOpen(path) }
         fetchGitStats()
         // A tab switch (gt/gT, Ctrl+H/L), a close, `:e` — the active
         // file changed, keep the open explorer tree pointing at it.
@@ -1600,7 +1554,7 @@ class Application: WindowDelegate {
         guard let path = fresh.filePath,
               let key = lspClientKey(for: path),
               let client = lspClients[key], client.isReady else { return }
-        client.reloadDocument(uri: "file://\(path)",
+        client.reloadDocument(uri: fileURI(path),
                               text: fresh.buffer.getAllText())
     }
 
@@ -1737,13 +1691,25 @@ class Application: WindowDelegate {
                 // server) — works, but implicit and version-dependent.
                 client.stop()
                 lspClients.removeValue(forKey: key)
+                // THEIR documents' didOpen state dies with the client:
+                // the next activation lazily starts a fresh server, and
+                // these buffers must didOpen to it anew (a stale lspOpened
+                // would leave the new server receiving didChanges for
+                // documents it never saw opened). Only THIS key's buffers
+                // — resetting the others would send duplicate didOpens to
+                // their alive servers.
+                for tab in editor.tabs.buffers {
+                    if let p = tab.filePath, lspClientKey(for: p) == key {
+                        tab.lspOpened = false
+                    }
+                }
                 _ = editor.takeLSPPendingChanges()
             }
             return
         }
         let changes = editor.takeLSPPendingChanges()
         guard !changes.isEmpty else { return }
-        client.changeDocument(uri: "file://\(path)", changes: changes)
+        client.changeDocument(uri: fileURI(path), changes: changes)
         // Positions in the cached semantic tokens are now stale — schedule a
         // debounced semanticTokens/full re-request for this document.
         pendingTokenRefresh = (path: path, earliest: Date().timeIntervalSince1970 + 0.3)

@@ -33,6 +33,13 @@ final class EditorBuffer {
     let buffer: PieceTable
     let filePath: String?
     var modified: Bool = false
+
+    /// Whether an LSP didOpen has been sent for this document (once per
+    /// buffer lifetime — Application sets it when the frame is queued; a
+    /// file closed and reopened is a NEW buffer and reopens its session).
+    /// Makes the activeFileChanged funnel idempotent: switching back to a
+    /// tab does not re-didOpen its already-open document.
+    var lspOpened = false
     var mode: WindowMode = .normal
     var cursorLine: Int = 0
     var cursorCol: Int = 0
