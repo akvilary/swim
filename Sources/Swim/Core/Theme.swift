@@ -29,6 +29,11 @@ enum Theme {
     static let gitAdd = Color.rgb(r: 0x44, g: 0x9d, b: 0xab)
     static let gitChange = Color.rgb(r: 0x61, g: 0x83, b: 0xbb)
     static let gitDelete = Color.rgb(r: 0x91, g: 0x4c, b: 0x54)
+    /// The string hue dimmed 40% — interpolation delimiters. DERIVED
+    /// from the string color (`green`), never a literal: a future
+    /// theme that changes the string color moves the delimiters with
+    /// it — braces must always read as part of the string.
+    static let stringInterpolation = green.dimmed(by: 0.6)
     /// Git decorations — a single palette shared by three surfaces: line
     /// numbers in the editor gutter, file names in the explorer, status
     /// letters in the git panel. Change them here, not at the use sites.
@@ -55,6 +60,10 @@ enum Theme {
         case "parameter", "selfParameter", "clsParameter": return yellow
         case "operator": return blue5
         case "punctuation": return fg
+        // Interpolation delimiters: the string hue at 60% brightness —
+        // derived (stringInterpolation), so any theme keeps them in the
+        // string family.
+        case "interpolation": return stringInterpolation
         case "namespace", "module": return module
         case "decorator", "attribute": return yellow
         case "regexp": return red

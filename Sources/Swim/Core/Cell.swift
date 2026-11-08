@@ -39,6 +39,20 @@ enum Color: Equatable {
     case brightWhite
     case rgb(r: UInt8, g: UInt8, b: UInt8)
 
+    /// Each channel scaled by `factor` (0…1) — the hue preserved, the
+    /// color literally darker. Meaningful for `.rgb` only; named
+    /// system colors pass through unchanged (themes never use them for
+    /// token colors). The serialization tiers (truecolor/256/mono)
+    /// degrade the result exactly like any other .rgb.
+    func dimmed(by factor: Double) -> Color {
+        if case .rgb(let r, let g, let b) = self {
+            return .rgb(r: UInt8(Double(r) * factor),
+                        g: UInt8(Double(g) * factor),
+                        b: UInt8(Double(b) * factor))
+        }
+        return self
+    }
+
     private func ansiCode(base: Int) -> String {
         // Mono (NO_COLOR / dumb): no color is asserted at all — the
         // one exception is the reset-to-default code, which clears

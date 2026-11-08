@@ -21,14 +21,18 @@ class PreviewWindow: Window {
     /// The preview's color policy — a DIM overview with the lexical
     /// types colored: keywords, strings, numbers, comments (markdown's
     /// vocabulary falls out as markers/fences/lists/quotes almost in
-    /// full). Everything else keeps the dim base; the editor's full
-    /// map lives in Theme.color(forToken:) — the preview deliberately
-    /// takes a subset rather than a second palette.
+    /// full). Interpolation delimiters keep the string-family
+    /// derivation. Everything else keeps the dim base; the editor's
+    /// full map lives in Theme.color(forToken:) — the preview
+    /// deliberately takes a subset rather than a second palette.
     private static let tokenColors: [String: Color] = [
         "keyword": Theme.magenta,
         "string": Theme.green,
         "number": Theme.orange,
         "comment": Theme.comment,
+        // Same derivation as the editor's map — braces stay in the
+        // string family here too.
+        "interpolation": Theme.stringInterpolation,
     ]
 
     func loadFile(_ path: String?, highlightLine: Int = -1) {

@@ -169,7 +169,63 @@ public struct SyntaxTokenizer {
 
     public enum MultilineStringState: Equatable, Sendable {
         case none
-        case active(ruleIndex: Int)
+        /// `interpolating` — the profile's interpolation gate evaluated
+        /// ON for the open string (an f-prefixed python literal, any
+        /// swift string, a js template): continuation lines scan for
+        /// replacement fields. The content is immutable, so the flag
+        /// rides the ladder with the rule index.
+        case active(ruleIndex: Int, interpolating: Bool)
+    }
+
+    /// When a string occurrence interpolates.
+    public enum InterpolationGate: Sendable {
+        /// Every string (swift — interpolation is not opt-in).
+        case always
+        /// Prefix letters switch it on — python f/F, C# $.
+        case prefix(Set<Character>)
+        /// Prefix letters switch it OFF — dart raw r/R.
+        case prefixExcluding(Set<Character>)
+        /// Only these quote characters — js backticks; ruby/shell
+        /// double quotes (single quotes are literal there).
+        case quote(Set<Character>)
+    }
+
+    /// String interpolation per language — the sibling of
+    /// MultilineStringRule: declarative data, one shared scanner (the
+    /// same "embedded code region" model as VS Code's
+    /// `string.interpolated` scopes and PyCharm's PSI injection). A
+    /// replacement field's expression is tokenized as ordinary code by
+    /// a recursive tokenize call; text chunks, spec and doubled
+    /// openers stay string-colored; the delimiters are punctuation.
+    ///
+    /// The field matcher tracks the depth of all three bracket kinds
+    /// and skips nested string literals; the field closes where the
+    /// running depth first goes negative. The spec-separator rule is
+    /// CPython's own (PEP 498: expressions cannot contain ':' outside
+    /// of strings or parentheses, brackets or braces) — separators
+    /// count only at depth zero.
+    public struct InterpolationRule: Sendable {
+        /// The field opener: "{", "\\(", "${" or "#{". Multi-character
+        /// openers leave lone braces plain text (js/dart/shell/ruby —
+        /// `{{ name }}` in an embedded Vue template stays a string).
+        public let open: String
+        /// Depth-zero separators that start the format spec (":",
+        /// python; ":" and "," (alignment), C#). The spec — separators
+        /// included — is emitted as one string token.
+        public let specSeparators: Set<Character>
+        /// A doubled opener is a literal brace ("{{") — python and C#
+        /// regular interpolated strings.
+        public let doubling: Bool
+        /// Interpolation continues on the ladder's continuation lines.
+        /// False for C#: its interpolating multi-line forms ($"""/$$""")
+        /// have different brace semantics — deferred.
+        public let multiline: Bool
+        /// Python: a backslash does not swallow a following opener —
+        /// CPython keeps the backslash as text and still opens the
+        /// field (f"\{x}" interpolates). Elsewhere "\{" / "\$" escapes
+        /// the opener into text.
+        public let openAfterBackslash: Bool
+        public let gate: InterpolationGate
     }
 
     /// Per-language syntax profile: multi-line string rules, the
@@ -191,28 +247,52 @@ public struct SyntaxTokenizer {
         /// `$#`, `x=1#c` are not comments. Python hashes comment anywhere.
         public let lineCommentAtWordStartOnly: Bool
         public var softKeywords: Set<String> = []
-        /// Python f/r/b/u string prefixes: in `f"x"` the prefix belongs to
-        /// the string token, not an identifier.
-        public var stringPrefixes: Bool = false
+        /// String-prefix letters glued to the opening quote (python
+        /// f/r/b/u, C# $/@, dart r/R): the prefix belongs to the string
+        /// token. Empty — the language has none.
+        public var stringPrefixChars: Set<Character> = []
+        /// Replacement-field scanning; nil — the language has no
+        /// interpolation (rust, go, the C family) or it is deferred
+        /// (dart/shell `$ident` shorthands, shell `$(...)`).
+        public var interpolation: InterpolationRule? = nil
 
         public static let `default` = LanguageSyntax(mlRules: [], lineComment: nil, lineCommentAtWordStartOnly: false)
     }
 
-    /// Letters valid in Python string prefixes (f/r/b/u, any case, any
-    /// combination — `fr`, `rb`, …).
-    static let stringPrefixChars: Set<Character> = ["f", "F", "r", "R", "b", "B", "u", "U"]
+    /// A replacement field must close on its own line, and no real one
+    /// approaches this length. The cap bounds the field matcher's scan
+    /// so a pathological line of UNMATCHED openers (machine-generated
+    /// or adversarial — each bail would otherwise rescan to end of
+    /// line, quadratic per draw) stays linear-time. Past the cap the
+    /// field is malformed by definition — the opener degrades to text
+    /// (INV1): never a crash, never a state change, per-line only.
+    static let fieldScanLimit = 512
+
+    /// VS Code parity (TokenizationSupportWithLineLimit): lines at or
+    /// beyond this many graphemes are not tokenized at all — plain
+    /// text, and the ladder state passes through UNCHANGED (the state
+    /// at the beginning of the line is returned, exactly like VS
+    /// Code's nullTokenizeEncoded; a multiline string stays open until
+    /// its next real delimiter). The render walk is already windowed
+    /// by the visible width — this guard leaves tokenization the last
+    /// unbounded per-draw cost on a huge line and removes it.
+    static let lineTokenizeLimit = 20_000
 
     /// Merges one line's syntactic (builtin) tokens with its LSP semantic
     /// tokens. LSP wins on overlap — except inside builtin string tokens:
-    /// servers like pyright leave string coloring to syntax highlighting
-    /// yet still emit tokens for f-string interpolation expressions, which
-    /// would otherwise evict the string span and leave f-strings uncolored.
-    /// An LSP token nested in a string is swallowed by it — but only by a
-    /// string that survived the merge: a string evicted by a partially
-    /// overlapping LSP token must not take nested tokens with it (that
-    /// would leave a coverage hole). Partial overlaps still evict the
-    /// builtin token as before. Returns tokens sorted by startChar with
-    /// no overlaps.
+    /// a server token NESTED in a string token is swallowed (strings are
+    /// the builtin layer's domain — pyright leaves their coloring to
+    /// syntax highlighting; this also dedupes string tokens from servers
+    /// that do emit them). Interpolating strings are SEGMENTED (string
+    /// chunks + code tokens for the field expressions), so a server's
+    /// interpolation tokens now overlap the builtin code tokens and
+    /// replace them cleanly; the swallow rule keeps protecting the
+    /// string chunks. An LSP token STRADDLING a chunk boundary evicts
+    /// the chunk and may leave an uncolored gap — accepted: eviction can
+    /// already leave gaps for any token kind (provenance over coverage
+    /// — output tokens are never invented); if a real server ever
+    /// straddles, the fix belongs in the LSP span conversion, not here.
+    /// Returns tokens sorted by startChar with no overlaps.
     public static func mergeWithLSP(builtin: [SemanticToken], lsp: [SemanticToken]) -> [SemanticToken] {
         func overlaps(_ a: SemanticToken, _ b: SemanticToken) -> Bool {
             a.startChar < b.startChar + b.length && b.startChar < a.startChar + a.length
@@ -243,11 +323,19 @@ public struct SyntaxTokenizer {
                 ],
                 lineComment: "#", lineCommentAtWordStartOnly: false,
                 softKeywords: pythonSoftKeywords,
-                stringPrefixes: true)
+                stringPrefixChars: ["f", "F", "r", "R", "b", "B", "u", "U"],
+                interpolation: InterpolationRule(
+                    open: "{", specSeparators: [":"], doubling: true,
+                    multiline: true, openAfterBackslash: true,
+                    gate: .prefix(["f", "F"])))
         case "swift":
             syntax = LanguageSyntax(
                 mlRules: [MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true)],
-                lineComment: "//", lineCommentAtWordStartOnly: false)
+                lineComment: "//", lineCommentAtWordStartOnly: false,
+                interpolation: InterpolationRule(
+                    open: "\\(", specSeparators: [], doubling: false,
+                    multiline: true, openAfterBackslash: false,
+                    gate: .always))
         case "go":
             syntax = LanguageSyntax(
                 mlRules: [MultilineStringRule(open: "`", close: "`", escapes: false)],
@@ -258,22 +346,58 @@ public struct SyntaxTokenizer {
                 mlRules: [MultilineStringRule(open: "\"", close: "\"", escapes: true)],
                 lineComment: "//", lineCommentAtWordStartOnly: false)
         case "cs", "csx":
+            // multiline:false — the interpolating multi-line forms
+            // ($""" / $$""") use single-brace fields; deferred.
             syntax = LanguageSyntax(
                 mlRules: [
                     MultilineStringRule(open: "\"\"\"", close: "\"\"\"", escapes: true),
                     MultilineStringRule(open: "@\"", close: "\"", escapes: true),
                 ],
-                lineComment: "//", lineCommentAtWordStartOnly: false)
+                lineComment: "//", lineCommentAtWordStartOnly: false,
+                stringPrefixChars: ["$", "@"],
+                interpolation: InterpolationRule(
+                    open: "{", specSeparators: [":", ","], doubling: true,
+                    multiline: false, openAfterBackslash: true,
+                    gate: .prefix(["$"])))
         case "sh", "bash":
-            syntax = LanguageSyntax(mlRules: [], lineComment: "#", lineCommentAtWordStartOnly: true)
-        case "yaml", "yml", "toml", "rb":
+            syntax = LanguageSyntax(
+                mlRules: [], lineComment: "#", lineCommentAtWordStartOnly: true,
+                interpolation: InterpolationRule(
+                    open: "${", specSeparators: [], doubling: false,
+                    multiline: false, openAfterBackslash: false,
+                    gate: .quote(["\""])))
+        case "yaml", "yml", "toml":
             syntax = LanguageSyntax(mlRules: [], lineComment: "#", lineCommentAtWordStartOnly: false)
-        // The C/JS/Dart family shares the profile shape (no ml rules of
+        case "rb":
+            syntax = LanguageSyntax(
+                mlRules: [], lineComment: "#", lineCommentAtWordStartOnly: false,
+                interpolation: InterpolationRule(
+                    open: "#{", specSeparators: [], doubling: false,
+                    multiline: false, openAfterBackslash: false,
+                    gate: .quote(["\""])))
+        case "js", "ts", "jsx", "tsx":
+            // Template literals: may span lines (hence the ml rule) and
+            // interpolate ${…} inside backticks only.
+            syntax = LanguageSyntax(
+                mlRules: [MultilineStringRule(open: "`", close: "`", escapes: true)],
+                lineComment: "//", lineCommentAtWordStartOnly: false,
+                interpolation: InterpolationRule(
+                    open: "${", specSeparators: [], doubling: false,
+                    multiline: true, openAfterBackslash: false,
+                    gate: .quote(["`"])))
+        case "dart":
+            syntax = LanguageSyntax(
+                mlRules: [], lineComment: "//", lineCommentAtWordStartOnly: false,
+                stringPrefixChars: ["r", "R"],
+                interpolation: InterpolationRule(
+                    open: "${", specSeparators: [], doubling: false,
+                    multiline: false, openAfterBackslash: false,
+                    gate: .prefixExcluding(["r", "R"])))
+        // The C family keeps the shared profile shape (no ml rules of
         // their own, "//" comments) — explicit so that "known language"
         // and ".default's unknown file" stay distinguishable: only a
         // listed extension carries a comment token.
-        case "c", "h", "cpp", "cc", "cxx", "hpp", "hxx",
-             "js", "ts", "jsx", "tsx", "dart":
+        case "c", "h", "cpp", "cc", "cxx", "hpp", "hxx":
             syntax = LanguageSyntax(mlRules: [], lineComment: "//", lineCommentAtWordStartOnly: false)
         default:
             syntax = .default
@@ -284,7 +408,8 @@ public struct SyntaxTokenizer {
             lineComment: syntax.lineComment,
             lineCommentAtWordStartOnly: syntax.lineCommentAtWordStartOnly,
             softKeywords: syntax.softKeywords,
-            stringPrefixes: syntax.stringPrefixes)
+            stringPrefixChars: syntax.stringPrefixChars,
+            interpolation: syntax.interpolation)
         return sorted
     }
 
@@ -353,10 +478,24 @@ public struct SyntaxTokenizer {
     public static func tokenize(chars: [Character], lineNum: Int, keywords: Set<String>,                          syntax: LanguageSyntax = .default,
                           initialState: MultilineStringState = .none,
                           literals: Set<String> = []) -> (tokens: [SemanticToken], endState: MultilineStringState) {
+        // The huge-line guard (see lineTokenizeLimit). Placed before
+        // everything: zero work, state passthrough.
+        if chars.count >= SyntaxTokenizer.lineTokenizeLimit {
+            return ([], initialState)
+        }
         var tokens = [SemanticToken]()
         let len = chars.count
         var i = 0
         var state = initialState
+        // Total field-matching allowance for this line — the
+        // deterministic analogue of VS Code's per-call tokenization
+        // budget. Each unmatched opener burns up to fieldScanLimit
+        // before bailing; a line of machine-junk openers would burn
+        // 512×n. The budget stops that early: past it, openers degrade
+        // to plain text (INV1) and the worst case is bounded by ~3·n
+        // regardless of input. Real lines never approach it — a line's
+        // legitimate field content is at most its own length.
+        var fieldScanBudget = 2 * len + 4096
 
         func matches(_ seq: String, at pos: Int) -> Bool {
             guard pos + seq.count <= len else { return false }
@@ -375,10 +514,188 @@ public struct SyntaxTokenizer {
             return nil
         }
 
+        // The one quoted-literal skipper: from just past an opening
+        // quote to just past its closing quote, escapes honored (even
+        // in raw literals — CPython: a raw string cannot end in a
+        // backslash). Unterminated (or a trailing backslash) — len:
+        // the result never leaves the line. Single authority for both
+        // the string terminator and the field matcher's nested-literal
+        // skip — the two must never drift apart (`f"{s.replace('a',
+        // '}')}"` depends on both agreeing what a literal is).
+        func scanQuotedEnd(from: Int, quote: Character) -> Int {
+            var k = from
+            while k < len {
+                if chars[k] == "\\" { k += 2; continue }
+                if chars[k] == quote { return k + 1 }
+                k += 1
+            }
+            return len
+        }
+
+        // Does this string occurrence interpolate? `prefix` — the
+        // prefix letters glued to the opening quote; `quote` — its
+        // quote character; `multiline` — the caller's form (single-line
+        // strings are unrestricted, ladder forms require rule.multiline).
+        func interpolationActive(_ rule: InterpolationRule, prefix: String,
+                                 quote: Character, multiline: Bool) -> Bool {
+            if multiline && !rule.multiline { return false }
+            switch rule.gate {
+            case .always: return true
+            case .prefix(let set): return prefix.contains { set.contains($0) }
+            case .prefixExcluding(let set): return !prefix.contains { set.contains($0) }
+            case .quote(let set): return set.contains(quote)
+            }
+        }
+
+        // Finds the replacement field opened at `from` (just past the
+        // opener). Depth runs over all three bracket kinds; nested
+        // string literals are skipped whole (a `}` inside `'}'` must
+        // not close the field). The field closes where the running
+        // depth first goes NEGATIVE. Spec separators count only at
+        // depth zero (PEP 498's rule). Nil — unmatched, past
+        // fieldScanLimit, or the line's scan budget is spent: the
+        // caller degrades the opener to plain text. Whatever happened,
+        // the consumed allowance is booked to the budget.
+        func matchField(_ rule: InterpolationRule, from: Int) -> (specStart: Int?, closeAt: Int)? {
+            let allowance = min(SyntaxTokenizer.fieldScanLimit, fieldScanBudget)
+            guard allowance > 0 else { return nil }
+            var k = from
+            let limit = min(len, from + allowance)
+            var depth = 0
+            var specStart: Int? = nil
+            var result: (specStart: Int?, closeAt: Int)? = nil
+            while k < limit {
+                let ch = chars[k]
+                if ch == "\"" || ch == "'" {
+                    k = scanQuotedEnd(from: k + 1, quote: ch)
+                    continue
+                }
+                if ch == "(" || ch == "[" || ch == "{" { depth += 1; k += 1; continue }
+                if ch == ")" || ch == "]" || ch == "}" {
+                    depth -= 1
+                    if depth < 0 {
+                        result = (specStart, k)
+                        break
+                    }
+                    k += 1
+                    continue
+                }
+                if depth == 0 && specStart == nil && rule.specSeparators.contains(ch) {
+                    specStart = k
+                }
+                k += 1
+            }
+            fieldScanBudget -= (k - from)
+            return result
+        }
+
+        // The interpolated-string body scan — the single shared engine
+        // behind every language's InterpolationRule.
+        //
+        // INV1 — this scan is the SOLE owner of string termination: the
+        // close delimiter is checked before anything else each step;
+        // the field matcher never decides termination. An unmatched
+        // opener degrades to plain text and scanning resumes right
+        // after it (self-healing on the next delimiter).
+        //
+        // INV2 — expression sub-scans run with initialState .none and
+        // their endState is DISCARDED: the ladder is driven only by
+        // this outer scan, so a pathological field can never corrupt it.
+        //
+        // Emission: text chunks → string; opener → punctuation;
+        // expression → recursive tokenize (ordinary code tokens);
+        // spec (separators included) → string; closer → punctuation.
+        // Returns the index just past the closing delimiter, or nil
+        // when the string runs to end of line (trailing chunk emitted).
+        func scanInterpolated(_ rule: InterpolationRule, from: Int,
+                              chunkStart: Int, close: String) -> Int? {
+            var j = from
+            var chunk = chunkStart
+            func emitString(_ to: Int) {
+                if to > chunk {
+                    tokens.append(SemanticToken(line: lineNum, startChar: chunk,
+                                                length: to - chunk, type: "string", modifiers: 0))
+                }
+            }
+            while j < len {
+                // 1 — close delimiter first: the body scan owns termination.
+                if matches(close, at: j) {
+                    emitString(j + close.count)
+                    return j + close.count
+                }
+                // 2 — the interpolation trigger, checked BEFORE escape
+                //     handling: swift's trigger itself starts with a
+                //     backslash and would otherwise be eaten as a pair.
+                if matches(rule.open, at: j) {
+                    // A doubled opener is a literal brace ("{{").
+                    if rule.doubling && matches(rule.open, at: j + rule.open.count) {
+                        j += rule.open.count * 2
+                        continue
+                    }
+                    if let field = matchField(rule, from: j + rule.open.count) {
+                        let openEnd = j + rule.open.count
+                        emitString(j)
+                        tokens.append(SemanticToken(line: lineNum, startChar: j,
+                                                    length: rule.open.count, type: "interpolation", modifiers: 0))
+                        // The expression, as ordinary code (INV2).
+                        let exprEnd = field.specStart ?? field.closeAt
+                        if exprEnd > openEnd {
+                            let inner = tokenize(chars: Array(chars[openEnd..<exprEnd]),
+                                                 lineNum: lineNum, keywords: keywords,
+                                                 syntax: syntax, initialState: .none,
+                                                 literals: literals).tokens
+                            for t in inner {
+                                tokens.append(SemanticToken(
+                                    line: lineNum, startChar: t.startChar + openEnd,
+                                    length: t.length, type: t.type, modifiers: 0))
+                            }
+                        }
+                        // The format spec — separators included — stays string.
+                        if let sp = field.specStart, field.closeAt > sp {
+                            tokens.append(SemanticToken(line: lineNum, startChar: sp,
+                                                        length: field.closeAt - sp,
+                                                        type: "string", modifiers: 0))
+                        }
+                        tokens.append(SemanticToken(line: lineNum, startChar: field.closeAt,
+                                                    length: 1, type: "interpolation", modifiers: 0))
+                        j = field.closeAt + 1
+                        chunk = j
+                        continue
+                    }
+                    // INV1 bail: the opener is plain text; resume right after it.
+                    j += 1
+                    continue
+                }
+                // 3 — escapes. Python twist: a backslash does not swallow
+                //     a following opener (CPython keeps the backslash as
+                //     text and still opens the field — f"\{x}").
+                if chars[j] == "\\" {
+                    if rule.openAfterBackslash && matches(rule.open, at: j + 1) {
+                        j += 1
+                        continue
+                    }
+                    j += 2
+                    continue
+                }
+                j += 1
+            }
+            emitString(len)
+            return nil
+        }
+
         // Continuation of a multi-line string opened on a previous line
-        if case .active(let ruleIndex) = state {
+        if case .active(let ruleIndex, let interpolating) = state {
             let rule = syntax.mlRules[ruleIndex]
-            if let (_, after) = scanClose(rule, from: 0) {
+            if interpolating, let irule = syntax.interpolation {
+                // Same engine, chunk from column 0; INV1/INV2 hold — an
+                // unclosed field degrades to text, the ladder is untouched.
+                if let after = scanInterpolated(irule, from: 0, chunkStart: 0, close: rule.close) {
+                    i = after
+                    state = .none
+                } else {
+                    return (tokens, state)
+                }
+            } else if let (_, after) = scanClose(rule, from: 0) {
                 // The closing delimiter is part of the string token,
                 // matching the single-line string convention.
                 tokens.append(SemanticToken(line: lineNum, startChar: 0, length: after, type: "string", modifiers: 0))
@@ -412,52 +729,90 @@ public struct SyntaxTokenizer {
                 continue
             }
 
-            // Python string prefixes (f/r/b/u, any combo): a prefix-only
-            // word directly abutting a quote makes the whole literal one
-            // string token — `f"x"`, `rb'…'`, `f"""…"""`. Adjacency
-            // matters: `f "x"` keeps `f` a plain identifier.
+            // String prefixes (python f/r/b/u, C# $/@, dart r/R — any
+            // combo): a prefix-only word directly abutting a quote makes
+            // the whole literal one string token — `f"x"`, `rb'…'`,
+            // `f"""…"""`. Adjacency matters: `f "x"` keeps `f` a plain
+            // identifier.
             var prefixEnd = i
-            if syntax.stringPrefixes, stringPrefixChars.contains(chars[i]) {
+            if !syntax.stringPrefixChars.isEmpty, syntax.stringPrefixChars.contains(chars[i]) {
                 var p = i + 1
-                while p < len, stringPrefixChars.contains(chars[p]) { p += 1 }
+                while p < len, syntax.stringPrefixChars.contains(chars[p]) { p += 1 }
                 if p < len, chars[p] == "\"" || chars[p] == "'" { prefixEnd = p }
             }
+
+            // The string's prefix letters (f, $@, r…) — one computation
+            // for both gates below.
+            let stringPrefix = prefixEnd > i ? String(chars[i..<prefixEnd]) : ""
 
             // Multi-line string openers (checked before the single-line branch
             // so """ wins over " and @" over "). Rules are per file extension:
             // python files never scan for rust-style " strings and vice versa.
             // The first-character pre-check keeps per-char cost at a compare.
-            // With a string prefix the opener sits at `prefixEnd`; the token
-            // starts at the prefix either way.
-            var matchedRule: (index: Int, rule: MultilineStringRule)?
+            // The opener normally sits at `prefixEnd` (a prefix glued to it);
+            // when the prefix scan swallowed an opener's leading letters
+            // (C# `@"`), the rules are retried at `i` — the token starts at
+            // the prefix either way.
+            var matchedRule: (index: Int, rule: MultilineStringRule, openAt: Int)?
             let c = chars[prefixEnd]
             for (idx, rule) in syntax.mlRules.enumerated()
             where rule.open.first == c && matches(rule.open, at: prefixEnd) {
-                matchedRule = (idx, rule)
+                matchedRule = (idx, rule, prefixEnd)
                 break
             }
+            if matchedRule == nil, prefixEnd > i {
+                for (idx, rule) in syntax.mlRules.enumerated()
+                where rule.open.first == chars[i] && matches(rule.open, at: i) {
+                    matchedRule = (idx, rule, i)
+                    break
+                }
+            }
             if let m = matchedRule {
-                if let (_, after) = scanClose(m.rule, from: prefixEnd + m.rule.open.count) {
+                // The gate sees the prefix letters BEFORE the opener — for
+                // an opener matched at `i` (@"…) there are none.
+                let gatePrefix = m.openAt == prefixEnd ? stringPrefix : ""
+                let activeRule: InterpolationRule? = {
+                    guard let r = syntax.interpolation,
+                          interpolationActive(r, prefix: gatePrefix,
+                                              quote: m.rule.open.last ?? "\"",
+                                              multiline: true) else { return nil }
+                    return r
+                }()
+                if let r = activeRule {
+                    if let after = scanInterpolated(r, from: m.openAt + m.rule.open.count,
+                                                    chunkStart: i, close: m.rule.close) {
+                        i = after
+                    } else {
+                        return (tokens, .active(ruleIndex: m.index, interpolating: true))
+                    }
+                    continue
+                }
+                if let (_, after) = scanClose(m.rule, from: m.openAt + m.rule.open.count) {
                     tokens.append(SemanticToken(line: lineNum, startChar: i, length: after - i, type: "string", modifiers: 0))
                     i = after
                 } else {
                     tokens.append(SemanticToken(line: lineNum, startChar: i, length: len - i, type: "string", modifiers: 0))
-                    return (tokens, .active(ruleIndex: m.index))
+                    return (tokens, .active(ruleIndex: m.index, interpolating: false))
                 }
                 continue
             }
 
             if c == "\"" || c == "'" {
                 let quote = c
+                if let r = syntax.interpolation,
+                   interpolationActive(r, prefix: stringPrefix,
+                                       quote: quote, multiline: false) {
+                    // Emits the whole literal — closing chunk on this
+                    // line, trailing chunk at end of line (INV1).
+                    i = scanInterpolated(r, from: prefixEnd + 1, chunkStart: i,
+                                         close: String(quote)) ?? len
+                    continue
+                }
                 // Escapes are honored even for raw prefixes: a backslash
                 // still escapes the quote for termination purposes (a raw
-                // literal cannot end in a backslash), matching CPython.
-                var end = prefixEnd + 1
-                while end < len {
-                    if chars[end] == "\\" { end += 2; continue }
-                    if chars[end] == quote { end += 1; break }
-                    end += 1
-                }
+                // literal cannot end in a backslash), matching CPython —
+                // the shared scanQuotedEnd (never past the line's end).
+                let end = scanQuotedEnd(from: prefixEnd + 1, quote: quote)
                 tokens.append(SemanticToken(line: lineNum, startChar: i, length: end - i, type: "string", modifiers: 0))
                 i = end
                 continue
@@ -516,6 +871,9 @@ public struct SyntaxTokenizer {
     }
 
     public static func tokenizeJSON(lineChars chars: [Character], lineNum: Int) -> [SemanticToken] {
+        // The huge-line guard — a minified one-line JSON is THE giant
+        // line case; plain text beats a full pass per draw.
+        if chars.count >= lineTokenizeLimit { return [] }
         let len = chars.count
         var tokens = [SemanticToken]()
         var i = 0
