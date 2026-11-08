@@ -2,21 +2,34 @@ import Testing
 @testable import SwimCore
 
 /// Fixtures for the search-results tree builder — the full path chain
-/// from the search root down to the match lines. Keep in sync with the
-/// window's consumption (Sources/Swim/Window/SearchResultsWindow.swift):
-/// the expansion keys are the nodes' absolute paths, the counts in the
-/// rows are the subtree match totals folded at build, and files render
-/// after directories at every level.
+/// from the search root down to the match lines. The nodes are the
+/// shared `FileTreeNode` (the same model the explorer's tree uses);
+/// this builder fills the `search` payload only. Keep in sync with
+/// the window's consumption (Sources/Swim/Window/SearchResultsWindow.swift):
+/// the expansion keys are the nodes' absolute paths, the counts in
+/// the rows are the subtree match totals folded at build, and the
+/// dirs-before-files row order is `FileTree.flatten`'s partition
+/// (pinned in FileTreeTests).
 struct SearchTreeTests {
 
     private func match(_ path: String, _ line: Int) -> SearchResult {
         SearchResult(filePath: path, lineNumber: line, lineContent: "x", matchStart: 0, matchLength: 1)
     }
 
+    /// Directories of a level, in build order.
+    private func dirs(_ node: FileTreeNode) -> [FileTreeNode] {
+        node.children.filter(\.isDirectory)
+    }
+
+    /// Files of a level, in build order.
+    private func files(_ node: FileTreeNode) -> [FileTreeNode] {
+        node.children.filter { !$0.isDirectory }
+    }
+
     /// The tree of a small project: root → dirs/files, every
     /// intermediate level present, shared ancestors merged, counts
     /// folded bottom-up (the root's total equals the flat count —
-    /// the header and the root row can never disagree).
+    /// the plate and the tree can never disagree).
     @Test func fullChainFromRoot() {
         let root = SearchTree.build(results: [
             match("/repo/Sources/App/Application.swift", 1),
@@ -27,29 +40,29 @@ struct SearchTreeTests {
 
         #expect(root.name == "repo")
         #expect(root.path == "/repo")
-        #expect(root.matchCount == 4)
+        #expect(root.search?.matchCount == 4)
         // Root children: directories and files sorted alphabetically
-        // (dirs render first — the explorer's ordering).
-        #expect(root.dirs.map(\.name) == ["Sources"])
-        #expect(root.files.map(\.name) == ["README.md"])
+        // (dirs render first — FileTree.flatten's partition).
+        #expect(dirs(root).map(\.name) == ["Sources"])
+        #expect(files(root).map(\.name) == ["README.md"])
         // The whole intermediate chain exists — not just the file's
         // immediate parent (the old single-level grouping).
-        let sources = root.dirs[0]
+        let sources = dirs(root)[0]
         #expect(sources.path == "/repo/Sources")
-        #expect(sources.matchCount == 3)
-        #expect(sources.dirs.map(\.name) == ["App", "Core"])
-        #expect(sources.files.isEmpty)
-        let app = sources.dirs[0]
+        #expect(sources.search?.matchCount == 3)
+        #expect(dirs(sources).map(\.name) == ["App", "Core"])
+        #expect(files(sources).isEmpty)
+        let app = dirs(sources)[0]
         #expect(app.path == "/repo/Sources/App")
-        #expect(app.matchCount == 2)
-        #expect(app.files.map(\.name) == ["Application.swift"])
-        #expect(app.files[0].results.map(\.lineNumber) == [1, 5])
-        let core = sources.dirs[1]
+        #expect(app.search?.matchCount == 2)
+        #expect(files(app).map(\.name) == ["Application.swift"])
+        #expect(files(app)[0].search?.results.map(\.lineNumber) == [1, 5])
+        let core = dirs(sources)[1]
         #expect(core.path == "/repo/Sources/Core")
-        #expect(core.matchCount == 1)
-        #expect(core.files.map(\.name) == ["Cell.swift"])
-        #expect(root.files[0].path == "/repo/README.md")
-        #expect(root.files[0].results.map(\.lineNumber) == [2])
+        #expect(core.search?.matchCount == 1)
+        #expect(files(core).map(\.name) == ["Cell.swift"])
+        #expect(files(root)[0].path == "/repo/README.md")
+        #expect(files(root)[0].search?.results.map(\.lineNumber) == [2])
     }
 
     /// Same-named directories at different depths are distinct nodes
@@ -61,25 +74,25 @@ struct SearchTreeTests {
             match("/repo/Sources/Core/b.swift", 1),
         ], root: "/repo")!
 
-        #expect(root.matchCount == 2)
-        #expect(root.dirs.map(\.name) == ["Core", "Sources"])
-        #expect(root.dirs[0].path == "/repo/Core")
-        #expect(root.dirs[1].dirs.map(\.path) == ["/repo/Sources/Core"])
-        #expect(root.dirs[0].files.map(\.name) == ["a.swift"])
-        #expect(root.dirs[1].dirs[0].files.map(\.name) == ["b.swift"])
+        #expect(root.search?.matchCount == 2)
+        #expect(dirs(root).map(\.name) == ["Core", "Sources"])
+        #expect(dirs(root)[0].path == "/repo/Core")
+        #expect(dirs(dirs(root)[1]).map(\.path) == ["/repo/Sources/Core"])
+        #expect(files(dirs(root)[0]).map(\.name) == ["a.swift"])
+        #expect(files(dirs(dirs(root)[1])[0]).map(\.name) == ["b.swift"])
     }
 
     /// Match lines within a file sort by line number regardless of the
     /// order the scanner produced them; the file's count is the
-    /// computed results length.
+    /// results length.
     @Test func resultsSortedByLine() {
         let root = SearchTree.build(results: [
             match("/repo/a.swift", 30),
             match("/repo/a.swift", 3),
             match("/repo/a.swift", 11),
         ], root: "/repo")!
-        #expect(root.files[0].results.map(\.lineNumber) == [3, 11, 30])
-        #expect(root.files[0].matchCount == 3)
+        #expect(files(root)[0].search?.results.map(\.lineNumber) == [3, 11, 30])
+        #expect(files(root)[0].search?.matchCount == 3)
     }
 
     /// A root with a trailing slash builds the same chain — the join
@@ -89,8 +102,8 @@ struct SearchTreeTests {
             match("/repo/Sources/a.swift", 1),
         ], root: "/repo/")!
         #expect(root.path == "/repo")
-        #expect(root.dirs.map(\.path) == ["/repo/Sources"])
-        #expect(root.dirs[0].files.map(\.path) == ["/repo/Sources/a.swift"])
+        #expect(dirs(root).map(\.path) == ["/repo/Sources"])
+        #expect(files(dirs(root)[0]).map(\.path) == ["/repo/Sources/a.swift"])
     }
 
     /// No matches — no tree (the window shows the empty state, not a
@@ -114,12 +127,12 @@ struct SearchTreeTests {
             match("/repo/B/y.swift", 1),
             match("/repo/B/z.swift", 1),
         ], root: "/repo")!
-        #expect(full.dirs.map(\.name) == ["A", "B"])
-        #expect(full.dirs[0].matchCount == 1)
+        #expect(dirs(full).map(\.name) == ["A", "B"])
+        #expect(dirs(full)[0].search?.matchCount == 1)
 
         let bothInBGone = SearchTree.build(results: [match("/repo/A/x.swift", 1)], root: "/repo")!
-        #expect(bothInBGone.dirs.map(\.name) == ["A"])          // B collapsed entirely
-        #expect(bothInBGone.matchCount == 1)
+        #expect(dirs(bothInBGone).map(\.name) == ["A"])          // B collapsed entirely
+        #expect(bothInBGone.search?.matchCount == 1)
 
         #expect(SearchTree.build(results: [], root: "/repo") == nil) // everything emptied
     }
@@ -131,10 +144,10 @@ struct SearchTreeTests {
         let root = SearchTree.build(results: [
             match("/elsewhere/other/c.swift", 1),
         ], root: "/repo")!
-        #expect(root.matchCount == 1)
-        #expect(root.dirs.map(\.name) == ["elsewhere"])
-        #expect(root.dirs[0].dirs.map(\.path) == ["/repo/elsewhere/other"])
-        #expect(root.dirs[0].dirs[0].files.map(\.name) == ["c.swift"])
+        #expect(root.search?.matchCount == 1)
+        #expect(dirs(root).map(\.name) == ["elsewhere"])
+        #expect(dirs(dirs(root)[0]).map(\.path) == ["/repo/elsewhere/other"])
+        #expect(files(dirs(dirs(root)[0])[0]).map(\.name) == ["c.swift"])
     }
 
     /// Exotic names — spaces, Cyrillic — survive as component names;
@@ -143,8 +156,34 @@ struct SearchTreeTests {
         let root = SearchTree.build(results: [
             match("/repo/документы/заметки гайд.md", 7),
         ], root: "/repo")!
-        #expect(root.dirs.map(\.name) == ["документы"])
-        #expect(root.dirs[0].files.map(\.name) == ["заметки гайд.md"])
-        #expect(root.dirs[0].files[0].results[0].lineNumber == 7)
+        #expect(dirs(root).map(\.name) == ["документы"])
+        #expect(files(dirs(root)[0]).map(\.name) == ["заметки гайд.md"])
+        #expect(files(dirs(root)[0])[0].search?.results[0].lineNumber == 7)
+    }
+
+    /// A search rooted at the FILESYSTEM ROOT builds the same chain —
+    /// the check/cut/split convention is coherent there by construction
+    /// (`TreePath.remainder`'s cut is one character, not two; the old
+    /// hand-rolled pair `hasPrefix(rootPath + "/")` beside
+    /// `dropFirst(rootPath.count + 1)` cancelled itself out into the
+    /// absolute-components branch instead — same tree by accident,
+    /// now by construction).
+    @Test func fileSystemRootBuilds() {
+        let root = SearchTree.build(results: [match("/a/b/c.swift", 1)], root: "/")!
+        #expect(root.path == "/")
+        #expect(root.search?.matchCount == 1)
+        #expect(dirs(root).map(\.path) == ["/a"])
+        #expect(dirs(dirs(root)[0]).map(\.path) == ["/a/b"])
+        #expect(files(dirs(dirs(root)[0])[0]).map(\.path) == ["/a/b/c.swift"])
+    }
+
+    /// Search-built nodes carry no listing payload — a search tree is
+    /// a finished snapshot with no explorer listing mechanics (nil is
+    /// "not applicable", never "false": FileTreeNode's contract).
+    @Test func searchNodesCarryNoListingPayload() {
+        let root = SearchTree.build(results: [match("/repo/a.swift", 1)], root: "/repo")!
+        #expect(root.listing == nil)
+        #expect(files(root)[0].listing == nil)
+        #expect(root.search != nil)
     }
 }

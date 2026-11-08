@@ -1,129 +1,66 @@
 import Foundation
 import SwimCore
 
-/// Presentation side of the SwimCore `GitChangeClass`: the color a file
-/// name gets in the tree — the shared git-decoration palette
-/// (`Theme.stagedColor` / `Theme.unstagedColor`, green for additions),
-/// the same constants as the editor gutter and the panel letters.
-/// Directories are never marked, files only.
-extension GitChangeClass {
-    var color: Color {
-        switch self {
-        case .added: return Theme.green
-        case .staged: return Theme.stagedColor
-        case .unstaged: return Theme.unstagedColor
-        }
-    }
-}
-
-struct FileEntry {
-    let name: String
-    let path: String
-    let isDirectory: Bool
-    var isExpanded: Bool = false
-    var children: [FileEntry] = []
-    var isLoaded: Bool = false
-    /// Listing flags, taken when the parent directory is loaded and cached
-    /// until it is rescanned (`:fe reset`, create/delete/rename). Filtering
-    /// happens at flatten time, so `H` re-filters in memory — no rescan.
-    var isIgnored: Bool = false
-    var isHidden: Bool = false
-}
-
 class FileExplorerWindow: Window {
     override var availableModes: [WindowMode] { [.menu, .command] }
-    private var rootEntries: [FileEntry] = []
-    private var flatEntries: [(entry: FileEntry, depth: Int)] = []
-    private(set) var selectedIndex: Int = 0
-    private var scrollOffset: Int = 0
-    private var horizontalOffset: Int = 0
-    private let horizontalStep: Int = 4
+
+    /// The shared tree-list machinery: rows (FileTree.flatten over
+    /// the tree + the expansion state), cursor, scroll, horizontal
+    /// shift, git name-marks — one component with the search results
+    /// window (TreeListView.swift). The tree rides in it as a
+    /// synthetic root `FileTreeNode` (path = the working directory,
+    /// children = its contents; the root itself is never a row).
+    /// Born with the listing filter ON: hidden (dot-prefixed) and
+    /// git-ignored entries stay out of the rows until `H` flips the
+    /// state — the controller's filter IS the state, no mirror flag
+    /// on the window to drift out of sync (the missing initial
+    /// install was exactly that drift: the filter used to engage
+    /// only after two `H` presses).
+    private let list: TreeListController = {
+        let list = TreeListController()
+        list.filter = FileExplorerWindow.listingFilter
+        return list
+    }()
     /// The entry `r` captured for the pending `rename old -> new` command —
     /// disambiguates the bare old name when the tree has duplicates.
     private var pendingRenamePath: String?
     var currentDirectory: String = ""
-    /// `H` — the listing filter state: off (default) hides both
-    /// dot-prefixed and git-ignored entries; on shows everything. The
-    /// toggle re-flattens in memory — the model always carries all
-    /// entries with their flags.
-    private var showAllEntries = false
-    /// Git name-coloring marks by absolute path (SwimCore
-    /// `GitChangeClass`, classified by the shared porcelain parser),
-    /// delivered by the Application's background status fetch in the
-    /// tree's own coordinate system. Keyed by path, not entry identity:
-    /// the dict survives rescans and lazy child loads untouched.
-    private var gitMarks: [String: GitChangeClass] = [:]
 
     override func update() {
         clear()
 
         drawHeader(" File explorer ", fg: Theme.fgDark)
 
-        let visibleCount = max(0, height - 1)
-        for row in 0..<visibleCount {
-            let idx = scrollOffset + row
-            guard idx < flatEntries.count else { break }
-            let (entry, depth) = flatEntries[idx]
-            let isSelected = idx == selectedIndex
-            let hl = Cell.highlight(isSelected, tint: Theme.bgHighlight, base: Theme.bgDark)
-            let bg: Color = hl.bg
-            let fg: Color = isSelected ? Theme.fg : Theme.fgDark
-            let iconFg: Color = entry.isDirectory ? Theme.blue : fg
-            // Git name coloring, files only: a new/untracked file is
-            // green, a fully staged change blue, any unstaged change
-            // teal. The mark wins over the selection text color — the
-            // row background already marks the selection; directories
-            // and clean files keep the base colors.
-            let nameFg: Color
-            if entry.isDirectory {
-                nameFg = Theme.blue
-            } else if let mark = gitMarks[entry.path] {
-                nameFg = mark.color
-            } else {
-                nameFg = fg
-            }
+        drawTreeListRows(list: list, contentTop: 1, rowCells: explorerRowCells(_:isSelected:))
+    }
 
-            // The icon authority (SwimCore Icons, tier set once in
-            // main): per-type brand color where the tier defines one,
-            // otherwise the selection-aware fg the row already uses.
-            let iconDef = entry.isDirectory
-                ? Icons.directory(expanded: entry.isExpanded, tier: IconSet.tier)
-                : Icons.fileIcon(forName: entry.name, tier: IconSet.tier)
-            let iconColor = iconDef.color.map { Color.rgb(r: $0.r, g: $0.g, b: $0.b) } ?? iconFg
-
-            // The shared row pipeline: assemble styled cells, paint the
-            // scroll window (Window.textCells / Window.drawCells — the
-            // same pipeline the search results use). The name run used
-            // to be emitted one cell per character: a CJK/emoji file
-            // name shifted the row's tail by a cell per glyph.
-            var cells: [Cell] = Array(repeating: Cell.colored(" ", fg: fg, bg: bg), count: depth * 2)
-            cells.append(Cell.colored(" ", fg: iconFg, bg: bg))
-            cells += Self.textCells(String(iconDef.glyph), fg: iconColor, bg: bg, bold: entry.isDirectory)
-            cells.append(Cell.colored(" ", fg: iconFg, bg: bg))
-            cells += Self.textCells(entry.name, fg: nameFg, bg: bg, bold: entry.isDirectory)
-            drawCells(cells, row: row + 1, offset: horizontalOffset, fillFg: fg, fillBg: bg, reverse: hl.reverse)
-        }
+    /// One tree row's cells — the shared node pipeline
+    /// (`Window.fileTreeRowCells`), the explorer's own look verbatim:
+    /// tier icons, blue+bold directories, git-marked file names.
+    private func explorerRowCells(_ row: FileTree.Row, isSelected: Bool) -> [Cell] {
+        guard case .node(let node, let depth) = row else { return [] }
+        return Window.fileTreeRowCells(
+            node: node,
+            depth: depth,
+            expanded: list.isExpanded(node),
+            selected: isSelected,
+            markFg: list.gitMarks[node.path]?.color
+        )
     }
 
     func loadDirectory(_ path: String) {
         currentDirectory = path
-        rootEntries = loadEntries(at: path)
-        horizontalOffset = 0
-        flattenEntries()
+        let root = FileTreeNode(
+            name: (path as NSString).lastPathComponent,
+            path: path,
+            isDirectory: true)
+        // The root is born loaded — its children ARE the listing; the
+        // flag is what reveal/rescan walks read on every directory.
+        root.listing = ListingFlags(isLoaded: true)
+        root.children = loadEntries(at: path)
+        list.root = root
+        list.resetHorizontalOffset()
         dirty = true
-    }
-
-    /// Receives the git name-coloring marks from the Application's
-    /// background status fetch. Returns true when they changed (caller
-    /// re-renders); the tree model is untouched — coloring is a pure
-    /// lookup at draw time, so lazy child loads and rescans pick the
-    /// marks up for free.
-    @discardableResult
-    func setGitMarks(_ marks: [String: GitChangeClass]) -> Bool {
-        guard marks != gitMarks else { return false }
-        gitMarks = marks
-        dirty = true
-        return true
     }
 
     /// Reveals a file opened from outside the explorer (search result,
@@ -135,48 +72,52 @@ class FileExplorerWindow: Window {
     /// fresh gitignore match), the flat list may have shrunk — the stale
     /// selection clamps onto a real row.
     func reveal(path: String) {
-        guard !currentDirectory.isEmpty, path.hasPrefix(currentDirectory + "/") else { return }
-        var changed = revealAncestors(&rootEntries, target: path)
-        flattenEntries()
-        if let idx = flatEntries.firstIndex(where: { $0.entry.path == path }) {
-            if selectedIndex != idx {
-                selectedIndex = idx
-                changed = true
-            }
-            ensureVisible()
-        } else if selectedIndex >= flatEntries.count {
-            selectedIndex = max(0, flatEntries.count - 1)
-            ensureVisible()
+        guard !currentDirectory.isEmpty, TreePath.isDescendant(path, of: currentDirectory) else { return }
+        guard let root = list.root else { return }
+        var changed = revealAncestors(root.children, target: path)
+        if list.selectFirst(where: { rowNodePath($0) == path }, visibleCount: treeVisibleCount) {
             changed = true
+        } else if list.selectedIndex >= list.rows.count {
+            list.select(max(0, list.rows.count - 1), visibleCount: treeVisibleCount)
+            changed = true
+        } else {
+            list.ensureVisible(visibleCount: treeVisibleCount)
         }
         if changed {
             dirty = true
         }
     }
 
-    /// Expands every directory along the ancestor chain of `target`.
+    /// Expands every directory along the ancestor chain of `target`,
+    /// lazily loading each one's children on the way down.
     @discardableResult
-    private func revealAncestors(_ entries: inout [FileEntry], target: String) -> Bool {
+    private func revealAncestors(_ entries: [FileTreeNode], target: String) -> Bool {
         var changed = false
-        for i in 0..<entries.count {
-            guard entries[i].isDirectory, target.hasPrefix(entries[i].path + "/") else { continue }
-            if !entries[i].isLoaded {
-                entries[i].children = loadEntries(at: entries[i].path, parentIgnored: entries[i].isIgnored)
-                entries[i].isLoaded = true
-                changed = true
-            }
-            if !entries[i].isExpanded {
-                entries[i].isExpanded = true
-                changed = true
-            }
-            if revealAncestors(&entries[i].children, target: target) {
-                changed = true
-            }
+        for node in entries {
+            guard node.isDirectory, TreePath.isDescendant(target, of: node.path) else { continue }
+            if ensureLoaded(node) { changed = true }
+            if list.expand(node) { changed = true }
+            if revealAncestors(node.children, target: target) { changed = true }
         }
         return changed
     }
 
-    private func loadEntries(at path: String, parentIgnored: Bool = false) -> [FileEntry] {
+    /// Lazy load: a directory stub's children are read from disk on
+    /// its first expand (and by reveal walks). The listing flags were
+    /// taken when the stub was created and ride on it, cached until
+    /// the directory is rescanned. Mutates the node in place (nodes
+    /// are classes — no copy-and-write-back dance).
+    @discardableResult
+    private func ensureLoaded(_ node: FileTreeNode) -> Bool {
+        guard node.isDirectory, node.listing?.isLoaded != true else { return false }
+        node.children = loadEntries(at: node.path, parentIgnored: node.listing?.isIgnored ?? false)
+        if node.listing == nil { node.listing = ListingFlags() }
+        node.listing?.isLoaded = true
+        list.invalidate()
+        return true
+    }
+
+    private func loadEntries(at path: String, parentIgnored: Bool = false) -> [FileTreeNode] {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(atPath: path) else { return [] }
         let sorted = contents.sorted()
@@ -187,18 +128,20 @@ class FileExplorerWindow: Window {
         let ignored: Set<String> = parentIgnored
             ? []
             : Self.ignoredNames(in: path, names: sorted.filter { !$0.hasPrefix(".") })
-        var dirs = [FileEntry]()
-        var files = [FileEntry]()
+        var dirs = [FileTreeNode]()
+        var files = [FileTreeNode]()
         for name in sorted {
             let fullPath = (path as NSString).appendingPathComponent(name)
             var isDir: ObjCBool = false
             _ = fm.fileExists(atPath: fullPath, isDirectory: &isDir)
-            let entry = FileEntry(
+            let entry = FileTreeNode(
                 name: name,
                 path: fullPath,
                 isDirectory: isDir.boolValue,
-                isIgnored: parentIgnored || ignored.contains(name),
-                isHidden: name.hasPrefix(".")
+                listing: ListingFlags(
+                    isLoaded: false,
+                    isIgnored: parentIgnored || ignored.contains(name),
+                    isHidden: name.hasPrefix("."))
             )
             if isDir.boolValue { dirs.append(entry) } else { files.append(entry) }
         }
@@ -222,66 +165,23 @@ class FileExplorerWindow: Window {
         return Set(result.stdout.split(separator: "\0", omittingEmptySubsequences: true).map(String.init))
     }
 
-    private func loadChildren(of entry: FileEntry, at index: Int) -> FileEntry {
-        var mutable = entry
-        if !entry.isLoaded {
-            mutable.children = loadEntries(at: entry.path, parentIgnored: entry.isIgnored)
-            mutable.isLoaded = true
-        }
-        mutable.isExpanded = !entry.isExpanded
-        if !mutable.isExpanded {
-            // Collapsing discards the subtree's expansion memory: re-
-            // expanding opens this node fresh — its children collapsed —
-            // instead of restoring the previous depth. The loaded-
-            // children cache stays (re-expansion needs no disk), only
-            // the expansion flags reset.
-            collapseSubtree(&mutable.children)
-        }
-        return mutable
-    }
-
-    /// Recursively clears expansion flags — the collapse-time memory
-    /// wipe (see loadChildren).
-    private func collapseSubtree(_ entries: inout [FileEntry]) {
-        for i in entries.indices {
-            entries[i].isExpanded = false
-            if !entries[i].children.isEmpty {
-                collapseSubtree(&entries[i].children)
-            }
-        }
-    }
-
-    private func flattenEntries() {
-        flatEntries = []
-        flattenRecursive(rootEntries, depth: 0)
-    }
-
-    private func flattenRecursive(_ entries: [FileEntry], depth: Int) {
-        for entry in entries {
-            // The filter lives here, not in loadEntries: flagged entries
-            // stay in the model, so `H` re-flattens in memory — instantly,
-            // without a rescan or a subprocess.
-            if !showAllEntries && (entry.isHidden || entry.isIgnored) { continue }
-            flatEntries.append((entry, depth))
-            if entry.isDirectory && entry.isExpanded {
-                flattenRecursive(entry.children, depth: depth + 1)
-            }
-        }
-    }
-
     override func handleKey(_ key: Key) -> Bool {
         switch key {
         case .char("j"), .down:
-            if selectedIndex < flatEntries.count - 1 { selectedIndex += 1; ensureVisible(); dirty = true }
+            if list.move(1, visibleCount: treeVisibleCount) { dirty = true }
         case .char("k"), .up:
-            if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); dirty = true }
-        case .right: shiftHorizontally(horizontalStep)
-        case .left: shiftHorizontally(-horizontalStep)
+            if list.move(-1, visibleCount: treeVisibleCount) { dirty = true }
+        case .right:
+            if shift(list.horizontalStep) { dirty = true }
+        case .left:
+            if shift(-list.horizontalStep) { dirty = true }
         case .enter: activateCurrent()
         case .char("l"), .ctrlRight, .ctrl("l"): selectCurrent()
         case .char("h"), .ctrlLeft, .ctrl("h"): collapseCurrent()
-        case .char("G"): selectedIndex = max(0, flatEntries.count - 1); ensureVisible(); dirty = true
-        case .char("g"): selectedIndex = 0; scrollOffset = 0; dirty = true
+        case .char("G"):
+            if list.jumpToLast(visibleCount: treeVisibleCount) { dirty = true }
+        case .char("g"):
+            if list.jumpToFirst(visibleCount: treeVisibleCount) { dirty = true }
         case .char("a"): beginCreate()
         case .char("d"): beginDelete()
         case .char("r"): beginRename()
@@ -291,119 +191,60 @@ class FileExplorerWindow: Window {
         return true
     }
 
-    private func shiftHorizontally(_ delta: Int) {
-        let maxOffset = max(0, maxVisibleContentLength() - width + 1)
-        horizontalOffset = max(0, min(horizontalOffset + delta, maxOffset))
-        dirty = true
-    }
-
-    private func maxVisibleContentLength() -> Int {
-        var maxLen = 0
-        let visibleCount = max(0, height - 1)
-        for row in 0..<visibleCount {
-            let idx = scrollOffset + row
-            guard idx < flatEntries.count else { break }
-            let (entry, depth) = flatEntries[idx]
-            let iconDef = entry.isDirectory
-                ? Icons.directory(expanded: entry.isExpanded, tier: IconSet.tier)
-                : Icons.fileIcon(forName: entry.name, tier: IconSet.tier)
-            let iconWidth = iconDef.glyph.displayWidth
-            // The name in CELLS (Window.cellCount — the accounting of
-            // the rows textCells builds): a CJK/emoji name is wider
-            // than its Character count.
-            let len = depth * 2 + 1 + iconWidth + 1 + Self.cellCount(entry.name)
-            maxLen = max(maxLen, len)
-        }
-        return maxLen
+    /// Left/Right: the shared horizontal shift, clamped by the widest
+    /// visible row (the row builder is the single width authority).
+    private func shift(_ delta: Int) -> Bool {
+        list.shiftHorizontally(
+            delta, width: width, visibleCount: treeVisibleCount,
+            rowWidth: { explorerRowCells($0, isSelected: false).count })
     }
 
     /// Enter: opens a file; toggles a directory — collapsed expands and
     /// selection descends, expanded collapses and selection stays.
+    /// The branch mechanics (toggle, first-child descend) are the
+    /// shared controller's; what a FILE row means — open it — is this
+    /// window's policy.
     private func activateCurrent() {
-        guard selectedIndex < flatEntries.count else { return }
-        let (entry, _) = flatEntries[selectedIndex]
-        guard entry.isDirectory else {
-            delegate?.openFile(entry.path)
-            return
+        guard let row = list.selectedRow else { return }
+        switch row {
+        case .node(let node, _) where node.isDirectory:
+            ensureLoaded(node)
+            list.toggle(node)
+            list.descendToFirstChild(visibleCount: treeVisibleCount)
+            dirty = true
+        case .node(let node, _):
+            delegate?.openFile(node.path)
+        case .match:
+            break // the explorer's tree carries no match rows
         }
-        toggleExpand(at: selectedIndex)
-        descendToFirstChild()
     }
 
     /// `l` / Ctrl+Right: opens a file; expands a collapsed directory or
     /// descends into an already expanded one — never collapses.
     private func selectCurrent() {
-        guard selectedIndex < flatEntries.count else { return }
-        let (entry, _) = flatEntries[selectedIndex]
-        guard entry.isDirectory else {
-            delegate?.openFile(entry.path)
-            return
-        }
-        if !entry.isExpanded {
-            toggleExpand(at: selectedIndex)
-        }
-        descendToFirstChild()
-    }
-
-    /// The descend onto the first child runs through the shared pure
-    /// policy (`TreeListNavigation.firstChild` — the same rule the
-    /// search results use): the row right below the branch when it is
-    /// one depth deeper.
-    private func descendToFirstChild() {
-        let child = TreeListNavigation.firstChild(
-            rowCount: flatEntries.count,
-            selectedIndex: selectedIndex,
-            depthAt: { flatEntries[$0].depth }
-        )
-        if let child {
-            selectedIndex = child
-            ensureVisible()
+        guard let row = list.selectedRow else { return }
+        switch row {
+        case .node(let node, _) where node.isDirectory:
+            ensureLoaded(node)
+            list.expand(node)
+            list.descendToFirstChild(visibleCount: treeVisibleCount)
             dirty = true
+        case .node(let node, _):
+            delegate?.openFile(node.path)
+        case .match:
+            break
         }
     }
 
-    /// The `h` collapse target comes from the shared pure policy
-    /// (`TreeListNavigation` — the same one the search results use):
-    /// the selected row's parent branch, the nearest row above one
-    /// depth shallower, or the row itself at the top level. The old
-    /// inline walker checked `isDirectory` on the parent candidate;
-    /// the nearest shallower row IS the parent directory by the
-    /// flatten order (a file never emits children — see the policy's
-    /// invariant), so the shared policy is behavior-identical without
-    /// the check.
+    /// The `h` collapse — the shared policy (`TreeListController` /
+    /// `TreeListNavigation`): the key acts on the selected row's parent
+    /// branch (the row itself at the top level), selects it and
+    /// collapses it when expanded. The collapse wipes the subtree's
+    /// expansion memory — re-expanding opens the node fresh.
     private func collapseCurrent() {
-        guard selectedIndex < flatEntries.count else { return }
-        let targetIdx = TreeListNavigation.collapseTarget(
-            rowCount: flatEntries.count,
-            selectedIndex: selectedIndex
-        ) { flatEntries[$0].depth }
-        selectedIndex = targetIdx
-        let (entry, _) = flatEntries[targetIdx]
-        if entry.isDirectory && entry.isExpanded {
-            toggleExpand(at: targetIdx)
-        }
-        ensureVisible()
+        guard list.selectedRow != nil else { return }
+        list.collapseUp(visibleCount: treeVisibleCount)
         dirty = true
-    }
-
-    private func toggleExpand(at index: Int) {
-        let (entry, _) = flatEntries[index]
-        let updated = loadChildren(of: entry, at: index)
-        let parentPath = entry.path
-        updateEntryInTree(&rootEntries, path: parentPath, updated: updated)
-        flattenEntries()
-        dirty = true
-    }
-
-    private func updateEntryInTree(_ entries: inout [FileEntry], path: String, updated: FileEntry) {
-        for i in 0..<entries.count {
-            if entries[i].path == path { entries[i] = updated; return }
-            if entries[i].isDirectory { updateEntryInTree(&entries[i].children, path: path, updated: updated) }
-        }
-    }
-
-    private func ensureVisible() {
-        scrollOffset = Window.clampedScroll(selectedIndex: selectedIndex, scrollOffset: scrollOffset, visibleCount: max(0, height - 1))
     }
 
     /// `H` — flips the listing filter and re-flattens the tree in memory:
@@ -411,34 +252,68 @@ class FileExplorerWindow: Window {
     /// with their flags, so no rescan or subprocess happens — the flat
     /// list just includes/excludes the flagged rows. The selection stays
     /// on the same entry when it survives the re-filter, else clamps.
+    /// The controller's filter IS the state (nil = show everything);
+    /// there is no mirror flag — the initial install happens once, in
+    /// the controller's initializer, so the first frame is already
+    /// filtered and the first `H` already shows everything.
     private func toggleShowAll() {
-        let selectedPath = selectedIndex < flatEntries.count ? flatEntries[selectedIndex].entry.path : nil
-        showAllEntries.toggle()
-        flattenEntries()
+        let selectedPath = list.selectedRow.flatMap(rowNodePath)
+        // The filter value is REPLACED, not read through captured
+        // window state (the controller's no-cycle contract): the
+        // filter is a self-contained static function over its node.
+        if list.filter == nil {
+            list.filter = Self.listingFilter   // was showing everything → hide flagged entries
+        } else {
+            list.filter = nil                  // was hiding → show everything
+        }
         restoreSelection(toPath: selectedPath)
         dirty = true
+    }
+
+    /// The `H`-off filter: a flagged listing hides its node — and the
+    /// flatten skips the whole subtree (FileTree's filter contract).
+    private static func listingFilter(_ node: FileTreeNode) -> Bool {
+        guard let listing = node.listing else { return true }
+        return !(listing.isHidden || listing.isIgnored)
     }
 
     /// Restores the selection across a flat-list rebuild: the same path
     /// stays selected when it survives the rebuild, else the index clamps
     /// onto the last row.
     private func restoreSelection(toPath path: String?) {
-        if let path, let idx = flatEntries.firstIndex(where: { $0.entry.path == path }) {
-            selectedIndex = idx
-        } else if flatEntries.isEmpty {
-            selectedIndex = 0
-        } else {
-            selectedIndex = flatEntries.count - 1
+        if let path, list.selectFirst(where: { rowNodePath($0) == path }, visibleCount: treeVisibleCount) {
+            return
         }
-        ensureVisible()
+        if list.rows.isEmpty {
+            list.select(0, visibleCount: treeVisibleCount)
+        } else {
+            list.select(list.rows.count - 1, visibleCount: treeVisibleCount)
+        }
     }
+
+    private func rowNodePath(_ row: FileTree.Row) -> String? {
+        guard case .node(let node, _) = row else { return nil }
+        return node.path
+    }
+
+    /// Content rows below the header — the geometry handed to the
+    /// shared list controller.
+    private var treeVisibleCount: Int { max(0, height - 1) }
 
     // MARK: - Create/delete file entries (`a` / `d` → :create / :delete)
 
-    /// Relative path of an absolute tree path (nil outside the root).
+    /// The selected node (match rows do not exist in this tree).
+    private func selectedNode() -> FileTreeNode? {
+        guard case .node(let node, _)? = list.selectedRow else { return nil }
+        return node
+    }
+
+    /// Relative path of an absolute tree path (nil outside the root) —
+    /// the check, the cut and the split are one convention
+    /// (`TreePath.remainder`).
     private func relativePath(of absolute: String) -> String? {
-        guard absolute.hasPrefix(currentDirectory + "/") else { return nil }
-        return String(absolute.dropFirst(currentDirectory.count + 1))
+        guard let parts = TreePath.remainder(of: absolute, under: currentDirectory) else { return nil }
+        return parts.joined(separator: "/")
     }
 
     /// Common `create`/`delete` argument parsing: trims, rejects absolute
@@ -464,8 +339,7 @@ class FileExplorerWindow: Window {
     /// offer to create: the selected directory itself, the parent of a
     /// selected file, or the root.
     private func creationPrefix() -> String {
-        guard selectedIndex < flatEntries.count else { return "./" }
-        let (entry, _) = flatEntries[selectedIndex]
+        guard let entry = selectedNode() else { return "./" }
         let dirPath = entry.isDirectory
             ? entry.path
             : (entry.path as NSString).deletingLastPathComponent
@@ -477,11 +351,10 @@ class FileExplorerWindow: Window {
     /// the visible command buffer is the confirmation (Enter deletes —
     /// recursively for directories —, Esc cancels).
     private func beginDelete() {
-        guard selectedIndex < flatEntries.count else {
+        guard let entry = selectedNode() else {
             delegate?.reportError("delete: nothing selected")
             return
         }
-        let (entry, _) = flatEntries[selectedIndex]
         guard let rel = relativePath(of: entry.path) else { return }
         enterCommandMode(prefill: "delete ./\(rel)\(entry.isDirectory ? "/" : "")")
     }
@@ -500,11 +373,10 @@ class FileExplorerWindow: Window {
     /// the name to rename, rewrite the directories to move. Enter renames
     /// the captured entry to the edited path.
     private func beginRename() {
-        guard selectedIndex < flatEntries.count else {
+        guard let entry = selectedNode() else {
             delegate?.reportError("rename: nothing selected")
             return
         }
-        let (entry, _) = flatEntries[selectedIndex]
         guard let rel = relativePath(of: entry.path) else { return }
         enterCommandMode(prefill: "rename ./\(rel)\(entry.isDirectory ? "/" : "")")
         pendingRenamePath = entry.path
@@ -578,7 +450,7 @@ class FileExplorerWindow: Window {
         reloadPreservingExpansion()
         reveal(path: absolute)
         // A new file is untracked git state — refresh the git-driven
-        // decorations (explorer marks, editor gutter).
+        // decorations (tree marks, editor gutter).
         delegate?.gitWorktreeChanged()
     }
 
@@ -602,10 +474,8 @@ class FileExplorerWindow: Window {
             return
         }
         reloadPreservingExpansion()
-        if selectedIndex >= flatEntries.count {
-            selectedIndex = max(0, flatEntries.count - 1)
-        }
-        ensureVisible()
+        // A shrunk list clamps the stale selection onto a real row.
+        list.select(list.selectedIndex, visibleCount: treeVisibleCount)
         // A deleted file leaves git state — refresh the decorations.
         delegate?.gitWorktreeChanged()
     }
@@ -673,37 +543,40 @@ class FileExplorerWindow: Window {
             delegate?.reportError("fe: unknown subcommand — try fe reset")
             return
         }
-        let selectedPath = selectedIndex < flatEntries.count ? flatEntries[selectedIndex].entry.path : nil
+        let selectedPath = selectedNode()?.path
         reloadPreservingExpansion()
         restoreSelection(toPath: selectedPath)
     }
 
     /// Rescans the tree from disk while keeping the expansion state of
     /// directories that still exist (`loadDirectory` would collapse
-    /// everything).
+    /// everything). The expansion keys live in the shared controller —
+    /// they survive the rescan by construction; this walk only reloads
+    /// the children of still-expanded directories, top-down.
     private func reloadPreservingExpansion() {
-        var expanded = Set<String>()
-        func collect(_ entries: [FileEntry]) {
-            for entry in entries where entry.isDirectory && entry.isExpanded {
-                expanded.insert(entry.path)
-                collect(entry.children)
-            }
-        }
-        collect(rootEntries)
-
-        func reload(_ path: String, parentIgnored: Bool) -> [FileEntry] {
-            loadEntries(at: path, parentIgnored: parentIgnored).map { entry in
-                var mutable = entry
-                if entry.isDirectory && expanded.contains(entry.path) {
-                    mutable.isLoaded = true
-                    mutable.isExpanded = true
-                    mutable.children = reload(entry.path, parentIgnored: entry.isIgnored)
-                }
-                return mutable
-            }
-        }
-        rootEntries = reload(currentDirectory, parentIgnored: false)
-        flattenEntries()
+        let root = FileTreeNode(
+            name: (currentDirectory as NSString).lastPathComponent,
+            path: currentDirectory,
+            isDirectory: true)
+        root.listing = ListingFlags(isLoaded: true)
+        root.children = reloadChildren(of: root, parentIgnored: false)
+        list.root = root
         dirty = true
     }
+
+    /// One rescan level: the directory's entries, and — for children
+    /// still expanded — their (recursively rescanned) children.
+    private func reloadChildren(of dir: FileTreeNode, parentIgnored: Bool) -> [FileTreeNode] {
+        loadEntries(at: dir.path, parentIgnored: parentIgnored).map { entry in
+            if entry.isDirectory, list.isExpanded(entry) {
+                entry.listing?.isLoaded = true
+                entry.children = reloadChildren(of: entry, parentIgnored: entry.listing?.isIgnored ?? false)
+            }
+            return entry
+        }
+    }
+}
+
+extension FileExplorerWindow: TreeListWindow {
+    var treeList: TreeListController { list }
 }

@@ -1,4 +1,6 @@
-/// The file-explorer icon authority — three tiers behind one door,
+/// The file-tree icon authority — the single door BOTH tree windows
+/// (the file explorer and the search results) draw their row icons
+/// through. Three tiers behind one door,
 /// selected once at startup (`SWIM_ICONS`, mono-aware) and immutable
 /// for the process lifetime.
 ///
@@ -226,7 +228,7 @@ public enum Icons {
         case .emoji:
             return IconDef(glyph: expanded ? "📂" : "📁")
         case .plain:
-            // the app's own tree language (the search results arrows)
+            // the app's own tree language (both tree windows' arrows)
             return IconDef(glyph: expanded ? "▾" : "▸")
         }
     }

@@ -381,6 +381,12 @@ class Application: WindowDelegate {
         }
     }
 
+    /// Every window showing a FileTree tree. The git name-marks fan
+    /// out to all of them through one loop — a new tree window
+    /// connects by conforming to TreeListWindow and joining this list
+    /// (the SpinnerWindow precedent), not by growing this controller.
+    private var treeWindows: [TreeListWindow] { [fileExplorer, searchResults] }
+
     private func pollGitStats() {
         guard let stats = gitStatsTask.consume() else { return }
         var anyChange = false
@@ -409,8 +415,13 @@ class Application: WindowDelegate {
                 anyChange = true
             }
         }
-        if fileExplorer.setGitMarks(stats.marks) {
-            anyChange = true
+        // Git name-coloring marks: one door, every tree window — the
+        // file rows color through the shared row pipeline, so the
+        // trees look identical by construction.
+        for tree in treeWindows {
+            if tree.setGitMarks(stats.marks) {
+                anyChange = true
+            }
         }
 
         if anyChange {

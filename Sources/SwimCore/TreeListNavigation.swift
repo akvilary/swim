@@ -10,18 +10,21 @@
 ///   under the cursor would not exist).
 ///
 ///   Why the nearest shallower row IS the parent, no `isDirectory`-style
-///   check needed: both flatten orders (the explorer's
-///   `flattenRecursive`, the search tree's `appendDir`) emit a branch
-///   before its children, and a child of depth `d` is emitted only under
-///   an expanded branch of depth `d - 1`. Everything between the row and
-///   that branch is elder siblings' subtrees — depth ≥ `d` — so the
-///   FIRST row above at depth `d - 1` is exactly the parent, and by
-///   construction it is a branch (files/leaves never emit children). The
-///   explorer's old inline walker carried a redundant `isDirectory`
-///   check for the same walk; this policy is behavior-identical to it.
-///   The explorer's listing filter (`H`, hidden/ignored entries) skips
-///   an entry together with its subtree, so the parent-before-children
-///   order holds in every filter mode.
+///   check needed: the flatten order (`FileTree.flatten` — the single
+///   shared flatten of the explorer and the search results) emits a
+///   branch before its children, and a child of depth `d` is emitted
+///   only under an expanded branch of depth `d - 1`. Everything
+///   between the row and that branch is elder siblings' subtrees —
+///   depth ≥ `d` — so the FIRST row above at depth `d - 1` is exactly
+///   the parent, and by construction it is a branch (a match line
+///   nests under its file exactly the way a file nests under its
+///   directory, so the search tree satisfies the same invariant).
+///   The explorer's old inline walker carried a redundant
+///   `isDirectory` check for the same walk; this policy is
+///   behavior-identical to it. The explorer's listing filter (`H`,
+///   hidden/ignored entries) skips an entry together with its
+///   subtree, so the parent-before-children order holds in every
+///   filter mode.
 ///
 /// - `firstChild` — the row Enter/`l` descend to after an expand: the
 ///   row right below the branch when it is exactly one depth deeper.

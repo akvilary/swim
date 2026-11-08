@@ -21,55 +21,24 @@ public struct SearchResult: Equatable, Sendable {
 }
 
 /// Pure builder of the search-results tree: flat `[SearchResult]` → a
-/// tree rooted at the working directory, one node per path component —
-/// the full chain root → … → directory → file → match lines. A file
-/// nested several levels deep produces its whole ancestor chain
-/// (shared ancestors merge into one node), not the old single-level
-/// "immediate parent → file" grouping that hid the path from the root.
+/// `FileTreeNode` tree rooted at the working directory, one node per
+/// path component — the full chain root → … → directory → file →
+/// match lines. A file nested several levels deep produces its whole
+/// ancestor chain (shared ancestors merge into one node), not the old
+/// single-level "immediate parent → file" grouping that hid the path
+/// from the root.
 ///
-/// Nodes are read-only after `build` (the tree is a finished snapshot;
-/// expansion state does NOT live here — the window keys it by node
-/// paths so it survives rebuilds across searches). Dependency-free
-/// and side-effect-free so it is unit-testable in isolation
-/// (Tests/SwimCoreTests/SearchTreeTests.swift); the consumer is
-/// SearchResultsWindow.
+/// The nodes are the shared file-tree model (FileTreeNode — the same
+/// type the explorer's tree uses); this builder fills only the search
+/// payload block (`search`: the file leaves' match lines and the
+/// directories' folded subtree totals) and leaves `listing` nil — a
+/// search tree is a finished snapshot, read-only after `build`
+/// (expansion state does NOT live on the tree; the window keys it by
+/// node paths in `FileTreeExpansion` so it survives rebuilds across
+/// searches). Dependency-free and side-effect-free so it is
+/// unit-testable in isolation (Tests/SwimCoreTests/SearchTreeTests.swift);
+/// the consumer is SearchResultsWindow.
 public enum SearchTree {
-
-    /// A directory level — one path component between the search root
-    /// and the matched files; the root itself is one of these (name —
-    /// the root's last path component). Children: nested directories
-    /// first, then files, each alphabetical — the explorer's ordering;
-    /// the window renders dirs before files. `matchCount` is the
-    /// subtree total, folded once at build.
-    public final class DirNode {
-        public let name: String
-        /// Absolute path of the level — the expansion key, and the
-        /// preview path basis for files below it.
-        public let path: String
-        public internal(set) var dirs: [DirNode] = []
-        public internal(set) var files: [FileNode] = []
-        public internal(set) var matchCount: Int = 0
-
-        init(name: String, path: String) {
-            self.name = name
-            self.path = path
-        }
-    }
-
-    /// A matched file — a leaf carrying its match lines, sorted by
-    /// line number. `matchCount` is computed: a stored copy would be a
-    /// second field to keep in sync with `results`.
-    public final class FileNode {
-        public let name: String
-        public let path: String
-        public internal(set) var results: [SearchResult] = []
-        public var matchCount: Int { results.count }
-
-        init(name: String, path: String) {
-            self.name = name
-            self.path = path
-        }
-    }
 
     /// Builds the tree of `results` under `root`; nil when there is
     /// nothing to show (no matches — no tree, not an empty root row;
@@ -79,38 +48,39 @@ public enum SearchTree {
     /// path (paths are unique), so the build is O(total results),
     /// like the old dictionary grouping it replaces — no sibling-list
     /// scans.
-    public static func build(results: [SearchResult], root: String) -> DirNode? {
+    public static func build(results: [SearchResult], root: String) -> FileTreeNode? {
         guard !results.isEmpty else { return nil }
-        let rootPath = normalizedRoot(root)
+        let rootPath = TreePath.normalizedRoot(root)
         let rootName = (rootPath as NSString).lastPathComponent
-        let rootNode = DirNode(name: rootName.isEmpty ? rootPath : rootName, path: rootPath)
+        let rootNode = FileTreeNode(name: rootName.isEmpty ? rootPath : rootName, path: rootPath, isDirectory: true)
         var dirByPath = [rootPath: rootNode]
-        var fileByPath: [String: FileNode] = [:]
+        var fileByPath: [String: FileTreeNode] = [:]
         for result in results {
             insert(result, into: rootNode, rootPath: rootPath, dirByPath: &dirByPath, fileByPath: &fileByPath)
         }
         finalize(rootNode)
-        return rootNode.matchCount > 0 ? rootNode : nil
+        return (rootNode.search?.matchCount ?? 0) > 0 ? rootNode : nil
     }
 
     /// Lays one result into the tree: walks/creates the directory
     /// chain of its path relative to the root, then appends the match
-    /// to the file node (created on first sight). A path outside the
-    /// root — unreachable via the enumerator (it builds paths from the
-    /// same base string), defensive for future callers — still lands
-    /// in the tree via its absolute components: every match is
-    /// visible, none silently dropped.
+    /// to the file node (created on first sight). The check, the cut
+    /// and the split below `rootPath` are ONE convention
+    /// (`TreePath.remainder` — coherent at the filesystem root too).
+    /// A path outside the root — unreachable via the enumerator (it
+    /// builds paths from the same base string), defensive for future
+    /// callers — still lands in the tree via its absolute components:
+    /// every match is visible, none silently dropped.
     private static func insert(
         _ result: SearchResult,
-        into root: DirNode,
+        into root: FileTreeNode,
         rootPath: String,
-        dirByPath: inout [String: DirNode],
-        fileByPath: inout [String: FileNode]
+        dirByPath: inout [String: FileTreeNode],
+        fileByPath: inout [String: FileTreeNode]
     ) {
         let parts: [String]
-        if result.filePath.hasPrefix(rootPath + "/") {
-            parts = result.filePath.dropFirst(rootPath.count + 1)
-                .split(separator: "/").map(String.init)
+        if let under = TreePath.remainder(of: result.filePath, under: rootPath) {
+            parts = under
         } else if result.filePath == rootPath {
             // The root itself as a match — unreachable via the scanner
             // (the enumerator yields the root's CONTENTS, never the
@@ -124,56 +94,49 @@ public enum SearchTree {
         var dir = root
         var path = rootPath
         for component in parts.dropLast() {
-            path = join(path, component)
+            path = TreePath.join(path, component)
             if let existing = dirByPath[path] {
                 dir = existing
             } else {
-                let node = DirNode(name: component, path: path)
+                let node = FileTreeNode(name: component, path: path, isDirectory: true)
                 dirByPath[path] = node
-                dir.dirs.append(node)
+                dir.children.append(node)
                 dir = node
             }
         }
-        let filePath = join(path, fileName)
+        let filePath = TreePath.join(path, fileName)
         if let existing = fileByPath[filePath] {
-            existing.results.append(result)
+            existing.search?.results.append(result)
         } else {
-            let node = FileNode(name: fileName, path: filePath)
+            let node = FileTreeNode(name: fileName, path: filePath, isDirectory: false)
+            node.search = SearchPayload()
             fileByPath[filePath] = node
-            node.results.append(result)
-            dir.files.append(node)
+            node.search?.results.append(result)
+            dir.children.append(node)
         }
     }
 
-    /// Sorts every level (directories and files alphabetical; the
-    /// window renders directories first) and folds the subtree match
-    /// counts bottom-up. Returns the subtree total of `dir`.
+    /// Sorts every level's children alphabetically (the flatten's
+    /// dirs-first partition — FileTree — then keeps each kind in this
+    /// order) and the file leaves' match lines by line number, then
+    /// folds the subtree match counts bottom-up into each directory's
+    /// `search.matchCount` (a file's is its results count). Returns
+    /// the subtree total of `dir`.
     @discardableResult
-    private static func finalize(_ dir: DirNode) -> Int {
-        dir.dirs.sort { $0.name < $1.name }
-        dir.files.sort { $0.name < $1.name }
-        for file in dir.files {
-            file.results.sort { $0.lineNumber < $1.lineNumber }
+    private static func finalize(_ dir: FileTreeNode) -> Int {
+        dir.children.sort { $0.name < $1.name }
+        var total = 0
+        for child in dir.children {
+            if child.isDirectory {
+                total += finalize(child)
+            } else {
+                child.search?.results.sort { $0.lineNumber < $1.lineNumber }
+                let count = child.search?.results.count ?? 0
+                child.search?.matchCount = count
+                total += count
+            }
         }
-        var total = dir.files.reduce(0) { $0 + $1.results.count }
-        for child in dir.dirs {
-            total += finalize(child)
-        }
-        dir.matchCount = total
+        dir.search = SearchPayload(results: [], matchCount: total)
         return total
-    }
-
-    /// "<parent>/<component>", without doubling the slash at the
-    /// filesystem root.
-    private static func join(_ parent: String, _ component: String) -> String {
-        parent.hasSuffix("/") ? parent + component : parent + "/" + component
-    }
-
-    /// The root as a chain base: trailing slashes off (a "//" join
-    /// would break the relative-prefix check), "/" itself intact.
-    private static func normalizedRoot(_ root: String) -> String {
-        var path = root
-        while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
-        return path
     }
 }

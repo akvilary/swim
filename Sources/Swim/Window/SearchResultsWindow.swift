@@ -22,24 +22,16 @@ class SearchResultsWindow: Window {
     private typealias ScanPayload = (root: String, results: [SearchResult], stats: [String: Fingerprint])
 
     private(set) var results: [SearchResult] = []
-    /// The results as a tree rooted at the working directory (the pure
-    /// SwimCore `SearchTree.build`): every path component from the
-    /// root down to a matched file is a navigable expand/collapse
-    /// level — the full chain, not the old single-level
-    /// "parent dir → file" grouping.
-    private(set) var resultRoot: SearchTree.DirNode?
-    private(set) var selectedIndex: Int = 0
-    /// Expansion keys are the nodes' absolute paths (NOT state on the
-    /// nodes): the tree is rebuilt on every search, path keys survive
-    /// the rebuild — a directory re-expanded after a re-query stays
-    /// expanded for the results that return.
-    private(set) var expandedDirs: Set<String> = []
-    private(set) var expandedFiles: Set<String> = []
-    private var scrollOffset: Int = 0
-    private var horizontalOffset: Int = 0
-    private let horizontalStep: Int = 4
-    private var flatItems: [SearchItem] = []
-    private var flatItemsDirty: Bool = false
+    /// The shared tree-list machinery — one component with the file
+    /// explorer (TreeListView.swift): rows, cursor, scroll, horizontal
+    /// shift, git name-marks. The tree itself rides in it as a
+    /// `FileTreeNode` root built by the pure SwimCore `SearchTree.build`
+    /// (filling the nodes' `search` payload): every path component from
+    /// the root down to a matched file is a navigable expand/collapse
+    /// level — the full chain, not the old single-level "parent dir →
+    /// file" grouping.
+    private let list = TreeListController()
+
     /// The full-scan task. The refresh task below shares the payload
     /// type; both are single-slot newest-wins, so a live per-file
     /// refresh and a reopen stat-walk over the same file collapse
@@ -112,7 +104,7 @@ class SearchResultsWindow: Window {
             }
             // The preview follows the restored cursor row (both
             // windows persisted; this re-binds them explicitly).
-            ensureFlatItems()
+            list.ensureRows()
             notifyPreviewUpdate()
         } else {
             prepareInput(workingDirectory: workingDirectory)
@@ -149,7 +141,7 @@ class SearchResultsWindow: Window {
     /// lands — no visible cursor jump).
     @discardableResult
     private func refreshStaleFiles() -> Bool {
-        guard let root = resultRoot else { return false }
+        guard let root = list.root else { return false }
         var changed: [String] = []
         walkLeaves(root) { file in
             if let fp = fileStats[file.path], Self.fileChanged(file.path, since: fp) {
@@ -177,7 +169,7 @@ class SearchResultsWindow: Window {
     private var refreshGenAtStart = 0
 
     private func startRefresh(changedPaths: [String]) {
-        guard let rootPath = resultRoot?.path, !lastQuery.isEmpty else { return }
+        guard let rootPath = list.root?.path, !lastQuery.isEmpty else { return }
         refreshGenAtStart = searchGeneration
         let query = lastQuery
         let oldResults = results
@@ -230,14 +222,15 @@ class SearchResultsWindow: Window {
     private static func fileChanged(_ path: String, since fp: Fingerprint) -> Bool {
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         guard let size = (attrs?[.size] as? NSNumber)?.intValue,
-              let mtime = attrs?[.modificationDate] as? Date else { return true }
+              let mtime = (attrs?[.modificationDate] as? Date) else { return true }
         return size != fp.size || mtime != fp.mtime
     }
 
     /// Every file leaf of the tree, in tree order.
-    private func walkLeaves(_ dir: SearchTree.DirNode, _ visit: (SearchTree.FileNode) -> Void) {
-        for child in dir.dirs { walkLeaves(child, visit) }
-        for file in dir.files { visit(file) }
+    private func walkLeaves(_ dir: FileTreeNode, _ visit: (FileTreeNode) -> Void) {
+        for child in dir.children {
+            if child.isDirectory { walkLeaves(child, visit) } else { visit(child) }
+        }
     }
 
     /// Installs a scan or refresh payload: the tree is rebuilt from
@@ -252,18 +245,23 @@ class SearchResultsWindow: Window {
         let anchor = preservingCursor ? selectedFileAnchor() : nil
         results = payload.results
         fileStats = payload.stats
-        resultRoot = SearchTree.build(results: payload.results, root: payload.root)
-        flatItemsDirty = true
-        ensureFlatItems()
-        if let anchor, let idx = flatItems.firstIndex(where: { rowOwnerPath($0) == anchor }) {
-            selectedIndex = idx
+        list.root = SearchTree.build(results: payload.results, root: payload.root)
+        list.ensureRows()
+        if let anchor, list.selectFirst(where: { rowOwnerPath($0) == anchor }, visibleCount: treeVisibleCount) {
+            // the cursor stays with its file
         } else if preservingCursor {
-            selectedIndex = min(selectedIndex, max(0, flatItems.count - 1))
+            // the anchor is gone — clamp onto a real row
+            list.select(list.selectedIndex, visibleCount: treeVisibleCount)
         } else {
-            selectedIndex = 0
-            scrollOffset = 0
+            // a fresh result set is a fresh navigation session: cursor
+            // at the top row, view at the top — self-contained, not
+            // relying on the start-of-search reset having survived
+            // the scanning window. Nothing auto-expands — the tree
+            // lands collapsed; the user opens the nodes they need
+            // (Enter/`l` descend to the first child, the explorer's
+            // mechanic).
+            list.select(0, visibleCount: treeVisibleCount)
         }
-        ensureVisible()
         notifyPreviewUpdate()
         dirty = true
         delegate?.requestRender()
@@ -272,32 +270,21 @@ class SearchResultsWindow: Window {
     /// The file/branch path that owns the selected row — the anchor a
     /// rebuild tries to keep the cursor with.
     private func selectedFileAnchor() -> String? {
-        guard selectedIndex >= 0, selectedIndex < flatItems.count else { return nil }
-        return rowOwnerPath(flatItems[selectedIndex])
+        list.selectedRow.flatMap(rowOwnerPath)
     }
 
-    private func rowOwnerPath(_ item: SearchItem) -> String? {
-        switch item {
-        case .directory(let node, _): return node.path
-        case .file(let node, _): return node.path
-        case .result(let r, _): return r.filePath
+    /// A match row belongs to its file; a branch to itself.
+    private func rowOwnerPath(_ row: FileTree.Row) -> String? {
+        switch row {
+        case .node(let node, _): return node.path
+        case .match(let r, _): return r.filePath
         }
-    }
-
-    /// A visible row. Directory and file rows carry their tree node
-    /// (its `path` is the expansion key, its `matchCount` the row's
-    /// count); result rows carry the match and the depth they indent
-    /// to — one past their file.
-    private enum SearchItem {
-        case directory(SearchTree.DirNode, Int)
-        case file(SearchTree.FileNode, Int)
-        case result(SearchResult, Int)
     }
 
     override func update() {
         clear()
 
-        drawHeader()
+        drawHeaderPlate()
 
         // A restore-time refresh hides the body: the stale tree must
         // not appear for the instant before the fresh one replaces it
@@ -308,7 +295,7 @@ class SearchResultsWindow: Window {
         }
     }
 
-    private func drawHeader() {
+    private func drawHeaderPlate() {
         if inputMode {
             let prompt = " Search: "
             drawLine(prompt, row: 0, col: 0, fg: Theme.fg, bg: Theme.bgHighlight, bold: true)
@@ -351,107 +338,60 @@ class SearchResultsWindow: Window {
     }
 
     private func drawResults() {
-        ensureFlatItems()
-        // Two plate rows above the tree — the single constant every
-        // height computation shares.
-        let visibleH = max(0, height - plateRowCount)
-        for row in 0..<visibleH {
-            let itemIdx = scrollOffset + row
-            guard itemIdx < flatItems.count else { break }
-            let isSelected = itemIdx == selectedIndex
-            let hl = Cell.highlight(isSelected, tint: Theme.bgHighlight, base: Theme.bgDark)
-            let bg: Color = hl.bg
-            let y = row + plateRowCount
+        drawTreeListRows(list: list, contentTop: plateRowCount, rowCells: resultRowCells(_:isSelected:))
+    }
 
-            switch flatItems[itemIdx] {
-            case .directory(let node, let depth):
-                let expanded = expandedDirs.contains(node.path)
-                let icon = expanded ? "▾ " : "▸ "
-                let text = String(repeating: " ", count: depth * 2) + icon + node.name + " (\(node.matchCount))"
-                let cells = Self.textCells(text, fg: Theme.blue, bg: bg, bold: true)
-                drawCells(cells, row: y, offset: horizontalOffset, fillFg: Theme.fg, fillBg: bg, reverse: hl.reverse)
-            case .file(let node, let depth):
-                let expanded = expandedFiles.contains(node.path)
-                let icon = expanded ? "▾ " : "▸ "
-                let text = String(repeating: " ", count: depth * 2) + icon + node.name + " (\(node.matchCount))"
-                let cells = Self.textCells(text, fg: Theme.fgDark, bg: bg)
-                drawCells(cells, row: y, offset: horizontalOffset, fillFg: Theme.fg, fillBg: bg, reverse: hl.reverse)
-            case .result(let result, let depth):
-                // The whole WORD containing the match (MatchWord —
-                // SwimCore, tested): the match colored inside its word,
-                // bounded by spaces/brackets/quotes/punctuation, clipped
-                // by the window edge. This replaced the old pre-match
-                // character window — a left-trimmed fragment cut
-                // mid-word, unreadable — and with it the windowing
-                // arithmetic (the clamped prefix math of the old row).
-                let indent = String(repeating: " ", count: depth * 2)
-                let linePrefix = "\(indent)\(result.lineNumber): "
-                let chars = Array(result.lineContent)
-                let wordSpan = MatchWord.span(
-                    chars: chars, matchStart: result.matchStart, matchLength: result.matchLength,
-                    maxCells: max(1, width))
-                let matchStart = min(result.matchStart, chars.count)
-                let matchEnd = min(matchStart + result.matchLength, chars.count)
-                let dim: Color = isSelected ? Theme.fg : Theme.fgDark
-                var cells = Self.textCells(linePrefix, fg: Theme.comment, bg: bg)
-                if wordSpan.start < matchStart {
-                    cells += Self.textCells(String(chars[wordSpan.start..<matchStart]), fg: dim, bg: bg)
-                }
-                cells += Self.textCells(String(chars[matchStart..<matchEnd]), fg: Theme.orange, bg: bg, bold: true)
-                if matchEnd < wordSpan.end {
-                    cells += Self.textCells(String(chars[matchEnd..<wordSpan.end]), fg: dim, bg: bg)
-                }
-                drawCells(cells, row: y, offset: horizontalOffset, fillFg: dim, fillBg: bg, reverse: hl.reverse)
+    /// Left/Right: the shared horizontal shift, clamped by the widest
+    /// visible row (the row builder is the single width authority).
+    private func shift(_ delta: Int) -> Bool {
+        list.shiftHorizontally(
+            delta, width: width, visibleCount: treeVisibleCount,
+            rowWidth: { resultRowCells($0, isSelected: false).count })
+    }
+
+    /// One tree row's cells. Node rows go through the shared pipeline
+    /// (`Window.fileTreeRowCells` — the explorer's row look: tier
+    /// icons, brand colors, git-marked names) plus this tree's own
+    /// trailing run — the dim match-count badge; match rows render
+    /// the whole WORD containing the match (`MatchWord` — SwimCore,
+    /// tested): the match colored inside its word, bounded by
+    /// spaces/brackets/quotes/punctuation, clipped by the window
+    /// edge. The built cells' count is the row's width — the
+    /// authority the horizontal scroll clamps against.
+    private func resultRowCells(_ row: FileTree.Row, isSelected: Bool) -> [Cell] {
+        let bg = Cell.highlight(isSelected, tint: Theme.bgHighlight, base: Theme.bgDark).bg
+        switch row {
+        case .node(let node, let depth):
+            var cells = Window.fileTreeRowCells(
+                node: node,
+                depth: depth,
+                expanded: list.isExpanded(node),
+                selected: isSelected,
+                markFg: list.gitMarks[node.path]?.color
+            )
+            if let count = node.search?.matchCount {
+                cells += Self.textCells(" (\(count))", fg: Theme.comment, bg: bg)
             }
-        }
-    }
-
-    /// Flattens the visible part of the tree: a node's children appear
-    /// only while it is expanded. Depth drives the row indent: a file
-    /// sits at its parent directory's depth + 1, a match line one past
-    /// its file. The branch row an action acts on always persists
-    /// through the rebuild (only its children vanish below), so an
-    /// index pointing at a branch stays valid across it.
-    private func buildFlatItems() {
-        flatItems = []
-        appendDir(resultRoot, depth: 0)
-    }
-
-    private func appendDir(_ dir: SearchTree.DirNode?, depth: Int) {
-        guard let dir else { return }
-        flatItems.append(.directory(dir, depth))
-        guard expandedDirs.contains(dir.path) else { return }
-        let childDepth = depth + 1
-        for child in dir.dirs {
-            appendDir(child, depth: childDepth)
-        }
-        for file in dir.files {
-            flatItems.append(.file(file, childDepth))
-            if expandedFiles.contains(file.path) {
-                for result in file.results {
-                    flatItems.append(.result(result, childDepth + 1))
-                }
+            return cells
+        case .match(let result, let depth):
+            let indent = String(repeating: " ", count: depth * 2)
+            let linePrefix = "\(indent)\(result.lineNumber): "
+            let chars = Array(result.lineContent)
+            let wordSpan = MatchWord.span(
+                chars: chars, matchStart: result.matchStart, matchLength: result.matchLength,
+                maxCells: max(1, width))
+            let matchStart = min(result.matchStart, chars.count)
+            let matchEnd = min(matchStart + result.matchLength, chars.count)
+            let dim: Color = isSelected ? Theme.fg : Theme.fgDark
+            var cells = Self.textCells(linePrefix, fg: Theme.comment, bg: bg)
+            if wordSpan.start < matchStart {
+                cells += Self.textCells(String(chars[wordSpan.start..<matchStart]), fg: dim, bg: bg)
             }
-        }
-    }
-
-    /// Every list-reading path (the renderer, the key handlers) goes
-    /// through here: a rebuild happens exactly once per dirty flag, so
-    /// each consumer sees the CURRENT list. Without this in the key
-    /// handlers, a j after an Enter-collapse would bound-check against
-    /// the stale (longer) list and could step the selection past the
-    /// real end — an invisible, silently drifting cursor.
-    private func ensureFlatItems() {
-        guard flatItemsDirty else { return }
-        buildFlatItems()
-        flatItemsDirty = false
-    }
-
-    /// Row depth — the TreeListNavigation policy's view of the list.
-    private func depth(of item: SearchItem) -> Int {
-        switch item {
-        case .directory(_, let depth), .file(_, let depth), .result(_, let depth):
-            return depth
+            cells += Self.textCells(String(chars[matchStart..<matchEnd]), fg: Theme.orange, bg: bg, bold: true)
+            if matchEnd < wordSpan.end {
+                cells += Self.textCells(String(chars[matchEnd..<wordSpan.end]), fg: dim, bg: bg)
+            }
+            return cells
         }
     }
 
@@ -466,14 +406,11 @@ class SearchResultsWindow: Window {
         searchGeneration += 1
         isRefreshing = false
         results = []
-        resultRoot = nil
         fileStats = [:]
-        selectedIndex = 0
-        scrollOffset = 0
-        horizontalOffset = 0
+        list.root = nil
+        list.reset()
         isSearching = true
         dirty = true
-        flatItemsDirty = true
 
         let dir = directory
         searchTask.start { [dir] in
@@ -521,12 +458,6 @@ class SearchResultsWindow: Window {
         guard let found = searchTask.consume() else { return }
         isSearching = false
         applyPayload(found, preservingCursor: false)
-        // A fresh result set is a fresh navigation session: cursor at
-        // the root row, view at the top — self-contained, not relying
-        // on the start-of-search reset having survived the scanning
-        // window. Nothing auto-expands — the tree lands collapsed on
-        // its root row; the user opens the nodes they need (Enter/`l`
-        // descend to the first child, the explorer's mechanic).
         hasSessionState = true
     }
 
@@ -560,17 +491,22 @@ class SearchResultsWindow: Window {
         if inputMode {
             return handleInputKey(key)
         }
-        ensureFlatItems()
         switch key {
         case .char("j"), .down:
-            if selectedIndex < flatItems.count - 1 { selectedIndex += 1; ensureVisible(); notifyPreviewUpdate(); dirty = true }
+            if list.move(1, visibleCount: treeVisibleCount) { notifyPreviewUpdate(); dirty = true }
         case .char("k"), .up:
-            if selectedIndex > 0 { selectedIndex -= 1; ensureVisible(); notifyPreviewUpdate(); dirty = true }
-        case .right: shiftHorizontally(horizontalStep)
-        case .left: shiftHorizontally(-horizontalStep)
+            if list.move(-1, visibleCount: treeVisibleCount) { notifyPreviewUpdate(); dirty = true }
+        case .right:
+            if shift(list.horizontalStep) { dirty = true }
+        case .left:
+            if shift(-list.horizontalStep) { dirty = true }
         case .enter: handleActivate()
         case .char("l"), .ctrlRight, .ctrl("l"): handleSelect()
         case .char("h"), .ctrlLeft, .ctrl("h"): handleCollapse()
+        case .char("G"):
+            if list.jumpToLast(visibleCount: treeVisibleCount) { notifyPreviewUpdate(); dirty = true }
+        case .char("g"):
+            if list.jumpToFirst(visibleCount: treeVisibleCount) { notifyPreviewUpdate(); dirty = true }
         case .char("i"):
             // `i` — back to the query input, a NEW query from an empty
             // line (the vim insert idiom). The branch picker's `i`
@@ -608,28 +544,21 @@ class SearchResultsWindow: Window {
         return true
     }
 
-    /// Enter — the explorer's activateCurrent: on a match line opens
-    /// the file; on a directory/file row toggles it — expanding
-    /// descends to the first child, collapsing keeps the row.
+    /// Enter — the explorer's mechanic (the shared TreeListController
+    /// primitives): a branch toggles — expanding descends to the first
+    /// child, collapsing keeps the row. In this tree a FILE is a
+    /// branch too (it expands into its match lines); a match line
+    /// opens the file at that line.
     private func handleActivate() {
-        guard selectedIndex < flatItems.count else { return }
-        switch flatItems[selectedIndex] {
-        case .directory(let node, _):
-            if expandedDirs.contains(node.path) {
-                expandedDirs.remove(node.path)
-                purgeExpansionBelow(node.path)
-            } else {
-                expandedDirs.insert(node.path)
+        guard let row = list.selectedRow else { return }
+        switch row {
+        case .node(let node, _):
+            list.toggle(node)
+            if list.descendToFirstChild(visibleCount: treeVisibleCount) {
+                // The selection moved rows — the preview follows.
+                notifyPreviewUpdate()
             }
-            flatItemsDirty = true
-            ensureFlatItems()
-            descendToFirstChild()
-        case .file(let node, _):
-            if expandedFiles.contains(node.path) { expandedFiles.remove(node.path) } else { expandedFiles.insert(node.path) }
-            flatItemsDirty = true
-            ensureFlatItems()
-            descendToFirstChild()
-        case .result(let r, _):
+        case .match(let r, _):
             delegate?.openFileAtLine(r.filePath, line: r.lineNumber)
         }
         dirty = true
@@ -639,136 +568,47 @@ class SearchResultsWindow: Window {
     /// collapses. A collapsed row expands and descends, an expanded
     /// one just descends; a match line opens the file.
     private func handleSelect() {
-        guard selectedIndex < flatItems.count else { return }
-        switch flatItems[selectedIndex] {
-        case .directory(let node, _):
-            if !expandedDirs.contains(node.path) {
-                expandedDirs.insert(node.path)
-                flatItemsDirty = true
-                ensureFlatItems()
+        guard let row = list.selectedRow else { return }
+        switch row {
+        case .node(let node, _):
+            list.expand(node)
+            if list.descendToFirstChild(visibleCount: treeVisibleCount) {
+                notifyPreviewUpdate()
             }
-            descendToFirstChild()
-        case .file(let node, _):
-            if !expandedFiles.contains(node.path) {
-                expandedFiles.insert(node.path)
-                flatItemsDirty = true
-                ensureFlatItems()
-            }
-            descendToFirstChild()
-        case .result(let r, _):
+        case .match(let r, _):
             delegate?.openFileAtLine(r.filePath, line: r.lineNumber)
         }
         dirty = true
     }
 
-    /// Collapsing discards the subtree's expansion MEMORY: every key
-    /// below the collapsed node leaves the sets, so re-expanding opens
-    /// the node fresh — its children collapsed — instead of restoring
-    /// the previous depth. Keys of untouched nodes survive rebuilds
-    /// and re-queries as before; only collapse wipes.
-    private func purgeExpansionBelow(_ path: String) {
-        let prefix = path + "/"
-        // Set has no removeAll(where:) — filter reassignment is the
-        // idiomatic wipe.
-        expandedDirs = expandedDirs.filter { !$0.hasPrefix(prefix) }
-        expandedFiles = expandedFiles.filter { !$0.hasPrefix(prefix) }
-    }
-
-    /// The descend after an expand — the explorer's mechanic, on the
-    /// shared pure policy (`TreeListNavigation.firstChild`): the
-    /// selection moves onto the branch's first child, the row right
-    /// below one depth deeper; a collapsed-again branch has no such
-    /// row — the selection stays. The selection moving rows means the
-    /// preview follows.
-    private func descendToFirstChild() {
-        let child = TreeListNavigation.firstChild(
-            rowCount: flatItems.count,
-            selectedIndex: selectedIndex,
-            depthAt: { depth(of: flatItems[$0]) }
-        )
-        if let child {
-            selectedIndex = child
-            ensureVisible()
-            notifyPreviewUpdate()
-        }
-    }
-
-    /// The explorer-style `h` (the shared TreeListNavigation policy):
-    /// the key acts on the selected row's PARENT branch — the nearest
-    /// row above one depth shallower — selecting it and collapsing it
-    /// (a nested row's parent is always expanded, or the row would not
-    /// be visible; remove, never insert — expanding is `l`/Enter's
-    /// job). At the top level the row acts on itself: the root
-    /// collapses the whole tree, a collapsed root makes the press a
-    /// no-op.
+    /// The explorer-style `h` (the shared TreeListController/
+    /// TreeListNavigation policy): the key acts on the selected row's
+    /// PARENT branch — selecting it and collapsing it (a nested row's
+    /// parent is always expanded, or the row would not be visible).
+    /// The collapse wipes the subtree's expansion memory — re-expanding
+    /// opens the node fresh; keys of untouched nodes survive rebuilds
+    /// and re-queries as before, only collapse wipes.
     private func handleCollapse() {
-        guard selectedIndex < flatItems.count else { return }
-        let target = TreeListNavigation.collapseTarget(
-            rowCount: flatItems.count,
-            selectedIndex: selectedIndex
-        ) { depth(of: flatItems[$0]) }
-        selectedIndex = target
-        switch flatItems[target] {
-        case .directory(let node, _):
-            expandedDirs.remove(node.path)
-            purgeExpansionBelow(node.path)
-            flatItemsDirty = true
-        case .file(let node, _):
-            expandedFiles.remove(node.path)
-            flatItemsDirty = true
-        case .result:
-            // Unreachable: the target is a parent branch by the
-            // flatten invariant; kept total for the switch.
-            break
-        }
-        ensureVisible()
-        // The selection moved rows — the preview follows, like j/k.
+        guard list.selectedRow != nil else { return }
+        list.collapseUp(visibleCount: treeVisibleCount)
+        // The selection may have moved rows — the preview follows,
+        // like j/k.
         notifyPreviewUpdate()
         dirty = true
     }
 
-    private func shiftHorizontally(_ delta: Int) {
-        ensureFlatItems()
-        let maxOffset = max(0, maxVisibleContentLength() - width + 1)
-        horizontalOffset = max(0, min(horizontalOffset + delta, maxOffset))
-        dirty = true
-    }
-
-    /// The scroll bound in terminal CELLS, not Characters — a wide
-    /// grapheme occupies two columns (the shared `Window.cellCount`,
-    /// the accounting of the rows `textCells` builds), and a bound
-    /// counted in characters would stop short of a wide row's tail.
-    private func maxVisibleContentLength() -> Int {
-        var maxLen = 0
-        let visibleH = max(0, height - plateRowCount)
-        for row in 0..<visibleH {
-            let itemIdx = scrollOffset + row
-            guard itemIdx < flatItems.count else { break }
-            switch flatItems[itemIdx] {
-            case .directory(let node, let depth):
-                // indent + icon + name + " (" + count + ")"
-                maxLen = max(maxLen, depth * 2 + 2 + Self.cellCount(node.name) + 3 + String(node.matchCount).count)
-            case .file(let node, let depth):
-                maxLen = max(maxLen, depth * 2 + 2 + Self.cellCount(node.name) + 3 + String(node.matchCount).count)
-            case .result(let r, let depth):
-                maxLen = max(maxLen, depth * 2 + String(r.lineNumber).count + 2 + Self.cellCount(r.lineContent))
-            }
-        }
-        return maxLen
-    }
-
     private func notifyPreviewUpdate() {
-        guard selectedIndex < flatItems.count else {
+        guard let row = list.selectedRow else {
             delegate?.updatePreview(path: nil, highlightLine: -1)
             return
         }
-        switch flatItems[selectedIndex] {
-        case .result(let r, _):
+        switch row {
+        case .match(let r, _):
             delegate?.updatePreview(path: r.filePath, highlightLine: r.lineNumber)
-        case .file(let node, _):
-            delegate?.updatePreview(path: node.path, highlightLine: -1)
-        case .directory:
+        case .node(let node, _) where node.isDirectory:
             delegate?.updatePreview(path: nil, highlightLine: -1)
+        case .node(let node, _):
+            delegate?.updatePreview(path: node.path, highlightLine: -1)
         }
     }
 
@@ -776,9 +616,13 @@ class SearchResultsWindow: Window {
     /// height computation in the window shares.
     private var plateRowCount: Int { 2 }
 
-    private func ensureVisible() {
-        scrollOffset = Window.clampedScroll(selectedIndex: selectedIndex, scrollOffset: scrollOffset, visibleCount: max(0, height - plateRowCount))
-    }
+    /// Content rows below the plate — the geometry handed to the
+    /// shared list controller.
+    private var treeVisibleCount: Int { max(0, height - plateRowCount) }
+}
+
+extension SearchResultsWindow: TreeListWindow {
+    var treeList: TreeListController { list }
 }
 
 extension SearchResultsWindow: SpinnerWindow {
