@@ -26,6 +26,27 @@ A Vim-like terminal text editor written in pure Swift with zero external depende
 - **Tokyo Night Storm theme** — RGB everywhere; on terminals without truecolor the palette degrades to the nearest 256/16 colors instead of breaking, and `NO_COLOR` is honored (highlights fall back to reverse video)
 - **Status bar** — mode, filename, file type, encoding, cursor position
 
+## Language servers (LSP)
+
+Semantic highlighting, diagnostics and go-to-definition (`gd`) for:
+
+| Language | Server | File extensions |
+|---|---|---|
+| Swift | sourcekit-lsp | `.swift` |
+| C# | OmniSharp | `.cs`, `.csx` |
+| Go | gopls | `.go` |
+| Rust | rust-analyzer | `.rs` |
+| Python | basedpyright | `.py`, `.pyw`, `.pyi` |
+| C | clangd | `.c` |
+| C++ | clangd | `.h`, `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` |
+| Shell | bash-language-server | `.sh`, `.bash` |
+
+Servers are discovered at standard install paths and started lazily on first
+use; a missing server degrades silently to the built-in highlighting. For
+C/C++, a compile database (`CMAKE_EXPORT_COMPILE_COMMANDS`) wins when
+present; without one, clangd falls back per language family (C++ files get
+`-std=c++20`).
+
 ## Screenshots
 
 **Editor** — syntax highlighting, line numbers, file explorer, tab bar:
