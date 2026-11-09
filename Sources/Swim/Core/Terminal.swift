@@ -3,6 +3,7 @@
 #elseif canImport(Darwin)
 @preconcurrency import Darwin
 #endif
+import SwimCore
 import Foundation
 
 private nonisolated(unsafe) var resizePipeWriteFd: Int32 = -1
@@ -30,6 +31,33 @@ private func terminationHandler(_: Int32) {
     var byte: UInt8 = 1
     _ = write(termPipeWriteFd, &byte, 1)
     errno = savedErrno
+}
+
+/// The crash-path reset bytes — the same escape writes `restore()`
+/// makes, precomputed into a raw buffer EAGERLY in setup(): inside the
+/// fatal-signal handler only `write(2)` runs — no Swift runtime, no
+/// allocation, no locks (the heap may be the very thing that broke).
+/// Never freed: the process is dying anyway.
+private nonisolated(unsafe) var crashResetBuffer: UnsafeBufferPointer<UInt8>? = nil
+
+/// SIGSEGV/SIGILL/SIGABRT/SIGBUS/SIGFPE — a crash is coming (a Swift
+/// trap — array-out-of-bounds and kin — arrives as SIGILL/SIGABRT).
+/// Vim's `deathtrap` / neovim's `signal_sigsegv` pattern: write the
+/// terminal-reset bytes first, then restore the default disposition
+/// and re-raise — the crash stays an honest crash (core dump /
+/// reporter), the terminal stays usable. Without this, a hard crash
+/// under the kitty key protocol bricks the shell: Enter and the Ctrl
+/// keys arrive as CSI u sequences until the user pastes `reset` or
+/// closes the window (SIGKILL remains uncatchable for everyone —
+/// that residue is the paste/close recovery, documented).
+private func crashHandler(_ sig: Int32) {
+    let savedErrno = errno
+    if let buf = crashResetBuffer {
+        _ = write(STDOUT_FILENO, buf.baseAddress, buf.count)
+    }
+    errno = savedErrno
+    signal(sig, SIG_DFL)
+    raise(sig)
 }
 
 final class Terminal {
@@ -153,6 +181,29 @@ final class Terminal {
         // Terminals and tmux sessions without support simply never send
         // the events; the other trigger lanes cover that case.
         writeRaw("\u{1b}[?1004h")
+        // The terminal's key-modifier protocol (the vocabulary and the
+        // three-class gate live in CSIKey, SwimCore — this is pure
+        // composition): re-encodes ambiguous keys so combos without a
+        // legacy byte — Ctrl+Shift+Y — arrive as their own sequences
+        // instead of collapsing into the plain Ctrl byte. The xterm
+        // family gets modifyOtherKeys level 2 (stock xterm then sends
+        // the 27;mod;code~ form, Shift+Tab and every Ctrl+letter
+        // included; the CSI-u family answers codepoint;mod u — Input
+        // maps both); the kitty family (kitty, Alacritty — which has
+        // no modifyOtherKeys) gets the kitty protocol with
+        // disambiguate-only flags; tmux/screen/dumb get nothing.
+        // Enabled AFTER the alt screen (vim's startup order — kitty
+        // keeps keyboard state per screen).
+        let env = ProcessInfo.processInfo.environment
+        switch CSIKey.protocolMode(
+            term: env["TERM"] ?? "", kittyWindowIdSet: env["KITTY_WINDOW_ID"] != nil) {
+        case .none:
+            break
+        case .modifyOtherKeys:
+            writeRaw(CSIKey.modifyOtherKeysEnable)
+        case .kittyDisambiguate:
+            writeRaw(CSIKey.kittyDisambiguateEnable)
+        }
         writeRaw("\u{1b}[2J")
         writeRaw("\u{1b}[H")
 
@@ -180,6 +231,30 @@ final class Terminal {
         for sig in [SIGTERM, SIGHUP, SIGINT] {
             sigaction(sig, &termSa, nil)
         }
+
+        // The crash quintet cannot ride the run loop — the heap and
+        // locks may be the very thing that broke — so the handler does
+        // the only async-signal-safe work there is: write(2) the
+        // precomputed reset bytes, then re-raise honestly. The buffer
+        // is built BEFORE registration (the pipes' discipline: a
+        // handler must never see uninitialized state).
+        let resetBytes = Array(
+            ("\u{1b}[0m" + CSIKey.keyProtocolReset
+                + "\u{1b}[?1004l\u{1b}[?2004l\u{1b}[?1049l\u{1b}[?25h").utf8)
+        let resetPtr = UnsafeMutablePointer<UInt8>.allocate(capacity: resetBytes.count)
+        for (i, b) in resetBytes.enumerated() { resetPtr[i] = b }
+        crashResetBuffer = UnsafeBufferPointer(start: resetPtr, count: resetBytes.count)
+        var crashSa = sigaction()
+        #if canImport(Glibc)
+        crashSa.__sigaction_handler = .init(sa_handler: crashHandler)
+        #elseif canImport(Darwin)
+        crashSa.__sigaction_u.__sa_handler = crashHandler
+        #endif
+        sigemptyset(&crashSa.sa_mask)
+        crashSa.sa_flags = 0
+        for sig in [SIGSEGV, SIGILL, SIGABRT, SIGBUS, SIGFPE] {
+            sigaction(sig, &crashSa, nil)
+        }
     }
 
     func restore() {
@@ -190,12 +265,17 @@ final class Terminal {
         // termination signal cannot hard-kill the process mid-restore
         // (the default dispositions return; by then the graceful tail
         // is finishing anyway). SIGWINCH's default is to ignore; the
-        // termination trio's is to die — the state the process was
-        // born with.
+        // termination trio's and the crash quintet's is to die — the
+        // state the process was born with.
         signal(SIGTERM, SIG_DFL)
         signal(SIGHUP, SIG_DFL)
         signal(SIGINT, SIG_DFL)
         signal(SIGWINCH, SIG_DFL)
+        signal(SIGSEGV, SIG_DFL)
+        signal(SIGILL, SIG_DFL)
+        signal(SIGABRT, SIG_DFL)
+        signal(SIGBUS, SIG_DFL)
+        signal(SIGFPE, SIG_DFL)
         if let orig = originalTermios {
             var copy = orig
             tcsetattr(STDIN_FILENO, TCSANOW, &copy)
@@ -204,6 +284,16 @@ final class Terminal {
         // into the shell — SGR is screen-global in the xterm family,
         // so exiting over a reverse-video selection (routine in mono)
         // or a bold run would restyle the prompt.
+        // Key protocols off BEFORE the mode disables below: the reset
+        // must reach the terminal while the alt screen is still active
+        // (kitty keeps per-screen keyboard state — vim resets on both
+        // sides of the screen switch for exactly this reason). Written
+        // UNCONDITIONALLY, not gated by what setup enabled: the
+        // modifyOtherKeys reset + the kitty unload are cheap bytes that
+        // heal a key-protocol leak left by ANY app — a crashed previous
+        // run, a user's global config — and unknown terminals ignore
+        // them as unrecognized CSI.
+        writeRaw(CSIKey.keyProtocolReset)
         writeRaw("\u{1b}[0m\u{1b}[?1004l\u{1b}[?2004l\u{1b}[?1049l\u{1b}[?25h")
         if resizePipeReadFd >= 0 { close(resizePipeReadFd); resizePipeReadFd = -1 }
         if resizePipeWriteFd >= 0 { close(resizePipeWriteFd); resizePipeWriteFd = -1 }

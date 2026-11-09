@@ -16,6 +16,7 @@ enum Key: Equatable {
     case pageUp
     case pageDown
     case ctrl(Character)
+    case ctrlShift(Character)
     case ctrlUp
     case ctrlDown
     case ctrlLeft
@@ -143,8 +144,13 @@ enum Key: Equatable {
     /// Maps a scanned CSI sequence — the parameter string between `ESC [`
     /// and the final byte — to a key. Covers the encodings mainstream
     /// terminals actually send: plain arrows and tilde codes, rxvt-style
-    /// and xterm-style modified arrows, and CSI u (kitty / xterm
-    /// modifyOtherKeys) for keys with no legacy encoding.
+    /// and xterm-style modified arrows, and the TWO key-with-modifiers
+    /// forms `CSIKey` owns (CSI u — the WezTerm/iTerm2/foot family; the
+    /// xterm 27-form — stock xterm under modifyOtherKeys level 2, where
+    /// even Shift+Tab arrives as `27;2;9~` and every Ctrl+letter as
+    /// `27;5;code~`). The strict `CSIKey` parsers nil out everything
+    /// undocumented — kitty's ':' dialects included — so an unknown
+    /// sequence never fires a key.
     static func csiKey(params: String, final: UInt8) -> Key? {
         switch final {
         case 65, 66, 67, 68: // A B C D — arrows
@@ -162,9 +168,14 @@ enum Key: Equatable {
         case 73: return params.isEmpty ? .focusGained : nil // 'I' — focus in (mode 1004)
         case 79: return params.isEmpty ? .focusLost : nil   // 'O' — focus out
         case 117: // 'u' — CSI u
-            if params == "13" { return .enter }
+            if let key = CSIKey(csiU: params) {
+                return Self.modifiedKeyMapping(key)
+            }
             return nil
         case 126: // '~'
+            if let key = CSIKey(modifiedTilde: params) {
+                return Self.modifiedKeyMapping(key)
+            }
             switch params {
             case "1": return .home
             case "2": return .insert
@@ -181,6 +192,46 @@ enum Key: Equatable {
         default:
             return nil
         }
+    }
+
+    /// One parsed key-with-modifiers payload (either wire form) to the
+    /// Key grammar — the single mapping both CSI forms funnel through,
+    /// so the two terminal families cannot drift apart. xterm's level 2
+    /// re-encodes EVERY modified key, so the ctrl branch below carries
+    /// all the global Ctrl bindings once the protocol is on; the bare
+    /// specials are the CSI-u family's quirks (xterm keeps their legacy
+    /// bytes at level 2 — level 3, never requested, is what re-encodes
+    /// unmodified keys); shift-only variants normalize to their base
+    /// keys exactly as legacy encodings do (Shift+Tab keeps its own Key
+    /// — legacy CSI Z). Anything outside the app's grammar — alt/meta
+    /// combos, non-letters — nil: the key never fires rather than
+    /// firing wrong.
+    private static func modifiedKeyMapping(_ key: CSIKey) -> Key? {
+        if !key.ctrl && !key.alt && !key.shift && !key.meta {
+            switch key.codepoint {
+            case 9: return .tab
+            case 13: return .enter
+            case 27: return .escape
+            case 127: return .backspace
+            default: return nil
+            }
+        }
+        if key.shift && !key.ctrl && !key.alt && !key.meta {
+            switch key.codepoint {
+            case 9: return .shiftTab
+            case 13: return .enter
+            case 27: return .escape
+            case 127: return .backspace
+            default:
+                // Insurance: printables are never re-encoded by level 2,
+                // but if some terminal does, a dead Shift+letter would be
+                // worse than an uppercase char.
+                guard let letter = key.letter else { return nil }
+                return .char(Character(String(letter).uppercased()))
+            }
+        }
+        guard key.ctrl, !key.alt, !key.meta, let letter = key.letter else { return nil }
+        return key.shift ? .ctrlShift(letter) : .ctrl(letter)
     }
 }
 

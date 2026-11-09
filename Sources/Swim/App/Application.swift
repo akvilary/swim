@@ -799,6 +799,9 @@ class Application: WindowDelegate {
         case .ctrl("y"):
             copyCurrentBranchToClipboard()
             return true
+        case .ctrlShift("y"):
+            copyLastCommitMessageToClipboard()
+            return true
         case .ctrl("f"):
             toggleSearch()
             return true
@@ -946,6 +949,24 @@ class Application: WindowDelegate {
         let branch = gitPanel.currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !branch.isEmpty, branch != "not a git repo" else { return }
         Terminal.shared.osc52Copy(branch)
+    }
+
+    /// Ctrl+Shift+Y — the last commit's message to the clipboard
+    /// (OSC52), from any window. The FULL body (`%B` — the log's `Y`
+    /// convention), not just the subject line. The branch copy's
+    /// silence: outside a repository or on an unborn HEAD there is
+    /// nothing to copy (git refuses `show HEAD`, the guard eats it).
+    /// `show -s` is a one-commit read — milliseconds, the sync call
+    /// precedent is the merge-conflict probe.
+    private func copyLastCommitMessageToClipboard() {
+        let dir = gitPanel.workingDirectory.isEmpty
+            ? FileManager.default.currentDirectoryPath
+            : gitPanel.workingDirectory
+        let result = Shell.git(["show", "-s", "--format=%B", "HEAD"], workDir: dir)
+        guard result.exitCode == 0 else { return }
+        let message = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else { return }
+        Terminal.shared.osc52Copy(message)
     }
 
     private func toggleFileExplorer() {
