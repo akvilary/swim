@@ -83,6 +83,13 @@ class FileExplorerWindow: Window {
         } else {
             list.ensureVisible(visibleCount: treeVisibleCount)
         }
+        // The horizontal counterpart of the vertical ensureVisible
+        // above: a revealed deep node is as invisible past the right
+        // edge as past the bottom. A moved view counts as a change —
+        // reveal must repaint even when the index itself did not move.
+        if snapRow(at: list.selectedIndex) {
+            changed = true
+        }
         if changed {
             dirty = true
         }
@@ -199,6 +206,27 @@ class FileExplorerWindow: Window {
             rowWidth: { explorerRowCells($0, isSelected: false).count })
     }
 
+    /// The rule-B view snaps after an interaction anchored at a branch
+    /// (the shared controller's TreeScroll math — minimum movement
+    /// into full visibility, none when already visible).
+    private func snapToggle(at index: Int) -> Bool {
+        list.snapToggle(
+            at: index, width: width, visibleCount: treeVisibleCount,
+            rowWidth: { explorerRowCells($0, isSelected: false).count })
+    }
+
+    private func snapChildren(of index: Int) -> Bool {
+        list.snapToChildren(
+            ofRow: index, width: width, visibleCount: treeVisibleCount,
+            rowWidth: { explorerRowCells($0, isSelected: false).count })
+    }
+
+    private func snapRow(at index: Int) -> Bool {
+        list.snapToRow(
+            index, width: width, visibleCount: treeVisibleCount,
+            rowWidth: { explorerRowCells($0, isSelected: false).count })
+    }
+
     /// Enter: opens a file; toggles a directory — collapsed expands and
     /// selection descends, expanded collapses and selection stays.
     /// The branch mechanics (toggle, first-child descend) are the
@@ -208,9 +236,11 @@ class FileExplorerWindow: Window {
         guard let row = list.selectedRow else { return }
         switch row {
         case .node(let node, _) where node.isDirectory:
+            let branchIndex = list.selectedIndex
             ensureLoaded(node)
             list.toggle(node)
             list.descendToFirstChild(visibleCount: treeVisibleCount)
+            _ = snapToggle(at: branchIndex)
             dirty = true
         case .node(let node, _):
             delegate?.openFile(node.path)
@@ -225,9 +255,11 @@ class FileExplorerWindow: Window {
         guard let row = list.selectedRow else { return }
         switch row {
         case .node(let node, _) where node.isDirectory:
+            let branchIndex = list.selectedIndex
             ensureLoaded(node)
             list.expand(node)
             list.descendToFirstChild(visibleCount: treeVisibleCount)
+            _ = snapChildren(of: branchIndex)
             dirty = true
         case .node(let node, _):
             delegate?.openFile(node.path)
@@ -240,10 +272,13 @@ class FileExplorerWindow: Window {
     /// `TreeListNavigation`): the key acts on the selected row's parent
     /// branch (the row itself at the top level), selects it and
     /// collapses it when expanded. The collapse wipes the subtree's
-    /// expansion memory — re-expanding opens the node fresh.
+    /// expansion memory — re-expanding opens the node fresh. The view
+    /// snaps to the target row — collapsing a deep subtree must not
+    /// leave the offset parked past the shrunken rows' ends.
     private func collapseCurrent() {
         guard list.selectedRow != nil else { return }
         list.collapseUp(visibleCount: treeVisibleCount)
+        _ = snapRow(at: list.selectedIndex)
         dirty = true
     }
 
@@ -267,6 +302,9 @@ class FileExplorerWindow: Window {
             list.filter = nil                  // was hiding → show everything
         }
         restoreSelection(toPath: selectedPath)
+        // A re-filtered list can lose its widest rows — the view snaps
+        // to the restored row instead of parking past their ends.
+        _ = snapRow(at: list.selectedIndex)
         dirty = true
     }
 
@@ -474,8 +512,11 @@ class FileExplorerWindow: Window {
             return
         }
         reloadPreservingExpansion()
-        // A shrunk list clamps the stale selection onto a real row.
+        // A shrunk list clamps the stale selection onto a real row, and
+        // the view snaps to it — deleting the widest row must not leave
+        // the offset parked past the end.
         list.select(list.selectedIndex, visibleCount: treeVisibleCount)
+        _ = snapRow(at: list.selectedIndex)
         // A deleted file leaves git state — refresh the decorations.
         delegate?.gitWorktreeChanged()
     }
@@ -546,6 +587,7 @@ class FileExplorerWindow: Window {
         let selectedPath = selectedNode()?.path
         reloadPreservingExpansion()
         restoreSelection(toPath: selectedPath)
+        _ = snapRow(at: list.selectedIndex)
     }
 
     /// Rescans the tree from disk while keeping the expansion state of

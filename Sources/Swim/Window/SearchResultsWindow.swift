@@ -262,6 +262,11 @@ class SearchResultsWindow: Window {
             // mechanic).
             list.select(0, visibleCount: treeVisibleCount)
         }
+        // The rebuilt rows can be narrower than the old view was scrolled
+        // for (a refresh dropped the widest matches) — the view snaps to
+        // the row the cursor kept, the horizontal counterpart of the
+        // vertical ensureVisible above.
+        _ = snapRow(at: list.selectedIndex)
         notifyPreviewUpdate()
         dirty = true
         delegate?.requestRender()
@@ -346,6 +351,27 @@ class SearchResultsWindow: Window {
     private func shift(_ delta: Int) -> Bool {
         list.shiftHorizontally(
             delta, width: width, visibleCount: treeVisibleCount,
+            rowWidth: { resultRowCells($0, isSelected: false).count })
+    }
+
+    /// The rule-B view snaps after an interaction anchored at a branch
+    /// (the shared controller's TreeScroll math — minimum movement
+    /// into full visibility, none when already visible).
+    private func snapToggle(at index: Int) -> Bool {
+        list.snapToggle(
+            at: index, width: width, visibleCount: treeVisibleCount,
+            rowWidth: { resultRowCells($0, isSelected: false).count })
+    }
+
+    private func snapChildren(of index: Int) -> Bool {
+        list.snapToChildren(
+            ofRow: index, width: width, visibleCount: treeVisibleCount,
+            rowWidth: { resultRowCells($0, isSelected: false).count })
+    }
+
+    private func snapRow(at index: Int) -> Bool {
+        list.snapToRow(
+            index, width: width, visibleCount: treeVisibleCount,
             rowWidth: { resultRowCells($0, isSelected: false).count })
     }
 
@@ -553,11 +579,13 @@ class SearchResultsWindow: Window {
         guard let row = list.selectedRow else { return }
         switch row {
         case .node(let node, _):
+            let branchIndex = list.selectedIndex
             list.toggle(node)
             if list.descendToFirstChild(visibleCount: treeVisibleCount) {
                 // The selection moved rows — the preview follows.
                 notifyPreviewUpdate()
             }
+            _ = snapToggle(at: branchIndex)
         case .match(let r, _):
             delegate?.openFileAtLine(r.filePath, line: r.lineNumber)
         }
@@ -571,10 +599,12 @@ class SearchResultsWindow: Window {
         guard let row = list.selectedRow else { return }
         switch row {
         case .node(let node, _):
+            let branchIndex = list.selectedIndex
             list.expand(node)
             if list.descendToFirstChild(visibleCount: treeVisibleCount) {
                 notifyPreviewUpdate()
             }
+            _ = snapChildren(of: branchIndex)
         case .match(let r, _):
             delegate?.openFileAtLine(r.filePath, line: r.lineNumber)
         }
@@ -591,6 +621,7 @@ class SearchResultsWindow: Window {
     private func handleCollapse() {
         guard list.selectedRow != nil else { return }
         list.collapseUp(visibleCount: treeVisibleCount)
+        _ = snapRow(at: list.selectedIndex)
         // The selection may have moved rows — the preview follows,
         // like j/k.
         notifyPreviewUpdate()

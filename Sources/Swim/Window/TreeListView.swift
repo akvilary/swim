@@ -254,19 +254,165 @@ final class TreeListController {
         rowWidth: (FileTree.Row) -> Int
     ) -> Bool {
         ensureRows()
-        var maxLen = 0
-        for idx in scrollOffset..<min(scrollOffset + visibleCount, rows.count) {
-            maxLen = max(maxLen, rowWidth(rows[idx]))
-        }
-        let maxOffset = max(0, maxLen - width + 1)
+        let maxOffset = max(0, maxVisibleRowLength(visibleCount: visibleCount, rowWidth: rowWidth) - width + 1)
         let next = max(0, min(horizontalOffset + delta, maxOffset))
         guard next != horizontalOffset else { return false }
         horizontalOffset = next
         return true
     }
 
+    /// The widest visible row's width in cells — the horizontal bound
+    /// both the manual shift and the snaps clamp by (everything past
+    /// the widest row's end is blank). Shared by shiftHorizontally and
+    /// applySnap.
+    private func maxVisibleRowLength(
+        visibleCount: Int,
+        rowWidth: (FileTree.Row) -> Int
+    ) -> Int {
+        var maxLen = 0
+        for idx in scrollOffset..<min(scrollOffset + visibleCount, rows.count) {
+            maxLen = max(maxLen, rowWidth(rows[idx]))
+        }
+        return maxLen
+    }
+
     func resetHorizontalOffset() {
         horizontalOffset = 0
+    }
+
+    // MARK: - Horizontal view anchoring (TreeScroll — the rule-C snaps)
+
+    /// After Enter's toggle at `index`: the branch EXPANDED → anchor
+    /// the strip of rows it now owns below it; COLLAPSED → anchor the
+    /// branch's own row (the same treatment `h` gives its target —
+    /// collapsing must not leave the view parked past the shrunken
+    /// rows' ends). The direction is read from the expansion state
+    /// AFTER the toggle, here and once — windows never decide it.
+    /// Returns whether the view moved (the caller folds it into its
+    /// dirty flag).
+    @discardableResult
+    func snapToggle(
+        at index: Int,
+        width: Int,
+        visibleCount: Int,
+        rowWidth: (FileTree.Row) -> Int
+    ) -> Bool {
+        ensureRows()
+        guard index >= 0, index < rows.count else { return false }
+        if case .node(let node, _) = rows[index], expansion.isExpanded(node) {
+            return snap(toStripBelow: index, width: width, visibleCount: visibleCount, rowWidth: rowWidth)
+        }
+        return snap(toRow: index, width: width, visibleCount: visibleCount, rowWidth: rowWidth)
+    }
+
+    /// After `l`'s expand/descend at `index`: anchor the strip of rows
+    /// the branch owns below it — its children, and (when those were
+    /// expanded before) their subtrees; the strip ends at the first
+    /// row not deeper than the branch.
+    @discardableResult
+    func snapToChildren(
+        ofRow index: Int,
+        width: Int,
+        visibleCount: Int,
+        rowWidth: (FileTree.Row) -> Int
+    ) -> Bool {
+        snap(toStripBelow: index, width: width, visibleCount: visibleCount, rowWidth: rowWidth)
+    }
+
+    /// After a collapse, a reveal, or a selection-restoring rebuild:
+    /// anchor the single row the cursor lands on — the horizontal
+    /// counterpart of ensureVisible.
+    @discardableResult
+    func snapToRow(
+        _ index: Int,
+        width: Int,
+        visibleCount: Int,
+        rowWidth: (FileTree.Row) -> Int
+    ) -> Bool {
+        snap(toRow: index, width: width, visibleCount: visibleCount, rowWidth: rowWidth)
+    }
+
+    /// The anchor law, ONE formula for every case: the PARENT of the
+    /// attention sits at the left edge — the parent directory's icon
+    /// and name first, the attention one indent in. Clamped home at
+    /// the top level (depth 0 → 0).
+    private func parentAnchor(attentionDepth: Int) -> Int {
+        max(0, (attentionDepth - 1) * 2)
+    }
+
+    /// The anchor strip below `index`: contiguous rows deeper than the
+    /// branch, intersected with the vertical viewport — "make readable
+    /// what is on screen". The intersection also keeps the strip's end
+    /// within the manual-shift bound (maxVisibleRowLength walks the
+    /// same window), so a subsequent Right can never jump left. An
+    /// empty intersection (an empty branch, or the strip entirely
+    /// below the viewport) is a no-op.
+    private func snap(
+        toStripBelow index: Int,
+        width: Int,
+        visibleCount: Int,
+        rowWidth: (FileTree.Row) -> Int
+    ) -> Bool {
+        ensureRows()
+        guard index >= 0, index < rows.count else { return false }
+        let branchDepth = rows[index].depth
+        let viewportTop = scrollOffset
+        let viewportBottom = min(scrollOffset + max(0, visibleCount), rows.count)
+        var end = 0
+        var found = false
+        var i = index + 1
+        while i < viewportBottom, rows[i].depth > branchDepth {
+            if i >= viewportTop {
+                found = true
+                end = max(end, rowWidth(rows[i]))
+            }
+            i += 1
+        }
+        guard found else { return false }
+        // The attention is the strip (one deeper than the branch): the
+        // anchor is the branch's own level.
+        return applySnap(
+            anchor: parentAnchor(attentionDepth: branchDepth + 1),
+            end: end,
+            width: width, visibleCount: visibleCount, rowWidth: rowWidth)
+    }
+
+    private func snap(
+        toRow index: Int,
+        width: Int,
+        visibleCount: Int,
+        rowWidth: (FileTree.Row) -> Int
+    ) -> Bool {
+        ensureRows()
+        guard index >= 0, index < rows.count else { return false }
+        return applySnap(
+            anchor: parentAnchor(attentionDepth: rows[index].depth),
+            end: rowWidth(rows[index]),
+            width: width, visibleCount: visibleCount, rowWidth: rowWidth)
+    }
+
+    /// The pure rule applies, with the anchor pre-clamped by the
+    /// manual-shift bound: when the content is short relative to the
+    /// depth, the clamp pulls the anchor further LEFT — more context
+    /// than the parent, never less, and never right of the widest
+    /// visible row's tail (a later manual Right continues from a
+    /// consistent offset). The visibility check is the ANCHOR'S OWN
+    /// picture — the parent's indent through the attention's end — so
+    /// an offset parked right of the parent can never satisfy it: the
+    /// parent is on screen after every snap, keep or jump.
+    private func applySnap(
+        anchor: Int,
+        end: Int,
+        width: Int,
+        visibleCount: Int,
+        rowWidth: (FileTree.Row) -> Int
+    ) -> Bool {
+        let bound = max(0, maxVisibleRowLength(visibleCount: visibleCount, rowWidth: rowWidth) - width + 1)
+        let clampedAnchor = min(anchor, bound)
+        let next = TreeScroll.snapOffset(current: horizontalOffset, width: width, anchor: clampedAnchor, end: end)
+        guard next != horizontalOffset else { return false }
+        horizontalOffset = next
+        return true
     }
 
     // MARK: - Explorer-style interactions

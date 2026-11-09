@@ -479,7 +479,14 @@ class Window {
 
     func poll() {}
 
+    /// Clamps the scroll so the selected row is inside the viewport.
+    /// A degenerate viewport (visibleCount ≤ 0 — a window not yet laid
+    /// out, the boot state) decides NOTHING: every branch below would
+    /// "scroll" the view past the end of the content (selectedIndex -
+    /// 0 + 1), which is exactly the `swim <file>` boot bug — the tree
+    /// appeared shifted past its own end. No viewport, no scrolling.
     static func clampedScroll(selectedIndex: Int, scrollOffset: Int, visibleCount: Int) -> Int {
+        guard visibleCount > 0 else { return scrollOffset }
         if selectedIndex < scrollOffset { return selectedIndex }
         if selectedIndex >= scrollOffset + visibleCount { return selectedIndex - visibleCount + 1 }
         return scrollOffset

@@ -57,6 +57,9 @@ class Application: WindowDelegate {
     private let gitStatsTask = BackgroundTask<GitStats>()
 
     private var halfScreenWindow: Window?
+    /// The boot reveal waits for the first layout (see init: geometry
+    /// against 0×0 windows is the "shifted tree" boot bug).
+    private var bootRevealPending = false
     private var maximized: Window?
     private var maximizeHidden: [Window] = []
 
@@ -137,10 +140,14 @@ class Application: WindowDelegate {
         tabBar.visible = fileToOpen != nil
         statusBar.visible = true
         fileExplorer.loadDirectory(startDir)
-        // `swim file.swift`: point the fresh tree at the opened file. The
-        // activeFileChanged reveal fired by editor.openFile above was a
-        // no-op — the explorer was neither visible nor rooted yet.
-        revealActiveFileInExplorer()
+        // `swim file.swift`: the tree is fresh — point it at the opened
+        // file. The reveal itself is DEFERRED to run()'s first frame
+        // (bootRevealPending): reveal's view adjustments (the vertical
+        // ensureVisible, the horizontal parent anchor) need the
+        // window's REAL geometry, and at init time every window is
+        // still 0×0 — geometry against zero is what once scrolled the
+        // boot tree past its own end.
+        bootRevealPending = fileToOpen != nil
         gitPanel.workingDirectory = startDir
 
         // Initial window stack: explorer at the bottom, editor on top of it
@@ -169,8 +176,19 @@ class Application: WindowDelegate {
         }
 
         // The first frame is the terminal-size reaction applied to the
-        // startup size — the same pipeline a resize goes through.
-        relayoutAndRepaint()
+        // startup size — the same pipeline a resize goes through. The
+        // boot reveal runs BETWEEN the layout and the paint: the
+        // windows now have their real geometry, so the reveal's view
+        // adjustments land where the user can see them — the opened
+        // file's PARENT directory anchored at the left edge.
+        renderer.needsFullRedraw = true
+        relayout()
+        if bootRevealPending {
+            bootRevealPending = false
+            revealActiveFileInExplorer()
+        }
+        spaces.current.update()
+        render()
 
         while running {
             pollLSP()
