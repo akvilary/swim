@@ -136,9 +136,8 @@ class GitPanelWindow: Window {
     private var diffStaged: Bool = false
     private var diffUntracked: Bool = false
     private(set) var isDiffLoading: Bool = false
-    var diffSpinnerFrame: Int = 0
+    private var diffSpinner = Spinner()
     private let diffTask = BackgroundTask<[Substring]>()
-    private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     private(set) var isRefreshing: Bool = false
     /// True between `prepareOpen` and the landing of ITS fetch: the
@@ -332,27 +331,16 @@ class GitPanelWindow: Window {
         let title = "DIFF \(diffPath)"
 
         if isDiffLoading {
-            let spinner = Self.spinnerChars[diffSpinnerFrame % Self.spinnerChars.count]
-            headerPlate = HeaderPlate(text: " \(spinner) \(title) ", fg: Theme.blue)
+            headerPlate = HeaderPlate(text: " \(diffSpinner.glyph) \(title) ", fg: Theme.blue)
             drawPlate()
-            let msg = "\(spinner) Loading..."
-            let midRow = height / 2
-            let startCol = max(0, (width - msg.count - 2) / 2)
-            for (i, c) in msg.enumerated() {
-                if startCol + i < width {
-                    setCell(midRow, startCol + i, Cell.colored(c, fg: Theme.blue, bg: Theme.bgDark, bold: true))
-                }
-            }
+            drawCenteredMessage("\(diffSpinner.glyph) Loading...", fg: Theme.blue)
             return
         }
 
         if diffLines.isEmpty {
             headerPlate = HeaderPlate(text: " \(title) (empty) ", fg: Theme.comment)
             drawPlate()
-            let msg = "No changes"
-            let midRow = height / 2
-            let startCol = max(0, (width - msg.count - 2) / 2)
-            drawLine(msg, row: midRow, col: startCol, fg: Theme.comment)
+            drawCenteredMessage("No changes", fg: Theme.comment, bold: false)
             return
         }
 
@@ -1153,7 +1141,7 @@ extension GitPanelWindow: SpinnerWindow {
     // results — while a diff load animates its spinner.
     var spinnerActive: Bool { visible && (isRefreshing || isDiffLoading) }
     func tickSpinner() {
-        if isDiffLoading { diffSpinnerFrame &+= 1 }
+        if isDiffLoading { diffSpinner.tick() }
         dirty = true
     }
 }

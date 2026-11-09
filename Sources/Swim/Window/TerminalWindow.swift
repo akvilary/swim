@@ -21,14 +21,13 @@ class TerminalWindow: Window {
     private var inputCursorPos = 0
     private var scrollOffset = 0
     private(set) var isRunning = false
-    var spinnerFrame = 0
+    private var spinner = Spinner()
     var workingDirectory = ""
     private let runTask = BackgroundTask<Shell.Result>()
 
     private var flatLines: [(text: String, kind: LineKind, isCommand: Bool)] = []
     private var flatDirty = true
 
-    private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     private static let maxOutputLines = 10_000
 
     func prepare(workingDirectory: String) {
@@ -169,8 +168,7 @@ class TerminalWindow: Window {
     /// math so they cannot drift apart.
     private var promptText: String {
         if isRunning {
-            let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
-            return " \(spinner) > "
+            return " \(spinner.glyph) > "
         }
         return " > "
     }
@@ -461,7 +459,7 @@ class TerminalWindow: Window {
 extension TerminalWindow: SpinnerWindow {
     var spinnerActive: Bool { visible && isRunning }
     func tickSpinner() {
-        spinnerFrame &+= 1
+        spinner.tick()
         dirty = true
     }
 }

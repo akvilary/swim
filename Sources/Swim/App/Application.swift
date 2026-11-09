@@ -592,9 +592,9 @@ class Application: WindowDelegate {
         // One loop for every window with something to wait for
         // (SpinnerWindow): a window to tick connects by conforming,
         // not by growing a branch here. Some ticks animate a spinner;
-        // others (the panel's refresh, the search scan) only keep the
-        // idle loop alive so the anyDirty block below can consume
-        // landed results without a keypress.
+        // others (the panel's refresh) only keep the idle loop alive
+        // so the anyDirty block below can consume landed results
+        // without a keypress.
         for window in spaces.current.windows.values {
             if let spinner = window as? SpinnerWindow, spinner.spinnerActive {
                 spinner.tickSpinner()

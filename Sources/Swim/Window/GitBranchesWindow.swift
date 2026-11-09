@@ -96,8 +96,7 @@ class GitBranchesWindow: Window {
     /// so instead of the misleading "no branches".
     private var loadFailed = false
     private let gitTask = BackgroundTask<BranchFetch?>()
-    var spinnerFrame: Int = 0
-    private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    private var spinner = Spinner()
 
     private var filterBuffer: String = ""
     private var filterCursorPos: Int = 0
@@ -270,8 +269,7 @@ class GitBranchesWindow: Window {
         if isRefreshing, branches.isEmpty {
             // Nothing on screen yet — say so in the plate, spinner in
             // the list area below.
-            let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
-            headerPlate = HeaderPlate(text: " \(spinner) \(plateTitle) ", fg: Theme.blue)
+            headerPlate = HeaderPlate(text: " \(spinner.glyph) \(plateTitle) ", fg: Theme.blue)
             drawPlate()
             return
         }
@@ -290,15 +288,7 @@ class GitBranchesWindow: Window {
             if isRefreshing {
                 // First load (or a query whose previous page was empty):
                 // spinner in the list area, the top row stays honest.
-                let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
-                let msg = "\(spinner) Loading branches..."
-                let midRow = max(1, height / 2)
-                let startCol = max(0, (width - msg.count - 2) / 2)
-                for (i, c) in msg.enumerated() {
-                    if startCol + i < width {
-                        setCell(midRow, startCol + i, Cell.colored(c, fg: Theme.blue, bg: Theme.bgDark, bold: true))
-                    }
-                }
+                drawCenteredMessage("\(spinner.glyph) Loading branches...", fg: Theme.blue)
                 return
             }
             let query = filterBuffer.trimmingCharacters(in: .whitespaces)
@@ -722,7 +712,7 @@ class GitBranchesWindow: Window {
 extension GitBranchesWindow: SpinnerWindow {
     var spinnerActive: Bool { visible && isRefreshing }
     func tickSpinner() {
-        spinnerFrame &+= 1
+        spinner.tick()
         dirty = true
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import SwimCore
 
 class CommandWindow: Window {
     override var availableModes: [WindowMode] { [.menu, .command] }
@@ -6,7 +7,7 @@ class CommandWindow: Window {
     private var outputLines: [Substring] = []
     private var scrollOffset: Int = 0
     private(set) var isRunning: Bool = false
-    var spinnerFrame: Int = 0
+    private var spinner = Spinner()
     var workingDirectory: String = ""
     private var session: InteractiveShell?
     /// The credential kind being typed in the command line, if any —
@@ -22,8 +23,6 @@ class CommandWindow: Window {
     /// The shape (user args + ref) of the LAST merge run here — a
     /// conflicted finish offers ours/theirs retries that preserve it.
     private var lastMergeShape: MergeShape?
-
-    private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     func runCommand(_ label: String, args: [String], then chaining: (label: String, args: [String])? = nil) {
         // A previous run may still be blocked on a credential nobody
@@ -248,15 +247,10 @@ class CommandWindow: Window {
         clear()
 
         if isRunning, let kind = inputKind {
-            let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
             let label = width >= 20 ? kind.label : kind.narrowLabel
-            drawHeader(" \(spinner) \(title) — waiting for \(label) ", fg: Theme.orange)
+            drawHeader(" \(spinner.glyph) \(title) — waiting for \(label) ", fg: Theme.orange)
             let msg = "Type \(label) in the command line (Enter — submit, Esc — cancel)"
-            let midRow = height / 2
-            let startCol = max(0, (width - msg.count - 2) / 2)
-            for (i, c) in msg.enumerated() where startCol + i < width {
-                setCell(midRow, startCol + i, Cell.colored(c, fg: Theme.orange, bg: Theme.bgDark))
-            }
+            drawCenteredMessage(msg, fg: Theme.orange, bold: false)
             return
         }
 
@@ -274,17 +268,8 @@ class CommandWindow: Window {
                 drawLine(String(line.prefix(width)), row: i + 1, fg: fg)
             }
         } else if isRunning {
-            let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
-            drawHeader(" \(spinner) \(title) ", fg: Theme.blue)
-            let msg = "Running \(title)..."
-            let midRow = height / 2
-            let startCol = max(0, (width - msg.count - 2) / 2)
-            let fullMsg = "\(spinner) \(msg)"
-            for (i, c) in fullMsg.enumerated() {
-                if startCol + i < width {
-                    setCell(midRow, startCol + i, Cell.colored(c, fg: Theme.blue, bg: Theme.bgDark, bold: true))
-                }
-            }
+            drawHeader(" \(spinner.glyph) \(title) ", fg: Theme.blue)
+            drawCenteredMessage("\(spinner.glyph) Running \(title)...", fg: Theme.blue)
         } else {
             let header = lastRunCancelled
                 ? " \(title) — cancelled (Esc to close) "
@@ -306,7 +291,7 @@ class CommandWindow: Window {
 extension CommandWindow: SpinnerWindow {
     var spinnerActive: Bool { visible && isRunning }
     func tickSpinner() {
-        spinnerFrame &+= 1
+        spinner.tick()
         dirty = true
     }
 }

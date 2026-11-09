@@ -58,6 +58,7 @@ class SearchResultsWindow: Window {
     private(set) var lastQuery: String = ""
     var workingDirectory: String = ""
     private(set) var isSearching: Bool = false
+    private var spinner = Spinner()
     /// A restore-time refresh is running: the STALE tree is deliberately
     /// not shown (showing it, then rebuilding, would visibly jump the
     /// cursor) — the body stays blank for the moment the refresh takes,
@@ -323,7 +324,10 @@ class SearchResultsWindow: Window {
             let queryLine = lastQuery.isEmpty ? " Search " : " Search \"\(lastQuery)\""
             drawPlateLine(queryLine, row: 0)
             if isSearching {
-                drawPlateLine(" scanning... ", row: 1)
+                // The spinner replaces the old "scanning..." dots —
+                // the git pull/push look (the shared Spinner, the
+                // same frames every wait animates).
+                drawPlateLine(" \(spinner.glyph) scanning ", row: 1)
             } else {
                 drawPlateLine(" \(results.count) matches (i: new search) ", row: 1)
             }
@@ -657,12 +661,13 @@ extension SearchResultsWindow: TreeListWindow {
 }
 
 extension SearchResultsWindow: SpinnerWindow {
-    // No spinner to animate — the search plate says "scanning..."
-    // plainly. The tick is the idle-loop keep-alive: it keeps the
-    // anyDirty block consuming landed scan results while the user
-    // types nothing.
+    // The scan animates the plate's spinner (the git pull/push
+    // look); the tick's other half is the idle-loop keep-alive — it
+    // keeps the anyDirty block consuming landed scan results while
+    // the user types nothing.
     var spinnerActive: Bool { visible && isSearching }
     func tickSpinner() {
+        spinner.tick()
         dirty = true
     }
 }

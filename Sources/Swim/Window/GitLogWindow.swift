@@ -136,8 +136,7 @@ class GitLogWindow: Window {
     /// HEAD reports "HEAD" and the plate says so, honestly.
     private var currentBranch: String = ""
     private let gitTask = BackgroundTask<LogFetch>()
-    var spinnerFrame: Int = 0
-    private static let spinnerChars: [Character] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    private var spinner = Spinner()
 
     // MARK: - Query phases
 
@@ -176,7 +175,7 @@ class GitLogWindow: Window {
     /// rendered as diff content.
     private var diffFailed = false
     private(set) var isDiffLoading = false
-    var diffSpinnerFrame: Int = 0
+    private var diffSpinner = Spinner()
     private let diffTask = BackgroundTask<DiffFetch>()
 
     var workingDirectory: String = "" {
@@ -768,8 +767,7 @@ class GitLogWindow: Window {
         if isRefreshing, commits.isEmpty {
             // Nothing on screen yet — say so in the plate, spinner in
             // the body below.
-            let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
-            headerPlate = HeaderPlate(text: " \(spinner) \(plateTitle) ", fg: Theme.blue)
+            headerPlate = HeaderPlate(text: " \(spinner.glyph) \(plateTitle) ", fg: Theme.blue)
             drawPlate()
             return
         }
@@ -786,13 +784,7 @@ class GitLogWindow: Window {
 
         if list.isEmpty {
             if isRefreshing {
-                let spinner = Self.spinnerChars[spinnerFrame % Self.spinnerChars.count]
-                let msg = "\(spinner) Loading commits..."
-                let midRow = max(1, height / 2)
-                let startCol = max(0, (width - msg.count - 2) / 2)
-                for (i, c) in msg.enumerated() where startCol + i < width {
-                    setCell(midRow, startCol + i, Cell.colored(c, fg: Theme.blue, bg: Theme.bgDark, bold: true))
-                }
+                drawCenteredMessage("\(spinner.glyph) Loading commits...", fg: Theme.blue)
                 return
             }
             let msg: String
@@ -847,15 +839,9 @@ class GitLogWindow: Window {
     private func drawDiff() {
         let title = "COMMIT \(diffHash)"
         if isDiffLoading {
-            let spinner = Self.spinnerChars[diffSpinnerFrame % Self.spinnerChars.count]
-            headerPlate = HeaderPlate(text: " \(spinner) \(title) ", fg: Theme.blue)
+            headerPlate = HeaderPlate(text: " \(diffSpinner.glyph) \(title) ", fg: Theme.blue)
             drawPlate()
-            let msg = "\(spinner) Loading..."
-            let midRow = height / 2
-            let startCol = max(0, (width - msg.count - 2) / 2)
-            for (i, c) in msg.enumerated() where startCol + i < width {
-                setCell(midRow, startCol + i, Cell.colored(c, fg: Theme.blue, bg: Theme.bgDark, bold: true))
-            }
+            drawCenteredMessage("\(diffSpinner.glyph) Loading...", fg: Theme.blue)
             return
         }
         if diffFailed {
@@ -867,7 +853,7 @@ class GitLogWindow: Window {
         if diffLines.isEmpty {
             headerPlate = HeaderPlate(text: " \(title) (empty) ", fg: Theme.comment)
             drawPlate()
-            drawLine("No changes", row: height / 2, col: max(0, (width - 10 - 2) / 2), fg: Theme.comment)
+            drawCenteredMessage("No changes", fg: Theme.comment, bold: false)
             return
         }
         if mode == .visualLine {
@@ -889,9 +875,11 @@ class GitLogWindow: Window {
 extension GitLogWindow: SpinnerWindow {
     var spinnerActive: Bool { visible && (isRefreshing || isDiffLoading) }
     func tickSpinner() {
-        // The list spinner animates (picker-style); the diff spinner
-        // has its own frame.
-        if isDiffLoading { diffSpinnerFrame &+= 1 } else { spinnerFrame &+= 1 }
+        // Each wait animates its own spinner — a list load and a
+        // diff load can be in flight together, and neither freezes
+        // while the other ticks.
+        if isDiffLoading { diffSpinner.tick() }
+        if isRefreshing { spinner.tick() }
         dirty = true
     }
 }

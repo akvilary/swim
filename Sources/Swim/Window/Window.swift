@@ -466,6 +466,23 @@ class Window {
         }
     }
 
+    /// A horizontally centered message at the body's mid-height —
+    /// the loading/empty-state text ("⠋ Loading...", "No changes")
+    /// every window with a background wait shows. One home for the
+    /// centering math eight call sites had grown apart (two of them
+    /// already disagreeing: one with the width hardcoded, one
+    /// drifting to `drawLine`). `top` is the first body row under
+    /// the plate — the message never lands on the plate (a 1-row
+    /// window shows the plate alone; before, the message overwrote
+    /// it). Tail clips at the window edge.
+    func drawCenteredMessage(_ text: String, fg: Color, bold: Bool = true, top: Int = 1) {
+        let row = max(top, height / 2)
+        let startCol = max(0, (width - text.count - 2) / 2)
+        for (i, c) in text.enumerated() where startCol + i < width {
+            setCell(row, startCol + i, Cell.colored(c, fg: fg, bg: Theme.bgDark, bold: bold))
+        }
+    }
+
     func handleKey(_ key: Key) -> Bool { false }
 
     /// The terminal cursor this window wants shown — its typing surface:
@@ -494,9 +511,10 @@ class Window {
 }
 
 /// A window with a background task worth ticking for — a spinner to
-/// animate, or (the git panel's refresh, the search scan) no spinner
-/// at all, just the idle-loop keep-alive that lets the tick's
-/// anyDirty block consume landed results without a keypress.
+/// animate (the shared `Spinner` value, SwimCore — one frame table
+/// app-wide), or (the git panel's refresh) no spinner at all, just
+/// the idle-loop keep-alive that lets the tick's anyDirty block
+/// consume landed results without a keypress.
 /// Application's `tickSpinners` drives every conformance through one
 /// loop, so a new window connects by conforming, not by growing the
 /// controller.
@@ -506,7 +524,7 @@ protocol SpinnerWindow: AnyObject {
     var spinnerActive: Bool { get }
     /// One ~100ms tick: advance the frame and/or mark the window
     /// dirty. What a tick does is the window's own business — a
-    /// spinner-bearing window advances its frame, a keep-alive window
-    /// just repaints.
+    /// spinner-bearing window advances its Spinner's frame, a
+    /// keep-alive window just repaints.
     func tickSpinner()
 }
