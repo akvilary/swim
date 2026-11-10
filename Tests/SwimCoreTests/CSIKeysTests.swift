@@ -96,6 +96,39 @@ struct CSIKeysTests {
         #expect(CSIKey(csiU: "1050;5")?.letter == nil)  // Cyrillic 'К' — not Latin
     }
 
+    // MARK: - Implied shift: the two dialects of Shift+letters
+
+    /// WezTerm folds the shift into the codepoint and strips the bit
+    /// (termwiz: normalize_shift_to_upper_case + the SHIFT removal) —
+    /// its Ctrl+Shift+Y arrives as `27;5;89~` under the level-2 enable.
+    /// The kitty-family spec mandates the opposite (`121;6u` — "It
+    /// must not be CSI 65;modifiers u"). One physical key, two
+    /// spellings, one parse: an uppercase Latin base implies shift, or
+    /// the combo collapses into plain ctrl+y (the WezTerm bug).
+    @Test func impliedShiftFromUppercaseBase() {
+        // WezTerm's wire form — the bug's exact bytes
+        let wez = CSIKey(modifiedTilde: "27;5;89")!
+        #expect(wez.ctrl && wez.shift && wez.letter == "y")
+        // The kitty-family dialect — untouched, the bit is explicit
+        let kitty = CSIKey(csiU: "121;6")!
+        #expect(kitty.ctrl && kitty.shift && kitty.letter == "y")
+        // Idempotent: uppercase WITH the explicit bit — the same key
+        #expect(CSIKey(csiU: "89;6")?.ctrl == true)
+        #expect(CSIKey(csiU: "89;6")?.shift == true)
+        // Shift-only spellings (caps lock reports as shift too)
+        #expect(CSIKey(csiU: "89;1")?.shift == true)
+        #expect(CSIKey(csiU: "89")?.shift == true)
+        #expect(CSIKey(csiU: "89;1")?.ctrl == false)
+        // Non-Latin uppercase is NOT promoted: Cyrillic 'К' stays
+        // bitless — letter nil, the key never fires rather than firing
+        // wrong (the base-layout key is kitty ':' dialect, rejected)
+        let cyr = CSIKey(csiU: "1050;5")
+        #expect(cyr?.shift == false && cyr?.letter == nil)
+        // Lowercase bases never trigger the rule — plain ctrl stays plain
+        #expect(CSIKey(modifiedTilde: "27;5;121")?.shift == false)
+        #expect(CSIKey(csiU: "121;5")?.shift == false)
+    }
+
     // MARK: - Enable vocabulary: pinned byte-exact against ctlseqs
 
     /// Escape bytes are invisible in review — the spec forms live HERE.

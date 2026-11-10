@@ -17,7 +17,11 @@
 /// with `CSI codepoint;modifier u`. Level 2 does NOT touch unmodified
 /// keys (that is level 3) — bare Esc/Tab/Enter/Backspace keep their
 /// legacy bytes in xterm; the CSI-u bare forms mapped downstream are
-/// the CSI-u family's quirks.
+/// the CSI-u family's quirks. The families also disagree on where
+/// Shift+letters live — WezTerm folds the shift into an UPPERCASE
+/// codepoint and strips the bit, the kitty-family spec mandates the
+/// unshifted codepoint with the bit — one reconstruction rule reads
+/// both (see the private initializer).
 public struct CSIKey: Equatable, Sendable {
     public let codepoint: Int
     public let ctrl: Bool
@@ -57,20 +61,41 @@ public struct CSIKey: Equatable, Sendable {
     }
 
     /// The Latin letter for letter codepoints, upper normalized to lower
-    /// (terminals send the base key; some send uppercase — defensive both
-    /// ways). Nil for non-letters (specials, digits, non-Latin).
+    /// (the kitty dialect sends the unshifted base; WezTerm's dialect —
+    /// the uppercase one, which the initializer's implied-shift rule
+    /// reads). Nil for non-letters (specials, digits, non-Latin).
     public var letter: Character? {
-        let normalized = (65...90).contains(codepoint) ? codepoint + 32 : codepoint
+        let normalized = Self.uppercaseLatin.contains(codepoint) ? codepoint + 32 : codepoint
         guard (97...122).contains(normalized) else { return nil }
         return Character(UnicodeScalar(normalized)!)
     }
 
     // MARK: - Internals
 
+    /// The uppercase Latin block — the codepoints that can only arrive
+    /// with Shift held (the letter case IS the shift state in WezTerm's
+    /// dialect). ONE constant shared by the implied-shift reconstruction
+    /// and the letter normalization: the two rules are the same law on
+    /// the same range and must never drift apart.
+    private static let uppercaseLatin = 65...90
+
     private init?(codepoint: Int, modifierParam: Int) {
         guard (1...0x10FFFF).contains(codepoint), (1...16).contains(modifierParam) else { return nil }
         self.codepoint = codepoint
-        let mods = modifierParam - 1
+        var mods = modifierParam - 1
+        // The CSI-u world's two dialects disagree on where Shift+letters
+        // live. The kitty family (kitty, Alacritty) sends the UNSHIFTED
+        // codepoint with the shift bit — the spec is explicit: "It must
+        // not be CSI 65;modifiers u". WezTerm normalizes the shift INTO
+        // the codepoint and strips the bit "so that reduce ambiguity"
+        // (termwiz: normalize_shift_to_upper_case + the SHIFT removal),
+        // so its Ctrl+Shift+Y arrives as 27;5;89~ under the level-2
+        // enable. An uppercase Latin base therefore IMPLIES shift in
+        // either dialect — caps lock reports as shift for letters there
+        // too — and reconstructing the bit is what keeps the combo from
+        // collapsing into plain ctrl+y. Idempotent when the bit is
+        // already explicit; dormant for every lowercase base.
+        if Self.uppercaseLatin.contains(codepoint) { mods |= 1 }
         shift = mods & 1 != 0
         alt = mods & 2 != 0
         ctrl = mods & 4 != 0
