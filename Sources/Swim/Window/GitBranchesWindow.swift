@@ -51,7 +51,11 @@ private struct BranchFetch {
 /// the reload sweep come free) and closes the picker, Ctrl+Enter
 /// switches AND pulls (on the current branch — just pulls); `a`
 /// starts branch creation: the input line becomes a name prompt
-/// seeded with the current filter, Enter runs `git switch -c <name>`
+/// seeded with the current filter (ref-name-forbidden characters are
+/// dropped from the seed and from typing/pasting — silently, git's
+/// own char-level rule mirrored in
+/// `BranchList.isForbiddenRefNameChar`), Enter runs `git switch -c
+/// <name>`
 /// (create + switch, the common intent) through the command window
 /// and closes the picker, Esc returns to the plain list; `m` merges
 /// into the current branch: the input line takes `<name> [args...]`
@@ -431,9 +435,17 @@ class GitBranchesWindow: Window {
     /// Menu-mode `a`/`m`: the input line becomes a name prompt. The
     /// name is seeded with the current filter — typing a name that
     /// matches nothing and pressing the action key keeps the typing
-    /// instead of discarding it.
+    /// instead of discarding it. The CREATE seed passes the char gate
+    /// (BranchList.isForbiddenRefNameChar): the buffer starts under
+    /// the same invariant typing keeps it in — a filter like
+    /// "bug fix" seeds "bugfix", the words gluing as the space drops.
+    /// The MERGE seed stays raw: its input is `<ref> [args...]` —
+    /// spaces separate words and `HEAD~2` is a legal rev, nothing in
+    /// it is a branch name being born.
     private func beginNameInput(_ phase: NamePhase) {
-        nameBuffer = filterBuffer
+        nameBuffer = phase == .createBranch
+            ? filterBuffer.filter { !BranchList.isForbiddenRefNameChar($0) }
+            : filterBuffer
         nameCursorPos = nameBuffer.count
         namePhase = phase
         mode = .insert
@@ -443,7 +455,15 @@ class GitBranchesWindow: Window {
     /// The name-input phase's typing surface: Enter commits the phase's
     /// action, Esc returns to the plain list (the filter survives — the
     /// name lives in its own buffer); every other key goes through the
-    /// shared line editor. Name edits never re-query git — the
+    /// shared line editor. The CREATE phase gates its characters on
+    /// git's own char-level refname rule: a forbidden typed or pasted
+    /// character is silently dropped (see
+    /// BranchList.isForbiddenRefNameChar) — char-level dirt never
+    /// reaches Enter's check-ref-format, which is then free to judge
+    /// only the sequence-shaped rules (`a..b`, `@{`, a `.lock` tail,
+    /// a leading dash). The MERGE phase types freely: its input is
+    /// `<ref> [args...]`, where a space separates words and `~` lives
+    /// inside revs like `HEAD~2`. Name edits never re-query git — the
     /// listing is idle while the name is being typed. ↑/↓
     /// deliberately do NOT leave the phase (unlike the filter's
     /// phase exits): re-entering reseeds the name from the
@@ -461,7 +481,10 @@ class GitBranchesWindow: Window {
             mode = .menu
             dirty = true
         default:
-            if Self.applyLineEdit(key, text: &nameBuffer, cursor: &nameCursorPos) != .notEditing {
+            let allowed: ((Character) -> Bool)? = namePhase == .createBranch
+                ? { !BranchList.isForbiddenRefNameChar($0) }
+                : nil
+            if Self.applyLineEdit(key, text: &nameBuffer, cursor: &nameCursorPos, allowed: allowed) != .notEditing {
                 dirty = true
             }
         }
@@ -505,7 +528,12 @@ class GitBranchesWindow: Window {
     /// what a branch name may be — and `--branch` also rejects a
     /// leading dash, which `switch -c -foo` would only answer with an
     /// obscure "unknown switch". A refused name keeps the window (and
-    /// the typing) on screen; an empty name is the same story.
+    /// the typing) on screen; an empty name is the same story. The
+    /// input gate (handleNameKey) has already kept char-level dirt
+    /// out of the buffer, so what reaches this check is the
+    /// sequence-shaped half of the rulebook — `a..b`, `@{`, a
+    /// `.lock` tail — exactly the half a per-character gate cannot
+    /// see; the two layers compose, they do not overlap.
     private func createSelected() {
         let name = nameBuffer.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else {

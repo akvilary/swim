@@ -10,7 +10,9 @@
 /// dropped when its LOCAL twin is also in the results — the local row
 /// covers the same switch and `D`'s remote side. A remote's `HEAD`
 /// pointer (`refs/remotes/<remote>/HEAD` — a symref to the
-/// default branch, not a branch) is excluded. Dependency-free and
+/// default branch, not a branch) is excluded. Also holds the picker's
+/// one input-side rule of git ref names — the char-level forbidden
+/// set (see `isForbiddenRefNameChar`). Dependency-free and
 /// side-effect-free so it is unit-testable in isolation
 /// (Tests/SwimCoreTests/BranchListTests.swift).
 public enum BranchList {
@@ -104,5 +106,35 @@ public enum BranchList {
             }
         }
         return ["refs/heads/**/*" + escaped + "*", "refs/remotes/**/*" + escaped + "*"]
+    }
+
+    /// The character-level mirror of git's refname rules
+    /// (git-check-ref-format): a ref name cannot have an ASCII control
+    /// (a byte below 0x20, or DEL 0x7F), a space, or `~ ^ : ? * [ \`
+    /// ANYWHERE. Checked per scalar, not per whole grapheme — git
+    /// reads the name as bytes, and a combining mark stacked onto `~`
+    /// still carries the `~` byte, which whole-Character equality
+    /// would wave through. Deliberately the ONLY char-level rule:
+    /// everything else git rejects is sequence-shaped (`..`, `@{`, a
+    /// `.lock` tail, a leading dash, `//`) — invisible to a
+    /// per-character gate and left to `git check-ref-format --branch`
+    /// at Enter time, where git stays the single authority on the
+    /// name as a whole.
+    ///
+    /// Consumers: the picker's create-phase input (typed and pasted
+    /// characters refused by `Window.applyLineEdit`'s `allowed` gate,
+    /// and the name seeded from the filter — see
+    /// GitBranchesWindow). The merge phase does NOT gate: its input
+    /// is `<ref> [args...]` — a space separates words and `HEAD~2` is
+    /// a legal rev. Pinned against live git byte-by-byte in
+    /// BranchNameInputTests (the mirror is verified, not trusted).
+    public static func isForbiddenRefNameChar(_ c: Character) -> Bool {
+        c.unicodeScalars.contains { scalar in
+            if scalar.value < 0x20 || scalar.value == 0x7F { return true }
+            switch scalar {
+            case " ", "~", "^", ":", "?", "*", "[", "\\": return true
+            default: return false
+            }
+        }
     }
 }

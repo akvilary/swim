@@ -8,11 +8,19 @@ final class StubDelegate: WindowDelegate {
     var goBackTargets: [(path: String, line: Int, colUtf16: Int)] = []
     var reported: [String] = []
     var worktreeChanges = 0
+    /// Every git invocation the delegate was asked to run — the
+    /// primary command and a `then:` follow-up as separate rows, in
+    /// order. The branch name tests assert on the exact args the
+    /// picker hands over.
+    var gitCommands: [(label: String, args: [String])] = []
 
     func openFile(_ path: String) {}
     func openFileAtLine(_ path: String, line: Int) {}
     func handleEditorCommand(_ cmd: String) {}
-    func runGitCommand(label: String, args: [String], then followUp: (label: String, args: [String])?) {}
+    func runGitCommand(label: String, args: [String], then followUp: (label: String, args: [String])?) {
+        gitCommands.append((label, args))
+        if let followUp { gitCommands.append(followUp) }
+    }
     func gitCommandFinished(_ label: String) {}
     func terminalCommandFinished() {}
     func requestCommitMessage(prefill: String, amend: Bool, amendTarget: String) {}

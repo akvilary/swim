@@ -154,4 +154,45 @@ struct BranchListTests {
             "refs/remotes/**/*origin/f*",
         ])
     }
+
+    // --- the char-level refname rule (isForbiddenRefNameChar) ---
+
+    @Test func forbiddenRefNameChars() {
+        // git's own char-level ban (git-check-ref-format), mirrored
+        // exactly: ASCII controls (tab/newline/CR included), DEL,
+        // space and `~ ^ : ? * [\` — the set the picker's create
+        // phase drops from its input.
+        let forbidden: [Character] = [
+            " ", "\t", "\n", "\r", "\u{07}", "\u{1F}", "\u{7F}",
+            "~", "^", ":", "?", "*", "[", "\\",
+        ]
+        for c in forbidden {
+            #expect(BranchList.isForbiddenRefNameChar(c),
+                    "expected forbidden: \(String(c).debugDescription)")
+        }
+    }
+
+    @Test func allowedRefNameChars() {
+        // Everything git permits at char level: Unicode letters
+        // (branch names may be Cyrillic), digits, `# @ $ %` (git does
+        // NOT ban them), and the C1 control U+0085 — the mirror
+        // copies git exactly, forbidding nothing git allows.
+        let allowed: [Character] = [
+            "a", "Ж", "0", "-", "/", ".", "#", "@", "$", "%", "_", "\u{85}",
+        ]
+        for c in allowed {
+            #expect(!BranchList.isForbiddenRefNameChar(c),
+                    "expected allowed: \(String(c).debugDescription)")
+        }
+    }
+
+    @Test func forbiddenScalarInsideGrapheme() {
+        // Per scalar, not per whole grapheme: git reads the name as
+        // bytes, and a combining mark stacked onto `~` still carries
+        // the `~` byte — whole-Character equality would wave it
+        // through.
+        let tilted: Character = "~\u{301}"
+        #expect(tilted.unicodeScalars.count == 2)
+        #expect(BranchList.isForbiddenRefNameChar(tilted))
+    }
 }

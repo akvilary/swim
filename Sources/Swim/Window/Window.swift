@@ -174,7 +174,10 @@ class Window {
 
     /// What a key did to a single-line typing surface's (text, caret).
     enum LineEditOutcome {
-        /// The key owns no editing meaning here.
+        /// The key owns no editing meaning here — or the surface's
+        /// `allowed` gate refused its characters. Indistinguishable by
+        /// design: either way the surface did nothing, so callers owe
+        /// no re-query and no redraw.
         case notEditing
         /// Only the caret moved — the text is intact, so a surface that
         /// re-queries on edits (the branch filter) owes no re-query.
@@ -195,11 +198,27 @@ class Window {
     /// rejected: they are not typing input for these surfaces (emoji
     /// have no place in a query or a branch name).
     ///
+    /// `allowed` is the optional per-surface input gate, applied at
+    /// the only two insertion points (a typed character, a flattened
+    /// paste): a character it refuses never enters the text — the
+    /// outcome is `.notEditing`, the silent drop. Kept here, not in
+    /// the callers, so a gate cannot miss an insertion path; kept a
+    /// closure, not a policy enum, so the editor stays ignorant of
+    /// any surface's domain (git ref names, file names — the rule
+    /// arrives with the caller, see BranchList.isForbiddenRefNameChar).
+    /// Nil (the default) accepts every character — the contract of
+    /// every existing surface except the picker's create phase.
+    ///
     /// The command line (`handleCommandModeKey`) deliberately keeps
     /// its own arm: its contract differs — every character inserts
     /// (no single-scalar guard), backspace on an empty buffer EXITS
     /// the mode, and Enter/Esc are intercepted before any editing.
-    static func applyLineEdit(_ key: Key, text: inout String, cursor: inout Int) -> LineEditOutcome {
+    static func applyLineEdit(
+        _ key: Key,
+        text: inout String,
+        cursor: inout Int,
+        allowed: ((Character) -> Bool)? = nil
+    ) -> LineEditOutcome {
         switch key {
         case .backspace:
             if cursor > 0 {
@@ -227,6 +246,7 @@ class Window {
             cursor = text.count
             return .caretOnly
         case .char(let c) where c.unicodeScalars.count == 1:
+            if let allowed, !allowed(c) { return .notEditing }
             let idx = text.index(text.startIndex, offsetBy: cursor)
             text.insert(c, at: idx)
             cursor += 1
@@ -235,7 +255,14 @@ class Window {
             // Unlike typed chars, paste keeps multi-scalar characters
             // (emoji): it is bulk text from another source, not a
             // keystroke aimed at the surface.
-            guard let flat = Self.pasteFlatLine(pasted) else { return .notEditing }
+            guard var flat = Self.pasteFlatLine(pasted) else { return .notEditing }
+            if let allowed {
+                // The gate owns pasted bulk text too — an input policy
+                // that covered only keystrokes would leave the buffer
+                // one paste away from violating it.
+                flat = flat.filter(allowed)
+                guard !flat.isEmpty else { return .notEditing }
+            }
             let idx = text.index(text.startIndex, offsetBy: cursor)
             text.insert(contentsOf: flat, at: idx)
             cursor += flat.count
