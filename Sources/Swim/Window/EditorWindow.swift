@@ -94,6 +94,7 @@ class EditorWindow: Window {
     /// the paste interception below).
     func interruptPending() {
         pending.reset()
+        pendingReplaceCount = nil
     }
 
     /// The command line is opened globally too (`:` in Application
@@ -104,6 +105,7 @@ class EditorWindow: Window {
     /// never be resurrected by a manually typed `'<,'>` after edits.
     override func enterCommandMode(prefill: String = "") {
         pending.reset()
+        pendingReplaceCount = nil
         pendingSubstituteScope = nil
         super.enterCommandMode(prefill: prefill)
     }
@@ -113,6 +115,12 @@ class EditorWindow: Window {
     /// NormalPending (normal sequences) by lifecycle: modes differ,
     /// they must not be mixed in one accumulator.
     var pendingLiteralNext = false
+
+    /// The normal-mode `r` quote (vim r{char}): the count is captured
+    /// at the arm (`3rx`), the NEXT key is the replacement character.
+    /// Normal-mode state, reset at every leak point — the finisher,
+    /// the paste interception, interruptPending, enterCommandMode.
+    var pendingReplaceCount: Int?
     private var isUndoRedoing = false
 
     /// The literal character for the insert Ctrl+V quote (vim i_CTRL-V):
@@ -602,6 +610,7 @@ class EditorWindow: Window {
             // so without this a stale count would leak into the next key.
             pending.reset()
             pendingLiteralNext = false
+            pendingReplaceCount = nil
             // External text only: tabs follow the file's indent policy
             // (one tab = one indent step). The internal p/P round-trip
             // never passes through here — register content stays verbatim.
@@ -629,6 +638,12 @@ class EditorWindow: Window {
     }
 
     private func handleNormal(_ key: Key) -> Bool {
+        // The r-quote outranks the digit prefix: after `r` even a
+        // digit is the replacement character (`r3` replaces with "3",
+        // vim's contract), never a count.
+        if let count = pendingReplaceCount {
+            return finishPendingReplace(key, count: count)
+        }
         // Numeric prefix: 1-9 starts the count of the active slot (an
         // operator armed → the count comes AFTER it, d3d; otherwise —
         // before, 3dd), 0 continues it.
@@ -731,6 +746,13 @@ class EditorWindow: Window {
         case .char("A"): moveToEndOfLineForInsert(); mode = .insert
         case .char("I"): cursorCol = 0; mode = .insert
         case .char("x"): deleteCharsAtCursor(pending.takeCount() ?? 1)
+        // r{char} — the count rides WITH the arm (3rx), the next key
+        // is the replacement (see finishPendingReplace). The pending
+        // count is consumed here; keepPending is moot — the sequence
+        // machine is empty after the take.
+        case .char("r"):
+            pendingReplaceCount = pending.takeCount() ?? 1
+            return true
         case .char("d"):
             pending.arm(.d); keepPending = true; return true
         case .char("y"):
@@ -1578,27 +1600,20 @@ class EditorWindow: Window {
         }
     }
 
-    private func insertNewLineAtCursor() {
-        guard let buf = buffer else { return }
-        let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
-        let offset = buf.lineStart(line: cursorLine) + byteOff
-        // The plan is computed BEFORE the split lands: the tail right
-        // of the cursor must reach IndentEngine as `after` — the old
-        // order (insert "\n" first, read the line after) fed the plan
-        // an already-split first half whose tail had moved to the next
-        // line, so `after` was always empty and the closer branches
-        // (closerOnly/closerWithBody) were dead code from their only
-        // caller. fullLine/baseIndent deliberately stay measured from
-        // the FIRST HALF — the old values — so the plain branch keeps
-        // its exact behavior: a split inside leading whitespace
-        // preserves the cursor's column (baseIndent of the half = the
-        // split point), and a split before a trailing "{" adds no
-        // level (the "{" belongs to the new line, not this one). The
-        // lineAbove walk starts ABOVE the split line — its left side
-        // is already `before`, and its tail must not tip the balance
-        // scan for the closer sitting AT the cursor.
+    /// The split core shared by insert-mode Enter and normal-mode
+    /// `r<CR>` (vim :h r: r<CR> IS "delete the replaced characters,
+    /// then i<CR><Esc>" — autoindent included). Pure computation over
+    /// the line state BEFORE any mutation: the ONE blob to insert at
+    /// the split offset (every plan shape's text is contiguous from
+    /// the break) and the final cursor column on the new line. The
+    /// input contract is the one pinned in IndentEnterTests: `after`
+    /// is the real tail; fullLine/baseIndent come from the first
+    /// half; lineAbove starts strictly above the split line.
+    func splitBlob(at splitCol: Int) -> (blob: String, cursorCol: Int)? {
+        guard let buf = buffer else { return nil }
         let wholeLine = buf.getLine(cursorLine)
-        let splitIndex = wholeLine.index(wholeLine.startIndex, offsetBy: cursorCol)
+        guard splitCol <= wholeLine.count else { return nil }
+        let splitIndex = wholeLine.index(wholeLine.startIndex, offsetBy: splitCol)
         let before = String(wholeLine[..<splitIndex])
         let after = String(wholeLine[splitIndex...])
         let plan = IndentEngine.plan(
@@ -1612,32 +1627,33 @@ class EditorWindow: Window {
                 let idx = self.cursorLine - 1 - n
                 return idx >= 0 ? buf.getLine(idx) : nil
             })
-        buf.insert("\n", at: offset)
-        var inserted = "\n"
-        cursorCol = 0; cursorLine += 1
         switch plan {
         case .plain(let cursorIndent):
-            if cursorIndent > 0 {
-                let indentText = String(repeating: " ", count: cursorIndent)
-                buf.insert(indentText, at: buf.lineStart(line: cursorLine))
-                inserted += indentText
-            }
-            cursorCol = cursorIndent
+            let indentText = cursorIndent > 0 ? String(repeating: " ", count: cursorIndent) : ""
+            return ("\n" + indentText, cursorIndent)
         case .closerOnly(let bracketPad):
-            if bracketPad > 0 {
-                let padText = String(repeating: " ", count: bracketPad)
-                buf.insert(padText, at: buf.lineStart(line: cursorLine))
-                inserted += padText
-            }
-            cursorCol = leadingSpaces(buf.getLine(cursorLine))
+            let padText = bracketPad > 0 ? String(repeating: " ", count: bracketPad) : ""
+            // The new line = pad + the tail, so its leading run is the
+            // pad on top of the tail's own whitespace — exactly where
+            // the old post-insert read placed the cursor.
+            return ("\n" + padText, leadingSpaces(after) + bracketPad)
         case .closerWithBody(let cursorIndent, let bracketPad):
             let padText = bracketPad > 0 ? String(repeating: " ", count: bracketPad) : ""
-            let bodyText = String(repeating: " ", count: cursorIndent) + "\n" + padText
-            buf.insert(bodyText, at: buf.lineStart(line: cursorLine))
-            inserted += bodyText
-            cursorCol = cursorIndent
+            return ("\n" + String(repeating: " ", count: cursorIndent) + "\n" + padText, cursorIndent)
         }
-        recordAction(offset: offset, deleted: "", inserted: inserted)
+    }
+
+    private func insertNewLineAtCursor() {
+        guard let buf = buffer, let (blob, col) = splitBlob(at: cursorCol) else { return }
+        let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
+        let offset = buf.lineStart(line: cursorLine) + byteOff
+        // ONE blob, ONE step, ONE LSP didChange — the same shape the
+        // flat record had over "\n" + plan text.
+        beginEdit()
+        editInsert(blob, at: offset)
+        commitEdit()
+        cursorLine += 1
+        cursorCol = col
         ensureCursorVisible()
     }
 

@@ -219,6 +219,87 @@ extension EditorWindow {
         recordAction(offset: startOff, deleted: deletedText, inserted: "")
     }
 
+    // MARK: - r{char} (normal mode)
+
+    /// The second key of the r-sequence (vim :h r): a printable
+    /// character (digits, `:`, a space — after `r` EVERY char is the
+    /// replacement) or Tab replaces [count] graphemes at the cursor
+    /// with [count] copies, the cursor left on the LAST replaced
+    /// grapheme; Enter replaces them with ONE line break through the
+    /// shared split core — autoindent included, exactly vim's "delete
+    /// the characters, then i<CR><Esc>" (5r<CR> is a single break,
+    /// not five); anything else (Esc, a motion, a ctrl) drops the
+    /// quote silently, the key consumed. Vim's failure contract: an
+    /// empty line or a count past the line's end changes NOTHING. No
+    /// yank — the replaced text never reaches the register (x yanks,
+    /// r does not). One operation = one undo; replacing a character
+    /// with itself is not an edit at all (the executor's identity
+    /// skip — no undo entry, no modified flag).
+    func finishPendingReplace(_ key: Key, count: Int) -> Bool {
+        pendingReplaceCount = nil
+        switch key {
+        case .char(let c):
+            replaceCharsAtCursor(count: count, with: String(repeating: String(c), count: count))
+        case .tab:
+            replaceCharsAtCursor(count: count, with: String(repeating: "\t", count: count))
+        case .enter:
+            replaceCharsWithLineBreak(count: count)
+        default:
+            break   // Esc / a motion / a ctrl: the quote dies, consumed
+        }
+        return true
+    }
+
+    /// The r{char} body: swap [count] graphemes at the cursor for the
+    /// replacement (count copies), the cursor on the LAST replaced
+    /// grapheme (vim). Refused WHOLE — vim's beep contract — when the
+    /// cursor is off a character (an empty line) or the count runs
+    /// past the line end.
+    private func replaceCharsAtCursor(count: Int, with replacement: String) {
+        guard let buf = buffer else { return }
+        let chars = buf.getLineChars(cursorLine)
+        guard cursorCol < chars.count, cursorCol + count <= chars.count else { return }
+        let byteStart = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
+        let byteEnd = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol + count)
+        let startOff = buf.lineStart(line: cursorLine) + byteStart
+        beginEdit()
+        editReplace(at: startOff, length: byteEnd - byteStart, with: replacement)
+        commitEdit()
+        cursorCol += count - 1
+        syncDesiredCol()
+        dirty = true
+    }
+
+    /// The r<CR> body: delete the [count] replaced graphemes, then
+    /// the shared split core at the same column — its before/after
+    /// see exactly the post-delete line, vim's "delete then
+    /// i<CR><Esc>" model verbatim.
+    private func replaceCharsWithLineBreak(count: Int) {
+        guard let buf = buffer else { return }
+        let chars = buf.getLineChars(cursorLine)
+        guard cursorCol < chars.count, cursorCol + count <= chars.count else { return }
+        let byteStart = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
+        let byteEnd = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol + count)
+        let startOff = buf.lineStart(line: cursorLine) + byteStart
+        beginEdit()
+        editDelete(at: startOff, length: byteEnd - byteStart)
+        var col = 0
+        if let (blob, splitCol) = splitBlob(at: cursorCol) {
+            let offset = buf.lineStart(line: cursorLine)
+                + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
+            editInsert(blob, at: offset)
+            col = splitCol
+        } else {
+            editInsert("\n", at: startOff)
+        }
+        commitEdit()
+        cursorLine += 1
+        cursorCol = col
+        syncDesiredCol()
+        ensureCursorVisible()
+        dirty = true
+    }
+
     /// Applying a motion as a cursor move (normal, without an
     /// operator). Vertical j/k bypass this — moveVertically with the
     /// sticky column (desiredCol) in handlePlainNormal.

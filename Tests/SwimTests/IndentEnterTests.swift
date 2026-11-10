@@ -100,6 +100,20 @@ struct IndentEnterTests {
         #expect(w.cursorCol == 2)                    // leadingSpaces of "  )"
     }
 
+    @Test func closerOnlyKeepsTailWhitespaceCursor() {
+        // after starts with its own whitespace (existing = 2 already
+        // covers the opener's indent, pad tops up by 0): the closer
+        // line keeps the tail's run and the cursor sits on it — the
+        // formula leadingSpaces(after) + bracketPad.
+        let w = makeEditor("  foo(\n  bar  )", line: 1, col: 5)
+        _ = w.handleKey(.enter)
+        #expect(w.buffer!.getLine(0) == "  foo(")
+        #expect(w.buffer!.getLine(1) == "  bar")
+        #expect(w.buffer!.getLine(2) == "  )")
+        #expect(w.cursorLine == 2)
+        #expect(w.cursorCol == 2)
+    }
+
     @Test func splitAtEolStaysPlain() {
         let w = makeEditor("abc", col: 3)
         _ = w.handleKey(.enter)

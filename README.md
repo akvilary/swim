@@ -157,6 +157,7 @@ swim <file>       # Open file
 | `d{motion}` / `y{motion}` / `c{motion}` | Normal | Operator over a motion: `w` `b` `e` `$` `0` `h` `l` `j` `k` `G` `gg` (e.g. `dw`, `d$`, `dG`; counts multiply: `2d3w` = 6) |
 | `D` / `C` / `Y` / `S` | Normal | Aliases: `d$` / `c$` / `y$` / `cc` (`Y` yanks to end of line, a deliberate improvement over vim's `yy`) |
 | `x` | Normal | Delete `[count]` chars (yanks, like vim) |
+| `r{char}` | Normal | Replace `[count]` chars with `{char}` (the cursor on the last replaced; a count past the line end changes nothing; `r<CR>` breaks the line with autoindent — one undo step; no register traffic; deliberately not vim: no `v_r`, `gr`/`gR`, `CTRL-E`/`CTRL-Y`, digraphs) |
 | `p` | Normal | Paste (`[count]` times) |
 | `Ctrl+E` | Any | File explorer |
 | `y` / `p` (explorer) | Menu | Copy: `y` yanks the selected file/directory, `p` pastes it — into the selected directory, or next to the selected file; a taken name dedups (file copy.txt, file copy 2.txt), the register lives until the next `y` (also there: `a` create, `d` delete, `r` rename, `H` show hidden/git-ignored) |
