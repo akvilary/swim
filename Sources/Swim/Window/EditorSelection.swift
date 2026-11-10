@@ -149,7 +149,7 @@ extension EditorWindow {
         case .visual, .visualLine, .visualBlock: break
         default: return
         }
-        let lastLine = max(0, buf.lineCount - 1)
+        let lastLine = buf.lastLineIndex
         visualStartLine = 0
         switch mode {
         case .visual:
@@ -241,7 +241,7 @@ extension EditorWindow {
     /// moveVertically (grapheme clamping).
     func moveBlockVertically(_ delta: Int) {
         guard let buf = buffer else { return }
-        cursorLine = min(max(cursorLine + delta, 0), max(0, buf.lineCount - 1))
+        cursorLine = buf.clampLineIndex(cursorLine + delta)
     }
 
     /// The real position for the virtual column: the boundary of the
@@ -436,7 +436,7 @@ extension EditorWindow {
             yankLinewiseRegister(deletedText)
             buf.delete(at: start, length: len)
             recordAction(offset: start, deleted: deletedText, inserted: "")
-            cursorLine = min(lines.lowerBound, max(0, buf.lineCount - 1))
+            cursorLine = min(lines.lowerBound, buf.lastLineIndex)
             cursorCol = 0
         case .blockwise(let rows, let span):
             // The deleted block goes to the register (blockwise, vim
@@ -514,11 +514,11 @@ extension EditorWindow {
         buf.insert(text, at: range.lowerBound)
         recordAction(offset: range.lowerBound, deleted: deleted, inserted: text)
         if MultilineInsert.endsWithLineBreak(text) {
-            cursorLine = min(anchorLine, max(0, buf.lineCount - 1))
+            cursorLine = min(anchorLine, buf.lastLineIndex)
             cursorCol = 0
         } else {
             let delta = MultilineInsert.cursorDelta(for: text)
-            cursorLine = min(anchorLine + delta.lines, max(0, buf.lineCount - 1))
+            cursorLine = min(anchorLine + delta.lines, buf.lastLineIndex)
             cursorCol = delta.lines > 0 ? delta.tailCols : anchorCol + delta.tailCols
         }
     }

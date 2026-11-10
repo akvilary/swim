@@ -190,7 +190,7 @@ final class BufferManager {
         let fresh = EditorBuffer(buffer: table, filePath: normalized)
         fresh.fileStamp = newStamp
         fresh.mode = tab.mode
-        let lastLine = max(0, table.lineCount - 1)
+        let lastLine = table.lastLineIndex
         fresh.cursorLine = min(tab.cursorLine, lastLine)
         fresh.cursorCol = min(tab.cursorCol, max(0, table.lineCharLength(line: fresh.cursorLine)))
         fresh.desiredCol = tab.desiredCol

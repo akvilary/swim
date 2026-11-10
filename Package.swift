@@ -20,5 +20,16 @@ let package = Package(
             dependencies: ["SwimCore"],
             path: "Tests/SwimCoreTests"
         ),
+        // The app module's window-level wiring: the jump/reveal
+        // doctrines through the real EditorWindow (headless — the
+        // tests never touch the terminal; Application-level glue stays
+        // on the manual checklist). The executable's entry point is
+        // main.swift, the shape SwiftPM needs to build a testable
+        // variant of an executable target.
+        .testTarget(
+            name: "SwimTests",
+            dependencies: ["Swim"],
+            path: "Tests/SwimTests"
+        ),
     ]
 )

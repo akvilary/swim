@@ -317,15 +317,46 @@ class EditorWindow: Window {
         }
     }
 
-    /// Positions the cursor at an LSP (line, UTF-16 column) pair, clamped to
-    /// the buffer. Used by go-to-definition jumps.
+    /// Positions the cursor at an LSP (line, UTF-16 column) pair,
+    /// clamped to the buffer, and reveals it with the jump doctrine
+    /// (~1/3 from the top). The landing of gd / gb / search-result
+    /// jumps; NEVER records a gb target itself — the snapshot belongs
+    /// to whoever decided to jump (jumpToLine, the app's gd/search
+    /// funnels): gb reuses this landing, and a self-recording landing
+    /// would ping-pong the stack forever.
     func goToPosition(line: Int, colUtf16: Int) {
         guard let buf = buffer else { return }
-        cursorLine = min(max(0, line), max(0, buf.lineCount - 1))
+        cursorLine = buf.clampLineIndex(line)
         cursorCol = min(buf.charIndexForUtf16(line: cursorLine, colUtf16: colUtf16),
                         buf.lineCharLength(line: cursorLine))
         syncDesiredCol()
+        revealAsJump()
+        dirty = true
+    }
+
+    /// The jump-reveal doctrine, window side: park the view so the
+    /// cursor row sits at ~1/3 of the visible height (RevealPolicy).
+    /// ensureCursorVisible afterwards fixes only the horizontal axis —
+    /// its vertical branches are a proven no-op once the reveal parked
+    /// the cursor inside the window.
+    func revealAsJump() {
+        guard let buf = buffer else { ensureCursorVisible(); return }
+        scrollY = RevealPolicy.jumpScrollY(cursorLine: cursorLine,
+                                           lineCount: buf.lineCount,
+                                           contentHeight: contentHeight)
         ensureCursorVisible()
+    }
+
+    /// A line JUMP — `:N`, `123gg`, `123G`: gb snapshot first (named
+    /// buffers only), park at the 0-based `line0` (clamped), column 0,
+    /// jump-reveal at ~1/3.
+    func jumpToLine(_ line0: Int) {
+        guard let buf = buffer else { return }
+        recordJumpPosition()
+        cursorLine = buf.clampLineIndex(line0)
+        cursorCol = 0
+        desiredCol = 0
+        revealAsJump()
         dirty = true
     }
 
@@ -335,9 +366,30 @@ class EditorWindow: Window {
         delegate?.requestGoToDefinition(line: cursorLine, charUtf16: charUtf16)
     }
 
-    /// `gb` — jump back to the position before the last `gd`.
+    /// This window's own gb stack (vim parity: the jump list belongs
+    /// to the window). Entries snapshot THIS window's pre-jump
+    /// position — named buffers only, so scratch editors (the commit
+    /// window) record nothing and their gb reports "No previous
+    /// position".
+    private var jumps = JumpHistory()
+
+    /// Snapshots the current position as a gb return target. Called by
+    /// the jump entries (:N, counted Ngg/NG here; gd and search-result
+    /// jumps from the app) — never by gb itself.
+    func recordJumpPosition() {
+        guard let path = filePath, let buf = buffer else { return }
+        jumps.push(.init(path: path, line: cursorLine,
+                         colUtf16: buf.utf16ColForCharIndex(line: cursorLine, charIndex: cursorCol)))
+    }
+
+    /// `gb` — pop this window's stack; the app owns the cross-file
+    /// effects (space switch, tab open, positioning).
     private func goBack() {
-        delegate?.requestGoBack()
+        guard let target = jumps.pop() else {
+            lastError = "No previous position"
+            return
+        }
+        delegate?.requestGoBack(path: target.path, line: target.line, colUtf16: target.colUtf16)
     }
 
     /// Register content + its vim-style type: a blockwise yank (visual
@@ -523,7 +575,7 @@ class EditorWindow: Window {
     private func activateCurrentTab() {
         rebuildLSPIndexes()
         guard let buf = buffer else { return }
-        if cursorLine >= buf.lineCount { cursorLine = max(0, buf.lineCount - 1) }
+        if cursorLine >= buf.lineCount { cursorLine = buf.lastLineIndex }
         cursorCol = min(cursorCol, buf.lineCharLength(line: cursorLine))
         syncDesiredCol()
         ensureCursorVisible()
@@ -669,7 +721,7 @@ class EditorWindow: Window {
             keepPending = true
             return true
         case .char("G"):
-            goToCountedLine(defaultLine: max(0, buffer!.lineCount - 1), count: pending.takeCount())
+            goToCountedLine(defaultLine: buffer!.lastLineIndex, count: pending.takeCount())
         case .char("i"): mode = .insert
         // The insert variant of right: on the last character — one-past-end
         // (vim `a` appends rather than inserting before the last grapheme)
@@ -725,11 +777,17 @@ class EditorWindow: Window {
 
     /// `Ngg` / `NG` — jumps to line N (1-based), falling back to
     /// `defaultLine` (0-based line index) when no count was given.
-    /// The count is resolved by the caller (the single takeCount point).
+    /// A COUNTED jump is a line jump like :N (jumpToLine: gb snapshot
+    /// + ~1/3 reveal). The uncounted forms keep the minimal edge clamp
+    /// and record nothing: plain gg lands on line 1 (the view parks at
+    /// the top), plain G on the last line.
     private func goToCountedLine(defaultLine: Int, count: Int?) {
         guard let buf = buffer else { return }
-        let target = count.map { $0 - 1 } ?? defaultLine
-        cursorLine = min(max(0, target), max(0, buf.lineCount - 1))
+        if let n = count {
+            jumpToLine(n - 1)
+            return
+        }
+        cursorLine = buf.clampLineIndex(defaultLine)
         cursorCol = 0
         desiredCol = 0
         ensureCursorVisible()
@@ -800,13 +858,8 @@ class EditorWindow: Window {
                 searchNext()
             } else if let line = Int(cmd), line >= 0 {
                 // `:N` — go to line N (1-based); `:0` clamps to the first line.
-                if let buf = buffer {
-                    cursorLine = min(max(0, line - 1), max(0, buf.lineCount - 1))
-                    cursorCol = 0
-                    desiredCol = 0
-                    ensureCursorVisible()
-                    dirty = true
-                }
+                // Same line-jump as 123gg: gb snapshot + ~1/3 reveal.
+                jumpToLine(line - 1)
             } else {
                 // Window-management commands (q, q!, qa, terminal, ...)
                 return super.executeCommand(cmd)
@@ -856,7 +909,7 @@ class EditorWindow: Window {
         // is the one the user finished typing.
         let armed = pendingSubstituteScope
         pendingSubstituteScope = nil
-        let lastLine = max(0, buf.lineCount - 1)
+        let lastLine = buf.lastLineIndex
         let scopeLines: ClosedRange<Int>
         let blockSpan: VisualBlock.Span?
         switch cmd.scope {
@@ -1243,7 +1296,7 @@ class EditorWindow: Window {
     /// consumers are bounds-guarded (x, p/P, visual yank/delete, render).
     private func moveVertically(_ delta: Int) {
         guard let buf = buffer else { return }
-        cursorLine = min(max(cursorLine + delta, 0), max(0, buf.lineCount - 1))
+        cursorLine = buf.clampLineIndex(cursorLine + delta)
         // curswant in display cells: resolved into a grapheme via
         // charIndex(atDisplayCol:) — the TARGET line's tab layout does
         // not shift the wanted screen column (vim parity). A target
@@ -1715,8 +1768,11 @@ class EditorWindow: Window {
             scrollY = 0
             return
         }
-        if cursorLine < scrollY { scrollY = cursorLine }
-        else if cursorLine >= scrollY + contentHeight { scrollY = cursorLine - contentHeight + 1 }
+        // The vertical law is the ONE shared edge clamp (RevealPolicy)
+        // — the same doctrine Window.clampedScroll runs for the lists.
+        scrollY = RevealPolicy.edgeClamp(cursorLine: cursorLine,
+                                         scrollY: scrollY,
+                                         contentHeight: contentHeight)
         // In block mode the scroll follows the VIRTUAL column — the
         // rectangle's edge stays visible even past a short line's end.
         let dispCol = mode == .visualBlock

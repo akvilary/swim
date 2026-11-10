@@ -23,6 +23,19 @@ public final class PieceTable {
         lineStarts.count
     }
 
+    /// The last valid line index (0 for an empty buffer) — the shared
+    /// "bottom of the file" bound; total for any buffer state.
+    public var lastLineIndex: Int {
+        max(0, lineCount - 1)
+    }
+
+    /// Clamps a (possibly negative or past-the-end) line index into
+    /// [0, lastLine] — the single line clamp shared by every cursor
+    /// landing site. Total for any input.
+    public func clampLineIndex(_ line: Int) -> Int {
+        min(max(0, line), lastLineIndex)
+    }
+
     public init(data: [UInt8]) {
         original = data
         pieces = [Piece(start: 0, length: data.count, isAdd: false)]

@@ -105,7 +105,7 @@ extension EditorWindow {
     /// A doubled operator (dd/yy/cc) — linewise over N lines from the cursor.
     func applyLinewise(op: NormalPending.Op, count: Int) {
         guard let buf = buffer else { return }
-        let last = max(0, buf.lineCount - 1)
+        let last = buf.lastLineIndex
         applyLinewiseRange(op, lower: cursorLine, upper: min(cursorLine + count - 1, last))
     }
 
@@ -124,8 +124,8 @@ extension EditorWindow {
     /// the forced "\n" (the no-wipe principle, as in yankSelection).
     func applyLinewiseRange(_ op: NormalPending.Op, lower: Int, upper: Int) {
         guard let buf = buffer else { return }
-        let last = max(0, buf.lineCount - 1)
-        let lo = min(max(0, lower), last)
+        let last = buf.lastLineIndex
+        let lo = buf.clampLineIndex(lower)
         var hi = min(max(lo, upper), last)
         if hi > lo, buf.lineStart(line: hi) == buf.totalLength {
             hi -= 1
@@ -154,7 +154,7 @@ extension EditorWindow {
         buf.delete(at: start, length: end - start)
         if !indent.isEmpty { buf.insert(indent, at: start) }
         recordAction(offset: start, deleted: deletedText, inserted: indent)
-        cursorLine = min(lo, max(0, buf.lineCount - 1))
+        cursorLine = min(lo, buf.lastLineIndex)
         cursorCol = indent.count
         syncDesiredCol()
         if op != .c {

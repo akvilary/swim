@@ -387,6 +387,12 @@ final class Terminal {
     }
 
     func osc52Copy(_ text: String) {
+        // OSC 52 only means something to a real terminal. To a pipe —
+        // headless tests, CI logs — it is pure output pollution, and a
+        // terminal emulator wrapping that pipe would take it as a
+        // clipboard WRITE (yank tests would clobber the user's
+        // clipboard). No tty, no copy.
+        guard isatty(STDOUT_FILENO) == 1 else { return }
         let data = Data(text.utf8)
         let encoded = data.base64EncodedString()
         writeRaw("\u{1b}]52;c;\(encoded)\u{07}")

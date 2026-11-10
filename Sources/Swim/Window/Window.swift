@@ -1,3 +1,4 @@
+import SwimCore
 import Foundation
 
 /// Interaction modes. Each window declares the modes it supports via
@@ -502,11 +503,12 @@ class Window {
     /// "scroll" the view past the end of the content (selectedIndex -
     /// 0 + 1), which is exactly the `swim <file>` boot bug — the tree
     /// appeared shifted past its own end. No viewport, no scrolling.
+    /// The law itself is the ONE shared edge clamp (RevealPolicy) —
+    /// the editor's ensureCursorVisible runs the same doctrine.
     static func clampedScroll(selectedIndex: Int, scrollOffset: Int, visibleCount: Int) -> Int {
-        guard visibleCount > 0 else { return scrollOffset }
-        if selectedIndex < scrollOffset { return selectedIndex }
-        if selectedIndex >= scrollOffset + visibleCount { return selectedIndex - visibleCount + 1 }
-        return scrollOffset
+        RevealPolicy.edgeClamp(cursorLine: selectedIndex,
+                               scrollY: scrollOffset,
+                               contentHeight: visibleCount)
     }
 }
 

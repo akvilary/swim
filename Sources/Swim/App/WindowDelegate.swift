@@ -38,7 +38,12 @@ protocol WindowDelegate: AnyObject {
     func activeFileChanged()
     func requestClose(_ window: Window)
     func requestGoToDefinition(line: Int, charUtf16: Int)
-    func requestGoBack()
+    /// `gb` — the target an editor window popped off ITS jump stack.
+    /// Cross-file effects are app-owned: space switch, tab open,
+    /// positioning (the same funnel as gd's landing). The stack itself
+    /// is per-window; today only the main editor records entries
+    /// (scratch editors hold unnamed buffers).
+    func requestGoBack(path: String, line: Int, colUtf16: Int)
 }
 
 extension WindowDelegate {

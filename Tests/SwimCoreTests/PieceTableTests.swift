@@ -165,4 +165,23 @@ struct PieceTableTests {
         #expect(only.wordForward(from: 0) == 1)
         #expect(only.wordForwardUnclamped(from: 0) == 2)
     }
+
+    /// The single line clamp shared by every cursor landing site:
+    /// negatives to 0, past-the-end to the last line — total on any
+    /// input, including the empty buffer.
+    @Test func clampLineIndexIsTotal() {
+        let pt = PieceTable(text: "a\nb\nc")
+        #expect(pt.clampLineIndex(-5) == 0)
+        #expect(pt.clampLineIndex(0) == 0)
+        #expect(pt.clampLineIndex(2) == 2)
+        #expect(pt.clampLineIndex(99) == 2)
+        #expect(pt.clampLineIndex(Int.min) == 0)
+    }
+
+    @Test func clampLineIndexEmptyBuffer() {
+        let pt = PieceTable(text: "")
+        #expect(pt.clampLineIndex(-1) == 0)
+        #expect(pt.clampLineIndex(0) == 0)
+        #expect(pt.clampLineIndex(5) == 0)
+    }
 }

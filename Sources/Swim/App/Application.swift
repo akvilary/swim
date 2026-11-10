@@ -501,29 +501,14 @@ class Application: WindowDelegate {
     private func performDefinitionJump(_ definition: LSPDefinition) {
         let path = pathFromUri(definition.uri)
         guard !path.isEmpty else { return }
-        pushJumpHistory()
+        // Snapshot at the moment the jump actually happens (not at the
+        // gd keypress) — a notFound response leaves the stack clean.
+        editor.recordJumpPosition()
         jump(to: path, line: definition.line, colUtf16: definition.charUtf16)
     }
 
-    /// Jump locations (`gb` targets) of the last `gd` jumps, oldest first.
-    private var jumpStack: [(path: String, line: Int, colUtf16: Int)] = []
-    private let jumpStackLimit = 50
-
-    private func pushJumpHistory() {
-        guard let path = editor.filePath, let buf = editor.buffer else { return }
-        let col = buf.utf16ColForCharIndex(line: editor.cursorLine, charIndex: editor.cursorCol)
-        jumpStack.append((path: path, line: editor.cursorLine, colUtf16: col))
-        if jumpStack.count > jumpStackLimit {
-            jumpStack.removeFirst(jumpStack.count - jumpStackLimit)
-        }
-    }
-
-    func requestGoBack() {
-        guard let target = jumpStack.popLast() else {
-            editor.lastError = "No previous position"
-            return
-        }
-        jump(to: target.path, line: target.line, colUtf16: target.colUtf16)
+    func requestGoBack(path: String, line: Int, colUtf16: Int) {
+        jump(to: path, line: line, colUtf16: colUtf16)
     }
 
     /// Tab-aware jump: opens or switches to the target file's tab (no reload
@@ -1434,6 +1419,10 @@ class Application: WindowDelegate {
     }
 
     func openFileAtLine(_ path: String, line: Int) {
+        // The gb snapshot FIRST — it captures the editor's position as
+        // it is BEFORE the jump (search-result jumps record like gd,
+        // :N and counted Ngg/NG do; the stack lives in the window).
+        editor.recordJumpPosition()
         // Switch first: openFileInEditor focuses the editor, and focus must
         // land in the editor space — focusing while the search space is
         // current would leave the editor space's stale focus (explorer).
@@ -1676,7 +1665,7 @@ class Application: WindowDelegate {
         // of the text so typing appends.
         if !prefill.isEmpty, let buf = commitWindow.buffer {
             buf.insert(prefill, at: 0)
-            let lastLine = max(0, buf.lineCount - 1)
+            let lastLine = buf.lastLineIndex
             commitWindow.goToPosition(line: lastLine, colUtf16: buf.getLine(lastLine).utf16.count)
         }
         commitWindow.mode = .insert

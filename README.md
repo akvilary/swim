@@ -148,8 +148,8 @@ swim <file>       # Open file
 | `:` | Any (not Insert) | Command line (via status bar) |
 | `/` | Normal | Search; in any visual mode — toggle line comments over the selection (the first non-blank line decides: already commented → uncomment all, else → comment all; `V` (and `v` covering full lines) puts the markers in one column — the leftmost non-blank indent; a `v` selection starting mid-line comments only the selected part of the first line (the marker at the selection's start column); `Ctrl+V` comments from the rectangle's left edge) |
 | `n` / `N` | Normal | Next / previous search match |
-| `gd` | Normal | Go to definition under the cursor (LSP; clangd, sourcekit-lsp, basedpyright, …); jumps open the target in a tab |
-| `gb` | Normal | Jump back to the position before the last `gd` (up to 50 hops) |
+| `gd` | Normal | Go to definition under the cursor (LSP; clangd, sourcekit-lsp, basedpyright, …); jumps open the target in a tab, the target line lands ~1/3 from the top — the signature and docs above it stay visible |
+| `gb` | Normal | Jump back to before the last jump — `gd`, a search-result Enter, `:N`, counted `gg`/`G` all record return points (per-window stack, up to 50 hops) |
 | `h/j/k/l` | Normal | Navigation (with `[count]`) |
 | `Ctrl+J` / `Ctrl+K`, `PageUp` / `PageDown` | Normal, Insert, Visual | Page down / up (a screenful minus two context lines; in visual modes extends the selection) |
 | `w` / `b` / `e` | Normal | Word motions (with `[count]`) |

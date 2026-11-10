@@ -62,8 +62,8 @@ public enum NormalMotion: Equatable {
     /// `endOfLine` (`$`) moves down count-1 lines — all as in vim.
     public static func destination(of motion: NormalMotion, in buffer: PieceTable,
                                    line: Int, col: Int, count: Int?) -> Destination {
-        let last = max(0, buffer.lineCount - 1)
-        let l = min(max(0, line), last)
+        let last = buffer.lastLineIndex
+        let l = buffer.clampLineIndex(line)
         let n = count ?? 1
         switch motion {
         case .left:
@@ -118,8 +118,7 @@ public enum NormalMotion: Equatable {
     public static func operatorRange(cursorLine: Int, cursorCol: Int,
                                      destination: Destination,
                                      in buffer: PieceTable) -> OperatorRange? {
-        let last = max(0, buffer.lineCount - 1)
-        let cl = min(max(0, cursorLine), last)
+        let cl = buffer.clampLineIndex(cursorLine)
         if destination.kind == .linewise {
             return .linewise(lower: min(cl, destination.line),
                              upper: max(cl, destination.line))
