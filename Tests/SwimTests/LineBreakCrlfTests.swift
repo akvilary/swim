@@ -175,4 +175,45 @@ struct LineBreakCrlfTests {
         #expect(w.buffer!.getLine(1) == "z")
         #expect(gap(w, 1) == 1)
     }
+
+    // --- `p` below an UNTERMINATED last line: a new line below, not
+    // a merge (vim parity: the target line GAINS the file's break,
+    // the register follows WITHOUT its trailing break — the last
+    // pasted line becomes the new EOF). ---
+
+    @Test func pasteBelowUnterminatedLastLineIsANewLine() throws {
+        let (w, dir) = try makeEditor("x\ny")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        w.cursorLine = 1
+        press("yy", on: w)
+        press("p", on: w)
+        #expect(w.buffer!.getLine(1) == "y")
+        #expect(w.buffer!.getLine(2) == "y")
+        #expect(w.buffer!.getAllText() == "x\ny\ny")   // the pasted line is the new EOF
+    }
+
+    @Test func pasteBelowUnterminatedLastLineCrlfKeepsConvention() throws {
+        let (w, dir) = try makeEditor("x\r\ny")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        w.cursorLine = 1
+        press("yy", on: w)
+        press("p", on: w)
+        #expect(w.buffer!.getLine(1) == "y")
+        #expect(w.buffer!.getLine(2) == "y")
+        #expect(w.buffer!.getAllText() == "x\r\ny\r\ny")   // the GAINED break is CRLF
+    }
+
+    @Test func multilinePasteBelowUnterminatedDropsFinalBreak() throws {
+        // A two-line register below the unterminated last line: the
+        // LAST pasted line is the new EOF — the register's own
+        // trailing break does not add a phantom line.
+        let (w, dir) = try makeEditor("x\nend")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        w.cursorLine = 0
+        press("yy", on: w)
+        w.cursorLine = 1
+        press("2p", on: w)                       // "x\n" twice → "x\nx\n"
+        #expect(w.buffer!.getAllText() == "x\nend\nx\nx")
+        #expect(w.buffer!.lineCount == 4)
+    }
 }

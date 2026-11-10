@@ -1748,10 +1748,27 @@ class EditorWindow: Window {
     /// pasteTextBeforeCursor instead ends one past it.
     private func pasteTextAfterCursor(_ text: String) {
         guard let buf = buffer, !text.isEmpty else { return }
+        var inserted = text
         let offset: Int
         if MultilineInsert.endsWithLineBreak(text) {
-            offset = buf.lineEnd(line: cursorLine)
-            buf.insert(text, at: offset)
+            if lineTerminator(after: cursorLine).isEmpty {
+                // `p` below an UNTERMINATED last line: lineEnd IS the
+                // buffer's end, a bare insert would MERGE the register
+                // onto the line. Vim parity: the target line GAINS
+                // the file's break (the convention, lineBreakForInsertion),
+                // the register follows WITHOUT its own trailing break —
+                // the last pasted line is the new EOF, no phantom line.
+                var body = text
+                if let last = body.last, last == "\n" || last == "\r" || last == "\r\n" {
+                    body.removeLast()
+                }
+                inserted = lineBreakForInsertion(after: cursorLine) + body
+                offset = buf.totalLength
+                buf.insert(inserted, at: offset)
+            } else {
+                offset = buf.lineEnd(line: cursorLine)
+                buf.insert(text, at: offset)
+            }
             cursorLine += 1; cursorCol = 0
         } else {
             let charAfterOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol + 1)
@@ -1761,7 +1778,7 @@ class EditorWindow: Window {
             cursorLine += delta.lines
             cursorCol = delta.lines > 0 ? delta.tailCols : cursorCol + delta.tailCols
         }
-        recordAction(offset: offset, deleted: "", inserted: text)
+        recordAction(offset: offset, deleted: "", inserted: inserted)
         ensureCursorVisible()
     }
 
