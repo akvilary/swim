@@ -388,20 +388,25 @@ extension EditorWindow {
     /// source file supplies the original terminators (a CRLF file — a
     /// CRLF register, the `p` round-trip does not repaint the file's
     /// lines as LF), but the last line without a trailing newline
-    /// forcibly gets "\n" — the register type is sniffed from the
-    /// tail, a linewise yank must stay linewise (vim parity on `p`),
-    /// otherwise the paste degrades to charwise.
+    /// forcibly gets the FILE's convention (`lineBreakForInsertion`
+    /// — a CRLF file keeps CRLF register tails too), not a bare
+    /// "\n": the register type is sniffed from the tail, a linewise
+    /// yank must stay linewise (vim parity on `p`), otherwise the
+    /// paste degrades to charwise — and an LF tail would leak an LF
+    /// break back into the CRLF file through `p`.
     func registerTerminator(after line: Int) -> String {
         let t = lineTerminator(after: line)
-        return t.isEmpty ? "\n" : t
+        return t.isEmpty ? lineBreakForInsertion(after: line) : t
     }
 
     /// Yank of a byte range with a linewise guarantee (deletions): the
     /// content ends with a line break even when the deleted span ended
     /// on the file's last line without a terminator — a delete
-    /// register must paste linewise, as in vim.
-    func yankLinewiseRegister(_ text: String) {
-        yank(MultilineInsert.endsWithLineBreak(text) ? text : text + "\n")
+    /// register must paste linewise, as in vim. The forced tail is
+    /// the FILE's convention (a CRLF file keeps CRLF), supplied by
+    /// the caller with the source line's context.
+    func yankLinewiseRegister(_ text: String, tailBreak: String) {
+        yank(MultilineInsert.endsWithLineBreak(text) ? text : text + tailBreak)
     }
 
     /// Deletion of the current selection — a single point for all
@@ -435,7 +440,7 @@ extension EditorWindow {
             let len = end - start
             guard len > 0 else { mode = .normal; return }
             let deletedText = buf.getText(range: start..<min(end, buf.totalLength))
-            yankLinewiseRegister(deletedText)
+            yankLinewiseRegister(deletedText, tailBreak: lineBreakForInsertion(after: lines.upperBound))
             buf.delete(at: start, length: len)
             recordAction(offset: start, deleted: deletedText, inserted: "")
             cursorLine = min(lines.lowerBound, buf.lastLineIndex)
@@ -628,6 +633,18 @@ extension EditorWindow {
         let nextStart = buf.lineStart(line: line + 1)
         guard contentEnd < nextStart else { return "" }
         return nextStart - contentEnd == 2 ? "\r\n" : "\n"
+    }
+
+    /// The break a NEW line insertion uses — vim's fileformat
+    /// behavior: the reference line's own terminator; a line without
+    /// one (the unterminated last line) falls back to the file's
+    /// first-line convention, else "\n". A CRLF file keeps CRLF
+    /// breaks under Enter/o/O/r<CR>; an LF file never sees CRLF.
+    func lineBreakForInsertion(after line: Int) -> String {
+        let own = lineTerminator(after: line)
+        if !own.isEmpty { return own }
+        let convention = lineTerminator(after: 0)
+        return convention.isEmpty ? "\n" : convention
     }
 
     // MARK: - Line shift (visualLine, mode is kept)

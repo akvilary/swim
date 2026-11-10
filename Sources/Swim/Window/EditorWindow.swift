@@ -1613,6 +1613,11 @@ class EditorWindow: Window {
         guard let buf = buffer else { return nil }
         let wholeLine = buf.getLine(cursorLine)
         guard splitCol <= wholeLine.count else { return nil }
+        // Every break in the blob is the FILE's own — the split
+        // line's terminator (an unterminated last line falls back to
+        // the file's first-line convention): a CRLF file keeps CRLF
+        // under Enter and r<CR> alike.
+        let brk = lineBreakForInsertion(after: cursorLine)
         let splitIndex = wholeLine.index(wholeLine.startIndex, offsetBy: splitCol)
         let before = String(wholeLine[..<splitIndex])
         let after = String(wholeLine[splitIndex...])
@@ -1630,16 +1635,16 @@ class EditorWindow: Window {
         switch plan {
         case .plain(let cursorIndent):
             let indentText = cursorIndent > 0 ? String(repeating: " ", count: cursorIndent) : ""
-            return ("\n" + indentText, cursorIndent)
+            return (brk + indentText, cursorIndent)
         case .closerOnly(let bracketPad):
             let padText = bracketPad > 0 ? String(repeating: " ", count: bracketPad) : ""
             // The new line = pad + the tail, so its leading run is the
             // pad on top of the tail's own whitespace — exactly where
             // the old post-insert read placed the cursor.
-            return ("\n" + padText, leadingSpaces(after) + bracketPad)
+            return (brk + padText, leadingSpaces(after) + bracketPad)
         case .closerWithBody(let cursorIndent, let bracketPad):
             let padText = bracketPad > 0 ? String(repeating: " ", count: bracketPad) : ""
-            return ("\n" + String(repeating: " ", count: cursorIndent) + "\n" + padText, cursorIndent)
+            return (brk + String(repeating: " ", count: cursorIndent) + brk + padText, cursorIndent)
         }
     }
 
@@ -1660,16 +1665,24 @@ class EditorWindow: Window {
     private func insertNewLineBelow() {
         guard let buf = buffer else { return }
         let offset = buf.lineEnd(line: cursorLine)
-        buf.insert("\n", at: offset)
-        recordAction(offset: offset, deleted: "", inserted: "\n")
+        // The new line's own break follows the file's convention (the
+        // line it is appended after — an unterminated last line falls
+        // back to the file's first-line convention).
+        let brk = lineBreakForInsertion(after: cursorLine)
+        buf.insert(brk, at: offset)
+        recordAction(offset: offset, deleted: "", inserted: brk)
         cursorLine += 1; cursorCol = 0; ensureCursorVisible()
     }
 
     private func insertNewLineAbove() {
         guard let buf = buffer else { return }
         let offset = buf.lineStart(line: cursorLine)
-        buf.insert("\n", at: offset)
-        recordAction(offset: offset, deleted: "", inserted: "\n")
+        // The new break lands where the line ABOVE used to own its
+        // terminator — its style follows that line's (the file's
+        // first line at the top of the file).
+        let brk = lineBreakForInsertion(after: max(0, cursorLine - 1))
+        buf.insert(brk, at: offset)
+        recordAction(offset: offset, deleted: "", inserted: brk)
         cursorCol = 0; ensureCursorVisible()
     }
 
@@ -1687,9 +1700,17 @@ class EditorWindow: Window {
             cursorCol -= 1
         } else if cursorLine > 0 {
             let currentLineStart = buf.lineStart(line: cursorLine)
-            let offset = currentLineStart - 1
-            let deletedText = "\n"
-            buf.delete(at: offset, length: 1)
+            // The break being removed is the FULL terminator above —
+            // in a CRLF file that is TWO bytes ("\r\n"); deleting one
+            // leaves a dangling "\r" as content and the undo record
+            // lies about what was removed. The deleted text is read
+            // from the buffer, the record's truth.
+            let twoByte = currentLineStart >= 2
+                && buf.getChar(at: currentLineStart - 2) == UInt8(13)
+            let len = twoByte ? 2 : 1
+            let offset = currentLineStart - len
+            let deletedText = buf.getText(range: offset..<(offset + len))
+            buf.delete(at: offset, length: len)
             recordAction(offset: offset, deleted: deletedText, inserted: "")
             cursorLine -= 1
             // join point: between the last char of the upper line and the

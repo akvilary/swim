@@ -139,7 +139,7 @@ extension EditorWindow {
             // the contribution is just the forced "\n" — no-op without
             // wiping the register (the no-wipe principle, as in yankSelection).
             if buf.lineStart(line: lo) == buf.totalLength { return }
-            yankLinewiseRegister(registerText)
+            yankLinewiseRegister(registerText, tailBreak: lineBreakForInsertion(after: hi))
             return // yy does not move the cursor (vim)
         }
         let start = buf.lineStart(line: lo)
@@ -148,7 +148,7 @@ extension EditorWindow {
             if op == .c { mode = .insert }
             return
         }
-        yankLinewiseRegister(registerText)
+        yankLinewiseRegister(registerText, tailBreak: lineBreakForInsertion(after: hi))
         let deletedText = buf.getText(range: start..<end)
         let indent = op == .c ? Self.lineIndent(buf, line: lo) : ""
         buf.delete(at: start, length: end - start)
@@ -273,7 +273,12 @@ extension EditorWindow {
     /// The r<CR> body: delete the [count] replaced graphemes, then
     /// the shared split core at the same column — its before/after
     /// see exactly the post-delete line, vim's "delete then
-    /// i<CR><Esc>" model verbatim.
+    /// i<CR><Esc>" model verbatim. ONE subtlety: when the replaced
+    /// range ran through the END of the line's content, the break
+    /// after it ALREADY exists — the replacement break coalesces
+    /// with it (vim: r<CR> on a trailing char is just the deletion,
+    /// the next line is the next ORIGINAL line, no fresh indent) —
+    /// inserting the blob would double-break.
     private func replaceCharsWithLineBreak(count: Int) {
         guard let buf = buffer else { return }
         let chars = buf.getLineChars(cursorLine)
@@ -284,16 +289,21 @@ extension EditorWindow {
         beginEdit()
         editDelete(at: startOff, length: byteEnd - byteStart)
         var col = 0
-        if let (blob, splitCol) = splitBlob(at: cursorCol) {
+        var lineDelta = 1
+        if cursorCol >= buf.getLineChars(cursorLine).count,
+           !lineTerminator(after: cursorLine).isEmpty {
+            // The break already exists — nothing to insert.
+            col = 0
+        } else if let (blob, splitCol) = splitBlob(at: cursorCol) {
             let offset = buf.lineStart(line: cursorLine)
                 + buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
             editInsert(blob, at: offset)
             col = splitCol
         } else {
-            editInsert("\n", at: startOff)
+            editInsert(lineBreakForInsertion(after: cursorLine), at: startOff)
         }
         commitEdit()
-        cursorLine += 1
+        cursorLine += lineDelta
         cursorCol = col
         syncDesiredCol()
         ensureCursorVisible()

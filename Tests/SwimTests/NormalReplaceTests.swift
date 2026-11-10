@@ -118,4 +118,18 @@ struct NormalReplaceTests {
         #expect(w.buffer!.getLine(1) == "ef")
         #expect(w.cursorLine == 1 && w.cursorCol == 0)
     }
+
+    @Test func enterOnTrailingCharCoalescesWithExistingBreak() {
+        // r<CR> on a TRAILING char: the break after it already exists
+        // — the replacement coalesces with it (the latent double-break
+        // bug: the blob used to insert a second break, leaving an
+        // empty line between the split and the next original line).
+        let w = makeEditor("ab\ncd", col: 1)
+        press("r", on: w)
+        _ = w.handleKey(.enter)
+        #expect(w.buffer!.lineCount == 2)
+        #expect(w.buffer!.getLine(0) == "a")
+        #expect(w.buffer!.getLine(1) == "cd")
+        #expect(w.cursorLine == 1 && w.cursorCol == 0)
+    }
 }
