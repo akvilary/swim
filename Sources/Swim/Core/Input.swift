@@ -223,11 +223,23 @@ enum Key: Equatable {
             case 27: return .escape
             case 127: return .backspace
             default:
-                // Insurance: printables are never re-encoded by level 2,
-                // but if some terminal does, a dead Shift+letter would be
-                // worse than an uppercase char.
-                guard let letter = key.letter else { return nil }
-                return .char(Character(String(letter).uppercased()))
+                // A re-encoded Shift+printable. WezTerm's level 2 re-encodes
+                // every MODIFIED key, but its shift strip is ASCII-only — a
+                // Shift+non-ASCII letter keeps the bit and rides the 27-form
+                // (Shift+Б arrives as 27;2;1073~, the layout's unshifted key,
+                // or 27;2;1041~ where the GUI hands over the shifted text);
+                // the kitty dialect never re-encodes text keys at all. Either
+                // spelling must insert the capital: uppercase the scalar and
+                // let it through — a dead capital in insert mode is worse.
+                // Surrogates cannot construct a scalar (nil); C0/DEL/C1
+                // controls stay nil (never fire rather than fire wrong); a
+                // multi-char uppercase (ß → SS) keeps the base rather than
+                // halving it.
+                guard let scalar = UnicodeScalar(UInt32(key.codepoint)) else { return nil }
+                let v = scalar.value
+                guard !(0...31).contains(v), !(127...159).contains(v) else { return nil }
+                let upper = String(scalar).uppercased()
+                return upper.count == 1 ? .char(Character(upper)) : .char(Character(scalar))
             }
         }
         guard key.ctrl, !key.alt, !key.meta, let letter = key.letter else { return nil }
