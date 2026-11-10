@@ -6,6 +6,8 @@ import SwimCore
 /// test (the window's delegate is weak).
 final class StubDelegate: WindowDelegate {
     var goBackTargets: [(path: String, line: Int, colUtf16: Int)] = []
+    var reported: [String] = []
+    var worktreeChanges = 0
 
     func openFile(_ path: String) {}
     func openFileAtLine(_ path: String, line: Int) {}
@@ -15,12 +17,12 @@ final class StubDelegate: WindowDelegate {
     func terminalCommandFinished() {}
     func requestCommitMessage(prefill: String, amend: Bool, amendTarget: String) {}
     func requestCommit() {}
-    func reportError(_ message: String) {}
+    func reportError(_ message: String) { reported.append(message) }
     func requestRender() {}
     func updatePreview(path: String?, highlightLine: Int) {}
     func bufferClosed(_ buffer: EditorBuffer) {}
     func fileSaved() {}
-    func gitWorktreeChanged() {}
+    func gitWorktreeChanged() { worktreeChanges += 1 }
     func fileChangedOnDisk(_ path: String) {}
     func reloadActiveBufferDiscardingEdits() {}
     func activeFileChanged() {}

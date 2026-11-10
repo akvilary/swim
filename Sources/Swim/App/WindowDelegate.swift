@@ -24,7 +24,7 @@ protocol WindowDelegate: AnyObject {
     func bufferClosed(_ buffer: EditorBuffer)
     func fileSaved()
     /// A git-panel action (stage/unstage/discard) or an explorer FS edit
-    /// (create/delete/rename) changed the worktree — the git-driven
+    /// (create/delete/rename/copy) changed the worktree — the git-driven
     /// decorations (status bar stats, editor gutter lines, explorer
     /// name marks) should refetch.
     func gitWorktreeChanged()

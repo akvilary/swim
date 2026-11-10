@@ -24,6 +24,12 @@ class FileExplorerWindow: Window {
     /// The entry `r` captured for the pending `rename old -> new` command —
     /// disambiguates the bare old name when the tree has duplicates.
     private var pendingRenamePath: String?
+    /// The entry `y` captured for `p` (vim's yank-then-paste): an
+    /// absolute tree path, alive until the next `y` — navigation and
+    /// the command line never clear it (a yank is state, not a pending
+    /// edit like pendingRenamePath; repeated pastes are the duplicate
+    /// workflow, the name dedups per paste).
+    private var yankedPath: String?
     var currentDirectory: String = ""
 
     override func update() {
@@ -192,6 +198,8 @@ class FileExplorerWindow: Window {
         case .char("a"): beginCreate()
         case .char("d"): beginDelete()
         case .char("r"): beginRename()
+        case .char("y"): beginYank()
+        case .char("p"): pasteYanked()
         case .char("H"): toggleShowAll()
         default: return false
         }
@@ -373,16 +381,22 @@ class FileExplorerWindow: Window {
         enterCommandMode(prefill: "create \(creationPrefix())")
     }
 
+    /// Directory (absolute) the selection points AT: the selected
+    /// directory itself, the parent of a selected file — the ONE rule
+    /// behind both `a`'s creation prefix and `p`'s paste destination.
+    private func selectionDirectory() -> String? {
+        guard let entry = selectedNode() else { return nil }
+        return entry.isDirectory
+            ? entry.path
+            : (entry.path as NSString).deletingLastPathComponent
+    }
+
     /// Directory (relative to the tree root, `./`-prefixed) where `a` will
     /// offer to create: the selected directory itself, the parent of a
     /// selected file, or the root.
     private func creationPrefix() -> String {
-        guard let entry = selectedNode() else { return "./" }
-        let dirPath = entry.isDirectory
-            ? entry.path
-            : (entry.path as NSString).deletingLastPathComponent
-        if let rel = relativePath(of: dirPath) { return "./\(rel)/" }
-        return "./"
+        guard let dir = selectionDirectory(), let rel = relativePath(of: dir) else { return "./" }
+        return "./\(rel)/"
     }
 
     /// `d` — opens the command line pre-filled with `delete ./<selected>`;
@@ -571,6 +585,86 @@ class FileExplorerWindow: Window {
         reveal(path: new)
         // A rename is delete+add as far as git is concerned.
         delegate?.gitWorktreeChanged()
+    }
+
+    // MARK: - Yank/paste entries (`y` / `p` — a copy with no typed argument)
+
+    /// `y` — captures the selected entry (a file or a whole directory)
+    /// for `p`. The register lives until the next `y`.
+    private func beginYank() {
+        guard let node = selectedNode() else {
+            delegate?.reportError("yank: nothing selected")
+            return
+        }
+        yankedPath = node.path
+        delegate?.reportError("Yanked ./\(relativePath(of: node.path) ?? node.name)")
+    }
+
+    /// `p` — pastes the yanked entry: INTO the selected directory, or
+    /// NEXT TO the selected file (its parent). A taken name dedups the
+    /// Finder way — "file copy.txt", "file copy 2.txt" — so a paste
+    /// never overwrites and a repeated `p` is the duplicate workflow.
+    /// Pasting a directory into itself or its own subtree is refused
+    /// (`copyItem` would recurse into the tree it is copying).
+    private func pasteYanked() {
+        guard let src = yankedPath else {
+            delegate?.reportError("paste: nothing yanked — press y")
+            return
+        }
+        guard let destDir = selectionDirectory() else {
+            delegate?.reportError("paste: nothing selected")
+            return
+        }
+        let fm = FileManager.default
+        var isSrcDir: ObjCBool = false
+        guard fm.fileExists(atPath: src, isDirectory: &isSrcDir) else {
+            delegate?.reportError("paste: not found")
+            return
+        }
+        if isSrcDir.boolValue,
+           destDir == src || TreePath.isDescendant(destDir, of: src) {
+            delegate?.reportError("paste: destination inside the yanked directory")
+            return
+        }
+        guard let finalPath = firstAvailablePath(in: destDir,
+                                                 for: (src as NSString).lastPathComponent) else {
+            delegate?.reportError("paste: too many copies of that name")
+            return
+        }
+        do {
+            try fm.copyItem(atPath: src, toPath: finalPath)
+        } catch {
+            delegate?.reportError("paste: \(error.localizedDescription)")
+            return
+        }
+        reloadPreservingExpansion()
+        reveal(path: finalPath)
+        // A pasted entry is new untracked state — refresh the git marks.
+        delegate?.gitWorktreeChanged()
+    }
+
+    /// The first free "name", "name copy", "name copy 2"… path in `dir`
+    /// (Finder's convention; the extension stays — "file.txt" becomes
+    /// "file copy.txt"; hidden and extension-less names take the plain
+    /// suffix — the LAST dot splits, a leading dot is the name itself).
+    /// Nil after `limit` tries — a pathological wall, never a loop.
+    private func firstAvailablePath(in dir: String, for name: String, limit: Int = 100) -> String? {
+        let ns = name as NSString
+        let dot = ns.range(of: ".", options: .backwards).location
+        let hasExt = dot != NSNotFound && dot != 0
+        let base = hasExt ? ns.substring(to: dot) : name
+        let ext = hasExt ? ns.substring(from: dot) : ""
+        func candidate(_ n: Int) -> String {
+            let suffix = n == 0 ? "" : (n == 1 ? " copy" : " copy \(n)")
+            return (dir as NSString).appendingPathComponent("\(base)\(suffix)\(ext)")
+        }
+        let fm = FileManager.default
+        var n = 0
+        while n < limit {
+            if !fm.fileExists(atPath: candidate(n)) { return candidate(n) }
+            n += 1
+        }
+        return nil
     }
 
     /// `:fe reset` — full rescan of the tree from disk with expansion and

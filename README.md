@@ -159,6 +159,7 @@ swim <file>       # Open file
 | `x` | Normal | Delete `[count]` chars (yanks, like vim) |
 | `p` | Normal | Paste (`[count]` times) |
 | `Ctrl+E` | Any | File explorer |
+| `y` / `p` (explorer) | Menu | Copy: `y` yanks the selected file/directory, `p` pastes it — into the selected directory, or next to the selected file; a taken name dedups (file copy.txt, file copy 2.txt), the register lives until the next `y` (also there: `a` create, `d` delete, `r` rename, `H` show hidden/git-ignored) |
 | `Ctrl+G` | Any | Git panel |
 | `Ctrl+B` | Any | Branch picker |
 | `Ctrl+U` | Any | Git log |
