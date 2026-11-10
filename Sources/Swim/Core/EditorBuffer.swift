@@ -60,8 +60,10 @@ final class EditorBuffer {
     /// to the line length — only in `.visualBlock`; outside it it is dead
     /// and is re-initialized on the next entry.
     var visualBlockCol: Int = 0
-    var undoStack: [(offset: Int, deleted: String, inserted: String)] = []
-    var redoStack: [(offset: Int, deleted: String, inserted: String)] = []
+    /// The per-tab undo/redo history — one EditOperation (a logged
+    /// command) per entry; see SwimCore/EditOperation.
+    var undoStack: [EditOperation] = []
+    var redoStack: [EditOperation] = []
     var lspPendingChanges: [LSPTextChange] = []
     var semanticTokens: [SemanticToken] = []
     var diagnostics: [LSPDiagnostic] = []

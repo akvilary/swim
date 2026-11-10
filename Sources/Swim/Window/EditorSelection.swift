@@ -14,8 +14,10 @@ import Foundation
 /// - PURE MATH (display columns, slices, line reassembly) —
 ///   SwimCore/VisualBlock.swift, tested;
 /// - APPLICATION — contiguous edits directly into the PieceTable,
-///   multi-line ones — through `applyBlockEdit` (one contiguous
-///   replace, the undo model is unchanged);
+///   multi-line ones — through `applyBlockEdit` (per-row steps of one
+///   EditOperation: each CHANGED row swaps its own content, its
+///   terminator never part of the swap — CRLF round-trips for free —
+///   and unchanged middle rows are not reassembled at all);
 /// - INVARIANTS: finishing operators (`y`/`d`/`x`/paste-over) return
 ///   to normal themselves; `H`/`L`-shift mode deliberately persists;
 ///   `cursorCol` is always real (in block mode — the grapheme boundary
@@ -586,26 +588,24 @@ extension EditorWindow {
         let lastLine = plans[lastChanged].line
         let firstPlan = plans[firstChanged].plan!
         let startOffset = buf.lineStart(line: firstLine)
-        let endOffset = min(buf.lineEnd(line: lastLine), buf.totalLength)
 
-        let deletedText = endOffset > startOffset ? buf.getText(range: startOffset..<endOffset) : ""
-        // Reassemble all lines between the first and last change,
-        // each with ITS OWN terminator (lineEnd includes the last
-        // one's terminator). The separator is joined by index, not by
-        // non-emptiness of the accumulated text: a reassembled line
-        // may itself be empty.
-        var insertedText = ""
+        // Per-row application through the executor: each CHANGED row
+        // swaps its own content (RowPlan.text is the reassembled row —
+        // the prefix/suffix padding lives inside it; the row's
+        // terminator is never part of the swap, so CRLF round-trips
+        // for free), unchanged middle rows are not reassembled at all
+        // (the flat record rebuilt every line of the span to fake one
+        // contiguous swap); lineStart is read fresh per row against
+        // the evolving buffer, so the application order is free. The
+        // anchors park undo/redo exactly where the flat whole-span
+        // record did: the span start / its end.
+        beginEdit()
         for entry in plans[firstChanged...lastChanged] {
-            insertedText += (entry.plan?.text ?? buf.getLine(entry.line))
-                + lineTerminator(after: entry.line)
+            guard let plan = entry.plan else { continue }
+            let rowStart = buf.lineStart(line: entry.line)
+            editReplace(at: rowStart, length: buf.getLine(entry.line).utf8.count, with: plan.text)
         }
-        if endOffset > startOffset {
-            buf.delete(at: startOffset, length: endOffset - startOffset)
-        }
-        if !insertedText.isEmpty {
-            buf.insert(insertedText, at: startOffset)
-        }
-        recordAction(offset: startOffset, deleted: deletedText, inserted: insertedText)
+        commitEdit(undoAnchor: startOffset, redoAnchor: buf.lineEnd(line: lastLine))
 
         cursorLine = firstLine
         cursorCol = min(firstPlan.caret, buf.lineCharLength(line: firstLine))
@@ -670,19 +670,20 @@ extension EditorWindow {
             }
         }
         guard changed else { return }
+        // Per-line application through the executor: each line swaps
+        // ITS OWN content (its terminator is never part of the swap —
+        // CRLF round-trips for free, the terminator reconstruction is
+        // gone); lineStart is read fresh per line against the
+        // evolving buffer. The anchors park undo/redo exactly where
+        // the flat whole-span record did: the range start / its end.
         let start = buf.lineStart(line: startLine)
-        let end = buf.lineEnd(line: endLine)
-        let deletedText = buf.getText(range: start..<min(end, buf.totalLength))
-        // Each line is rebuilt with its own terminator — "\n" or "\r\n"
-        // (the byte-gap detection lives in lineTerminator; the phantom
-        // empty line after a trailing newline is handled there too).
-        var insertedText = ""
+        beginEdit()
         for (i, content) in newLines.enumerated() {
-            insertedText += content + lineTerminator(after: startLine + i)
+            let line = startLine + i
+            let lineStart = buf.lineStart(line: line)
+            editReplace(at: lineStart, length: buf.getLine(line).utf8.count, with: content)
         }
-        buf.delete(at: start, length: end - start)
-        buf.insert(insertedText, at: start)
-        recordAction(offset: start, deleted: deletedText, inserted: insertedText)
+        commitEdit(undoAnchor: start, redoAnchor: buf.lineEnd(line: endLine))
         cursorCol = min(max(0, cursorCol + cursorDelta), buf.lineCharLength(line: cursorLine))
         syncDesiredCol()
         ensureCursorVisible()
@@ -704,10 +705,11 @@ extension EditorWindow {
     /// operator: always returns to normal, like y/d/x — even on
     /// refusal (a file type without a line comment reports through the
     /// shared error channel and the buffer is not touched). The edit
-    /// itself is the shiftVisualLines shape: one contiguous replace
-    /// over the changed span, every line reassembled with its own
-    /// terminator (CRLF files survive), one recordAction (one undo
-    /// step, one LSP didChange).
+    /// itself is the shiftVisualLines shape: per-line steps of ONE
+    /// EditOperation (each changed line swaps its own content, its
+    /// terminator never part of the swap — CRLF files survive —
+    /// unchanged middle lines not reassembled at all), one undo step,
+    /// one LSP didChange per changed line.
     func toggleCommentInSelection() {
         guard let buf = buffer else { mode = .normal; return }
         let fileExt = (filePath as NSString?)?.pathExtension ?? ""
@@ -768,24 +770,22 @@ extension EditorWindow {
         let editStartLine = firstLine + firstChanged
         let editEndLine = firstLine + lastChanged
         let startOffset = buf.lineStart(line: editStartLine)
-        let endOffset = min(buf.lineEnd(line: editEndLine), buf.totalLength)
-        let deletedText = endOffset > startOffset
-            ? buf.getText(range: startOffset..<endOffset) : ""
-        // Reassemble the whole span (unchanged middle lines verbatim),
-        // each line with its OWN terminator — read before mutation.
-        var insertedText = ""
-        for i in firstChanged...lastChanged {
+
+        // Per-line application through the executor: each CHANGED
+        // line swaps its own content (the plan's text), its
+        // terminator never part of the swap — CRLF round-trips for
+        // free, the terminator reconstruction is gone; unchanged
+        // middle lines are not reassembled at all. The anchors park
+        // undo/redo exactly where the flat whole-span record did:
+        // the span start / its end.
+        beginEdit()
+        for i in firstChanged...lastChanged where plan.plans[i].changed {
             let line = firstLine + i
-            insertedText += (plan.plans[i].changed ? plan.plans[i].text : buf.getLine(line))
-                + lineTerminator(after: line)
+            let lineStart = buf.lineStart(line: line)
+            editReplace(at: lineStart, length: buf.getLine(line).utf8.count,
+                        with: plan.plans[i].text)
         }
-        if endOffset > startOffset {
-            buf.delete(at: startOffset, length: endOffset - startOffset)
-        }
-        if !insertedText.isEmpty {
-            buf.insert(insertedText, at: startOffset)
-        }
-        recordAction(offset: startOffset, deleted: deletedText, inserted: insertedText)
+        commitEdit(undoAnchor: startOffset, redoAnchor: buf.lineEnd(line: editEndLine))
 
         cursorLine = editStartLine
         cursorCol = min(plan.plans[firstChanged].editAt,

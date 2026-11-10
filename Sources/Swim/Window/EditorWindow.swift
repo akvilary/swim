@@ -51,11 +51,11 @@ class EditorWindow: Window {
         get { tabs.active.modified }
         set { tabs.active.modified = newValue }
     }
-    var undoStack: [(offset: Int, deleted: String, inserted: String)] {
+    var undoStack: [EditOperation] {
         get { tabs.active.undoStack }
         set { tabs.active.undoStack = newValue }
     }
-    var redoStack: [(offset: Int, deleted: String, inserted: String)] {
+    var redoStack: [EditOperation] {
         get { tabs.active.redoStack }
         set { tabs.active.redoStack = newValue }
     }
@@ -985,18 +985,19 @@ class EditorWindow: Window {
         searchQuery = cmd.pattern
         lastSearchForward = true
 
-        // The undo record spans the whole substituted range — captured
-        // BEFORE any edit lands (replacements with \r shift line
-        // indices, byte arithmetic with `delta` stays exact).
+        // The undo record is the EDITS THEMSELVES (each applied edit
+        // logs its own step through the executor) — no whole-range
+        // before/after snapshots; an identity edit (`:s/x/x/`) logs
+        // nothing at all. The range bounds still anchor the undo/redo
+        // cursors exactly where the flat record parked them.
         let rangeStart = buf.lineStart(line: scopeLines.lowerBound)
         let rangeEnd = buf.lineEnd(line: scopeLines.upperBound)
-        let originalText = buf.getText(range: rangeStart..<rangeEnd)
 
         if cmd.confirm {
+            beginEdit()   // the session accumulates its steps across key presses
             pendingSubConfirm = SubConfirmSession(edits: edits,
                                                   rangeStart: rangeStart,
                                                   rangeEnd: rangeEnd,
-                                                  originalText: originalText,
                                                   rawReplacement: cmd.replacement)
             enterCommandMode()
             promptNextSubstitution()
@@ -1005,35 +1006,35 @@ class EditorWindow: Window {
         // Plain path — apply in REVERSE: an edit never shifts the
         // offsets of the edits before it, so no delta bookkeeping
         // exists on this path at all.
+        beginEdit()
         for edit in edits.reversed() {
-            if edit.length > 0 { buf.delete(at: edit.offset, length: edit.length) }
-            if !edit.replacement.isEmpty { buf.insert(edit.replacement, at: edit.offset) }
+            editReplace(at: edit.offset, length: edit.length, with: edit.replacement)
         }
         let delta = edits.reduce(0) { $0 + $1.replacement.utf8.count - $1.length }
         completeSubstitution(rangeStart: rangeStart, rangeEnd: rangeEnd,
-                             originalText: originalText, delta: delta,
+                             delta: delta,
                              substitutions: edits.count,
                              lines: Set(edits.map(\.line)).count,
                              lastCursorOffset: edits[edits.count - 1].offset)
     }
 
     /// Closes a substitution — both the plain run and a finished
-    /// `c`-session. The whole `:s` is ONE undo step (a composite
-    /// action over the full range — vim's undo granularity; a single
-    /// `u` restores every replaced line at once), the report counts
-    /// what actually landed, and the cursor parks on the start of the
-    /// last substitution. The equality guard: a substitution that
-    /// changed no bytes (`:s/^//`) is not an edit — no undo entry, no
-    /// modified flag; the report still shows, exactly like vim's.
+    /// `c`-session. The whole `:s` is ONE undo step (the operation's
+    /// step log — vim's undo granularity; a single `u` restores every
+    /// replaced edit at once), the report counts what actually
+    /// landed, and the cursor parks on the start of the last
+    /// substitution. The anchors park undo/redo exactly where the
+    /// flat whole-range record did (the range start / its end plus
+    /// the net delta). An operation that logged nothing (every edit
+    /// an identity — `:s/x/x/`) is not an edit: no undo entry, no
+    /// modified flag, a pending redo survives; the report still
+    /// shows, exactly like vim's.
     private func completeSubstitution(rangeStart: Int, rangeEnd: Int,
-                                      originalText: String, delta: Int,
+                                      delta: Int,
                                       substitutions: Int, lines: Int,
                                       lastCursorOffset: Int) {
-        if let buf = buffer, substitutions > 0 {
-            let finalText = buf.getText(range: rangeStart..<(rangeEnd + delta))
-            if finalText != originalText {
-                recordAction(offset: rangeStart, deleted: originalText, inserted: finalText)
-            }
+        if substitutions > 0 {
+            commitEdit(undoAnchor: rangeStart, redoAnchor: rangeEnd + delta)
         }
         if lastCursorOffset >= 0 { moveCursorToOffset(lastCursorOffset) }
         lastError = Substitute.report(substitutions: substitutions, lines: lines)
@@ -1066,10 +1067,10 @@ class EditorWindow: Window {
         func applyCurrent() {
             let edit = s.edits[s.index]
             let live = edit.offset + s.delta
-            if let buf = buffer {
-                if edit.length > 0 { buf.delete(at: live, length: edit.length) }
-                if !edit.replacement.isEmpty { buf.insert(edit.replacement, at: live) }
-            }
+            // The executor replace: mutates, logs the step into the
+            // open operation, tracks the LSP change — an identity
+            // edit is not an edit (nothing logged, nothing tracked).
+            editReplace(at: live, length: edit.length, with: edit.replacement)
             s.delta += edit.replacement.utf8.count - edit.length
             s.applied += 1
             s.appliedLines.insert(edit.line)
@@ -1114,7 +1115,7 @@ class EditorWindow: Window {
         exitCommandMode()
         if s.applied > 0 {
             completeSubstitution(rangeStart: s.rangeStart, rangeEnd: s.rangeEnd,
-                                 originalText: s.originalText, delta: s.delta,
+                                 delta: s.delta,
                                  substitutions: s.applied, lines: s.appliedLines.count,
                                  lastCursorOffset: s.lastPlacedCursor)
         } else {
@@ -1242,7 +1243,6 @@ class EditorWindow: Window {
         let edits: [Substitute.Edit]     // ascending by offset
         let rangeStart: Int              // original bytes, incl. the last line's \n
         let rangeEnd: Int
-        let originalText: String
         let rawReplacement: String
         var index = 0
         var delta = 0                    // bytes added by the applied edits
@@ -1343,12 +1343,81 @@ class EditorWindow: Window {
         ensureCursorVisible()
     }
 
+    /// The legacy single-swap recording: one contiguous step wrapped
+    /// in a one-step operation — the same contract the flat
+    /// (offset, deleted, inserted) action always had, so the twenty
+    /// existing call sites are untouched. Composite sites build
+    /// their operation through the executor instead (see
+    /// SwimCore/EditOperation).
     func recordAction(offset: Int, deleted: String, inserted: String) {
         guard !isUndoRedoing else { return }
-        undoStack.append((offset: offset, deleted: deleted, inserted: inserted))
+        undoStack.append(EditOperation(steps: [
+            EditOperation.Step(offset: offset, deleted: deleted, inserted: inserted),
+        ]))
         redoStack.removeAll()
         modified = true
         trackLSPChange(offset: offset, replaced: deleted, inserted: inserted)
+    }
+
+    /// The open operation being built (beginEdit → edit* →
+    /// commitEdit) — the window-level executor host. Composite edit
+    /// sites never touch the buffer directly: every edit* call runs
+    /// the operation's executor method AND tracks the LSP change for
+    /// that step immediately — the interleaving is correctness, not
+    /// style (a step's position is valid against the buffer as it
+    /// stands at that step; batching the tracking at commit would
+    /// feed later steps positions shifted by earlier ones).
+    private var currentEdit = EditOperation()
+
+    func beginEdit() {
+        currentEdit = EditOperation()
+    }
+
+    /// Executor delete + the step's LSP tracking. Nil — a no-op
+    /// (zero length): nothing was mutated, nothing tracked.
+    @discardableResult
+    func editDelete(at offset: Int, length: Int) -> EditOperation.Step? {
+        guard let buf = buffer, !isUndoRedoing,
+              let step = currentEdit.delete(buf, at: offset, length: length) else { return nil }
+        trackLSPChange(offset: step.offset, replaced: step.deleted, inserted: step.inserted)
+        return step
+    }
+
+    /// Executor insert + the step's LSP tracking. Nil — a no-op
+    /// (empty text).
+    @discardableResult
+    func editInsert(_ text: String, at offset: Int) -> EditOperation.Step? {
+        guard let buf = buffer, !isUndoRedoing,
+              let step = currentEdit.insert(buf, text, at: offset) else { return nil }
+        trackLSPChange(offset: step.offset, replaced: step.deleted, inserted: step.inserted)
+        return step
+    }
+
+    /// Executor replace + the step's LSP tracking. Nil — a no-op
+    /// (identity swap): not an edit.
+    @discardableResult
+    func editReplace(at offset: Int, length: Int, with text: String) -> EditOperation.Step? {
+        guard let buf = buffer, !isUndoRedoing,
+              let step = currentEdit.replace(buf, at: offset, length: length, with: text) else { return nil }
+        trackLSPChange(offset: step.offset, replaced: step.deleted, inserted: step.inserted)
+        return step
+    }
+
+    /// Commit the open operation. An EMPTY operation touches nothing
+    /// — no push, no redo-clear, no modified flag: an all-identity
+    /// edit is not an edit, and a pending redo survives it (exactly
+    /// the flat equality guard's behavior). The anchors default to
+    /// the operation's own (first step's offset / end of the last
+    /// insertion); a composite site whose command began elsewhere
+    /// passes its own.
+    func commitEdit(undoAnchor: Int? = nil, redoAnchor: Int? = nil) {
+        guard !currentEdit.isEmpty else { return }
+        if let undoAnchor { currentEdit.undoAnchor = undoAnchor }
+        if let redoAnchor { currentEdit.redoAnchor = redoAnchor }
+        undoStack.append(currentEdit)
+        redoStack.removeAll()
+        modified = true
+        currentEdit = EditOperation()
     }
 
     func takeLSPPendingChanges() -> [LSPTextChange] {
@@ -1721,54 +1790,49 @@ class EditorWindow: Window {
     func pageCursorDown() { moveVertically(pageDelta) }
     func pageCursorUp() { moveVertically(-pageDelta) }
 
-    private func applyInverse(_ action: (offset: Int, deleted: String, inserted: String)) {
-        guard let buf = buffer else { return }
-        trackLSPChange(offset: action.offset, replaced: action.inserted, inserted: action.deleted)
-        if !action.inserted.isEmpty {
-            buf.delete(at: action.offset, length: action.inserted.utf8.count)
-        }
-        if !action.deleted.isEmpty {
-            buf.insert(action.deleted, at: action.offset)
-        }
-    }
-
-    private func applyForward(_ action: (offset: Int, deleted: String, inserted: String)) {
-        guard let buf = buffer else { return }
-        trackLSPChange(offset: action.offset, replaced: action.deleted, inserted: action.inserted)
-        if !action.deleted.isEmpty {
-            buf.delete(at: action.offset, length: action.deleted.utf8.count)
-        }
-        if !action.inserted.isEmpty {
-            buf.insert(action.inserted, at: action.offset)
-        }
-    }
-
+    /// Undo: the operation's inverse log, applied step by step with
+    /// the LSP change tracked BETWEEN the steps — each step's
+    /// position is computed against the buffer as it stands before
+    /// that step's own mutation (a mutation AT an offset never moves
+    /// its line start or column), and no later step may run before
+    /// this step's tracking (the batch-at-the-end alternative would
+    /// feed later steps positions shifted by earlier ones).
     private func undo() {
         guard let buf = buffer, !undoStack.isEmpty else { return }
-        let action = undoStack.removeLast()
+        let op = undoStack.removeLast()
         isUndoRedoing = true
-        applyInverse(action)
-        redoStack.append(action)
+        for step in op.inverted().steps {
+            trackLSPChange(offset: step.offset, replaced: step.inserted, inserted: step.deleted)
+            step.apply(to: buf)
+        }
+        redoStack.append(op)
         isUndoRedoing = false
         modified = !undoStack.isEmpty
 
-        let (line, byteCol) = buf.offsetToLineCol(action.offset)
+        let anchor = op.undoAnchor ?? op.firstOffset ?? 0
+        let (line, byteCol) = buf.offsetToLineCol(anchor)
         cursorLine = line
         cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol)
         ensureCursorVisible()
     }
 
+    /// Redo: the forward log replayed with the same per-step
+    /// interleaved tracking (both directions inform the LSP; the
+    /// inverse side swaps replaced/inserted).
     private func redo() {
         guard let buf = buffer, !redoStack.isEmpty else { return }
-        let action = redoStack.removeLast()
+        let op = redoStack.removeLast()
         isUndoRedoing = true
-        applyForward(action)
-        undoStack.append(action)
+        for step in op.steps {
+            trackLSPChange(offset: step.offset, replaced: step.deleted, inserted: step.inserted)
+            step.apply(to: buf)
+        }
+        undoStack.append(op)
         isUndoRedoing = false
         modified = true
 
-        let endOffset = action.offset + action.inserted.utf8.count
-        let (line, byteCol) = buf.offsetToLineCol(min(endOffset, buf.totalLength))
+        let anchor = min(op.redoAnchor ?? op.lastInsertionEnd ?? 0, buf.totalLength)
+        let (line, byteCol) = buf.offsetToLineCol(anchor)
         cursorLine = line
         cursorCol = buf.byteToCharOffsetInLine(line: line, byteOffset: byteCol)
         ensureCursorVisible()
