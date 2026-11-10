@@ -289,7 +289,6 @@ extension EditorWindow {
         beginEdit()
         editDelete(at: startOff, length: byteEnd - byteStart)
         var col = 0
-        var lineDelta = 1
         if cursorCol >= buf.getLineChars(cursorLine).count,
            !lineTerminator(after: cursorLine).isEmpty {
             // The break already exists — nothing to insert.
@@ -303,7 +302,7 @@ extension EditorWindow {
             editInsert(lineBreakForInsertion(after: cursorLine), at: startOff)
         }
         commitEdit()
-        cursorLine += lineDelta
+        cursorLine += 1
         cursorCol = col
         syncDesiredCol()
         ensureCursorVisible()
