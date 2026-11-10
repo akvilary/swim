@@ -1513,24 +1513,39 @@ class EditorWindow: Window {
         guard let buf = buffer else { return }
         let byteOff = buf.charToByteOffsetInLine(line: cursorLine, charIndex: cursorCol)
         let offset = buf.lineStart(line: cursorLine) + byteOff
-        buf.insert("\n", at: offset)
-        var inserted = "\n"
-        let fullLine = buf.getLine(cursorLine)
-        let splitIndex = fullLine.index(fullLine.startIndex, offsetBy: cursorCol)
-        let before = String(fullLine[..<splitIndex])
-        let after = String(fullLine[splitIndex...])
-        cursorCol = 0; cursorLine += 1
+        // The plan is computed BEFORE the split lands: the tail right
+        // of the cursor must reach IndentEngine as `after` — the old
+        // order (insert "\n" first, read the line after) fed the plan
+        // an already-split first half whose tail had moved to the next
+        // line, so `after` was always empty and the closer branches
+        // (closerOnly/closerWithBody) were dead code from their only
+        // caller. fullLine/baseIndent deliberately stay measured from
+        // the FIRST HALF — the old values — so the plain branch keeps
+        // its exact behavior: a split inside leading whitespace
+        // preserves the cursor's column (baseIndent of the half = the
+        // split point), and a split before a trailing "{" adds no
+        // level (the "{" belongs to the new line, not this one). The
+        // lineAbove walk starts ABOVE the split line — its left side
+        // is already `before`, and its tail must not tip the balance
+        // scan for the closer sitting AT the cursor.
+        let wholeLine = buf.getLine(cursorLine)
+        let splitIndex = wholeLine.index(wholeLine.startIndex, offsetBy: cursorCol)
+        let before = String(wholeLine[..<splitIndex])
+        let after = String(wholeLine[splitIndex...])
         let plan = IndentEngine.plan(
             before: before,
             after: after,
-            fullLine: fullLine,
-            baseIndent: leadingSpaces(fullLine),
+            fullLine: before,
+            baseIndent: leadingSpaces(before),
             shiftWidth: indentSize(),
             tabWidth: tabWidth,
             lineAbove: { n in
                 let idx = self.cursorLine - 1 - n
                 return idx >= 0 ? buf.getLine(idx) : nil
             })
+        buf.insert("\n", at: offset)
+        var inserted = "\n"
+        cursorCol = 0; cursorLine += 1
         switch plan {
         case .plain(let cursorIndent):
             if cursorIndent > 0 {
