@@ -83,12 +83,6 @@ present; without one, clangd falls back per language family (C++ files get
 
 ## Install
 
-**macOS (Homebrew):**
-
-```bash
-brew install akvilary/swim/swim
-```
-
 **macOS / Linux (curl):**
 
 ```bash
