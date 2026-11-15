@@ -14,5 +14,3 @@
   for a branch is allowed — it creates no commits.
 - Staging files is fine only as part of a commit the user has approved;
   otherwise leave the index untouched.
-- `TODO-PROBLEMS.md` is intentionally untracked — never add, commit, or
-  delete it.
