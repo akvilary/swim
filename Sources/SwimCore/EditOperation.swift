@@ -33,11 +33,15 @@ import Foundation
 /// first applied edit) sets them explicitly at commit.
 ///
 /// The undo/redo CURSOR DRIVE and LSP tracking stay with the window
-/// (EditorWindow.undo/redo): they interleave a per-step
-/// trackLSPChange with each step's application — positions are valid
-/// because a step's own mutation never moves the line start or
-/// column of its offset (both are determined by content strictly
-/// before it), and no later step may run before this step's tracking.
+/// (EditorWindow's `replay` primitive, shared by undo and redo): each
+/// step is tracked through the ONE Step→change mapping (`trackLSPStep`)
+/// and applied in strict sequence — positions are valid because a
+/// step's own mutation never moves the line start or column of its
+/// offset (both are determined by content strictly before it), and no
+/// later step may run before this step's tracking. Tracking is a
+/// function of the step alone: a step ALWAYS means "replace `deleted`
+/// with `inserted` at `offset`", inverted logs included (`inverted()`
+/// already exchanges the fields — no caller exchanges them again).
 public struct EditOperation: Equatable {
     /// One contiguous swap: delete `deleted`, insert `inserted`, both
     /// at `offset`. Byte offsets (PieceTable's address space).

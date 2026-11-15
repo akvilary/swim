@@ -149,7 +149,7 @@ class EditorWindow: Window {
     /// when a disk reload swaps the active buffer in place (a reload brings
     /// empty semanticTokens; without the drop, files at/above the 50000-line
     /// cap would render stale converted tokens against the new content), and
-    /// kept honest by trackLSPChange on every edit: the rewritten lines' keys
+    /// kept honest by trackLSPStep on every edit: the rewritten lines' keys
     /// go immediately (stale positions until the server re-publishes — the
     /// builtin layer paints them in the meantime), a line-count change drops
     /// the whole index.
@@ -169,7 +169,7 @@ class EditorWindow: Window {
     /// Converted diagnostic spans of the ACTIVE tab, by line. Same
     /// invariant as tokenIndex: rebuilt together with it by
     /// rebuildLSPIndexes, never read for any other tab's content — and
-    /// kept honest by trackLSPChange on every edit: spans intersecting
+    /// kept honest by trackLSPStep on every edit: spans intersecting
     /// the rewritten lines go immediately (stale positions until the
     /// re-publish; every supported server — sourcekit-lsp, basedpyright,
     /// clangd — re-publishes after every didChange — verified by
@@ -1373,12 +1373,11 @@ class EditorWindow: Window {
     /// SwimCore/EditOperation).
     func recordAction(offset: Int, deleted: String, inserted: String) {
         guard !isUndoRedoing else { return }
-        undoStack.append(EditOperation(steps: [
-            EditOperation.Step(offset: offset, deleted: deleted, inserted: inserted),
-        ]))
+        let step = EditOperation.Step(offset: offset, deleted: deleted, inserted: inserted)
+        undoStack.append(EditOperation(steps: [step]))
         redoStack.removeAll()
         modified = true
-        trackLSPChange(offset: offset, replaced: deleted, inserted: inserted)
+        trackLSPStep(step)
     }
 
     /// The open operation being built (beginEdit → edit* →
@@ -1401,7 +1400,7 @@ class EditorWindow: Window {
     func editDelete(at offset: Int, length: Int) -> EditOperation.Step? {
         guard let buf = buffer, !isUndoRedoing,
               let step = currentEdit.delete(buf, at: offset, length: length) else { return nil }
-        trackLSPChange(offset: step.offset, replaced: step.deleted, inserted: step.inserted)
+        trackLSPStep(step)
         return step
     }
 
@@ -1411,7 +1410,7 @@ class EditorWindow: Window {
     func editInsert(_ text: String, at offset: Int) -> EditOperation.Step? {
         guard let buf = buffer, !isUndoRedoing,
               let step = currentEdit.insert(buf, text, at: offset) else { return nil }
-        trackLSPChange(offset: step.offset, replaced: step.deleted, inserted: step.inserted)
+        trackLSPStep(step)
         return step
     }
 
@@ -1421,7 +1420,7 @@ class EditorWindow: Window {
     func editReplace(at offset: Int, length: Int, with text: String) -> EditOperation.Step? {
         guard let buf = buffer, !isUndoRedoing,
               let step = currentEdit.replace(buf, at: offset, length: length, with: text) else { return nil }
-        trackLSPChange(offset: step.offset, replaced: step.deleted, inserted: step.inserted)
+        trackLSPStep(step)
         return step
     }
 
@@ -1464,8 +1463,21 @@ class EditorWindow: Window {
                                            keywords: keywords, literals: literals, syntax: syntax)
     }
 
-    private func trackLSPChange(offset: Int, replaced: String, inserted: String) {
+    /// The ONE mapping from a buffer step to its LSP change: a step
+    /// ALWAYS means "replace `deleted` with `inserted` at `offset`" —
+    /// for executor steps, forward replays and inverted logs alike
+    /// (`EditOperation.inverted()` already exchanges the fields; no
+    /// caller ever exchanges them again). The regression this single
+    /// entry replaced: `undo` passed an already-inverted step's
+    /// fields swapped once more, telling the server to re-insert
+    /// what undo had just deleted — the server's copy diverged on the
+    /// first `u` and every later didChange landed by wrong
+    /// coordinates (the false "unclosed bracket" diagnostics class).
+    private func trackLSPStep(_ step: EditOperation.Step) {
         guard let buf = buffer else { return }
+        let offset = step.offset
+        let replaced = step.deleted
+        let inserted = step.inserted
         let (line, byteCol) = buf.offsetToLineCol(offset)
         // The edit rewrites line `line` itself, so its end-state entry and
         // every later one are stale; entries strictly above the edit are
@@ -1532,12 +1544,12 @@ class EditorWindow: Window {
         // accessor every keystroke would COW-copy the whole array.
         //
         // Diagnostics join the same doctrine (their spans are position
-        // ranges — same staleness). The drop is safe because BOTH
-        // supported servers re-publish after every didChange, including
-        // unchanged sets — verified by protocol probes (4/4 events for
-        // sourcekit-lsp and basedpyright); a future server must honor
-        // that contract or a dropped span returns only at the next
-        // change. Diagnostics carry RANGES (a multi-line one spreads
+        // ranges — same staleness). The drop is safe because EVERY
+        // supported server re-publishes after every didChange,
+        // including unchanged sets — verified by protocol probes
+        // (sourcekit-lsp, basedpyright and clangd alike); a future
+        // server must honor that contract or a dropped span returns
+        // only at the next change. Diagnostics carry RANGES (a multi-line one spreads
         // clipped spans onto lines OUTSIDE the edit), so the exact
         // mirror of the array filter is an index REBUILD, not key
         // removal — the split rebuildDiagnosticsIndex half.
@@ -1557,6 +1569,24 @@ class EditorWindow: Window {
             tokenIndex.removeAll(keepingCapacity: true)
             activeTab.diagnostics = []
             diagnosticsIndex.removeAll(keepingCapacity: true)
+        }
+    }
+
+    /// The replay primitive — undo and redo share it: each step
+    /// tracked, then applied, strictly in sequence. The tracking can
+    /// never batch after the loop (later steps' positions are shifted
+    /// by earlier ones), and track-then-apply is equivalent to the
+    /// executor's apply-then-track — a step's own mutation never
+    /// moves its offset's line start or column (both are determined
+    /// by content strictly before it). The direction lives in WHICH
+    /// steps are passed (`op.inverted().steps` vs `op.steps`), never
+    /// in how they are tracked. `buf` is the window's active buffer —
+    /// the same tab whose state `trackLSPStep` reads; tracking and
+    /// application address one document by construction.
+    private func replay(_ steps: [EditOperation.Step], to buf: PieceTable) {
+        for step in steps {
+            trackLSPStep(step)
+            step.apply(to: buf)
         }
     }
 
@@ -1844,21 +1874,18 @@ class EditorWindow: Window {
     func pageCursorDown() { moveVertically(pageDelta) }
     func pageCursorUp() { moveVertically(-pageDelta) }
 
-    /// Undo: the operation's inverse log, applied step by step with
-    /// the LSP change tracked BETWEEN the steps — each step's
-    /// position is computed against the buffer as it stands before
-    /// that step's own mutation (a mutation AT an offset never moves
-    /// its line start or column), and no later step may run before
-    /// this step's tracking (the batch-at-the-end alternative would
-    /// feed later steps positions shifted by earlier ones).
+    /// Undo: the operation's inverse log through the shared `replay`
+    /// primitive — each step tracked then applied in strict sequence.
+    /// The inverted steps already carry their own exchanged fields;
+    /// tracking is a function of the STEP (a step always means
+    /// "replace deleted with inserted at offset"), never of the
+    /// direction — the double-inversion this replaces described every
+    /// undo to the LSP server as its own opposite.
     private func undo() {
         guard let buf = buffer, !undoStack.isEmpty else { return }
         let op = undoStack.removeLast()
         isUndoRedoing = true
-        for step in op.inverted().steps {
-            trackLSPChange(offset: step.offset, replaced: step.inserted, inserted: step.deleted)
-            step.apply(to: buf)
-        }
+        replay(op.inverted().steps, to: buf)
         redoStack.append(op)
         isUndoRedoing = false
         modified = !undoStack.isEmpty
@@ -1870,17 +1897,14 @@ class EditorWindow: Window {
         ensureCursorVisible()
     }
 
-    /// Redo: the forward log replayed with the same per-step
-    /// interleaved tracking (both directions inform the LSP; the
-    /// inverse side swaps replaced/inserted).
+    /// Redo: the forward log through the same `replay` primitive as
+    /// undo — one interleaving of tracking and application for both
+    /// directions; WHICH steps are passed carries the direction.
     private func redo() {
         guard let buf = buffer, !redoStack.isEmpty else { return }
         let op = redoStack.removeLast()
         isUndoRedoing = true
-        for step in op.steps {
-            trackLSPChange(offset: step.offset, replaced: step.deleted, inserted: step.inserted)
-            step.apply(to: buf)
-        }
+        replay(op.steps, to: buf)
         undoStack.append(op)
         isUndoRedoing = false
         modified = true
